@@ -263,6 +263,9 @@ BOSS_DEFS = [
     {'key': 'boss_zongzong', 'name': '小粽粽', 'enemy_key': 'zongzong',
      'base_hp': 150, 'fixed_hp': 400, 'speed': 1.18, 'attack_interval': 1900, 'projectile_count': 6,
      'size': (128, 118), 'sprite_asset': 'bosses/zongzong.png', 'sprite_key': 'zongzong'},
+    {'key': 'boss_orochi', 'name': '八岐大蛇', 'enemy_key': 'shark',
+     'base_hp': 175, 'speed': 0.65, 'attack_interval': 3400, 'projectile_count': 8,
+     'size': (360, 240)},
 ]
 
 
@@ -287,6 +290,8 @@ LEVEL_CONFIGS = [
      'enemy_pool': ['crab', 'octopus', 'shark'] + NEW_ENEMY_KEYS + SPECIAL_ENEMY_KEYS},
     {'level': 8, 'title': '粽子星球', 'kills_needed': 42, 'boss_idx': 7, 'gold_reward': 110,
      'enemy_pool': ['lobster', 'goldfish', 'octopus', 'shark'] + NEW_ENEMY_KEYS + SPECIAL_ENEMY_KEYS},
+    {'level': 9, 'title': '大蛇之巢', 'kills_needed': 0, 'boss_idx': 8, 'gold_reward': 0,
+     'enemy_pool': [], 'boss_on_start': True},
 ]
 
 
@@ -325,25 +330,25 @@ def make_font(size, bold=False):
 
 # Web 战役数值。三元组按简单、中等、困难排列。
 CAMPAIGN_KILLS = ((12, 14, 15), (15, 17, 18), (17, 20, 21), (19, 22, 24),
-                  (21, 24, 26), (0, 0, 0), (23, 27, 29), (25, 30, 32))
+                  (21, 24, 26), (0, 0, 0), (23, 27, 29), (25, 30, 32), (0, 0, 0))
 CAMPAIGN_SPAWN_MS = ((2600, 2400, 2200), (2500, 2300, 2125), (2400, 2200, 2050),
                      (2320, 2100, 1975), (2250, 2000, 1900), (0, 0, 0),
-                     (2150, 1900, 1825), (2050, 1800, 1750))
+                     (2150, 1900, 1825), (2050, 1800, 1750), (0, 0, 0))
 CAMPAIGN_ENEMY_CAP = ((4, 5, 6), (5, 6, 7), (5, 6, 7), (6, 7, 8),
-                      (6, 7, 8), (0, 0, 0), (6, 8, 9), (7, 8, 9))
+                      (6, 7, 8), (0, 0, 0), (6, 8, 9), (7, 8, 9), (0, 0, 0))
 CAMPAIGN_BOSS_HP = ((18, 24, 28), (30, 40, 46), (45, 60, 69), (62, 82, 94),
-                    (80, 106, 122), (99, 132, 152), (118, 156, 180), (131, 174, 200))
+                    (80, 106, 122), (99, 132, 152), (118, 156, 180), (131, 174, 200), (150, 200, 230))
 CAMPAIGN_BOSS_ATTACK_MS = ((5000, 4400, 3800), (4800, 4100, 3600), (4600, 3900, 3400),
                            (4400, 3700, 3200), (4200, 3500, 3000), (4000, 3400, 2900),
-                           (6800, 5800, 5000), (4500, 3700, 3100))
+                           (6800, 5800, 5000), (4500, 3700, 3100), (3900, 3400, 2900))
 CAMPAIGN_REINFORCEMENT_MS = ((0, 0, 0), (5500, 5000, 4600), (5100, 4600, 4100),
                              (4800, 4300, 3900), (4500, 4000, 3600), (4800, 4200, 3700),
-                             (4800, 4300, 3800), (5200, 4600, 4000))
+                             (4800, 4300, 3800), (5200, 4600, 4000), (0, 0, 0))
 CAMPAIGN_REINFORCEMENT_CAP = ((0, 0, 0), (1, 1, 2), (1, 2, 2), (1, 2, 2),
-                              (2, 2, 3), (2, 2, 3), (2, 2, 3), (1, 2, 2))
-CAMPAIGN_LARGE_CHANCE = (0, 0.08, 0.12, 0.14, 0.16, 0.16, 0.18, 0.18)
-CAMPAIGN_SPEED = (1.00, 1.03, 1.06, 1.09, 1.12, 1.15, 1.18, 1.20)
-CAMPAIGN_REWARDS = (8, 12, 16, 20, 24, 24, 30, 0)
+                              (2, 2, 3), (2, 2, 3), (2, 2, 3), (1, 2, 2), (0, 0, 0))
+CAMPAIGN_LARGE_CHANCE = (0, 0.08, 0.12, 0.14, 0.16, 0.16, 0.18, 0.18, 0)
+CAMPAIGN_SPEED = (1.00, 1.03, 1.06, 1.09, 1.12, 1.15, 1.18, 1.20, 1.20)
+CAMPAIGN_REWARDS = (8, 12, 16, 20, 24, 24, 30, 0, 0)
 CAMPAIGN_WEAPON_PRICES = {'pistol': (0, 0, 0), 'rifle': (8, 10, 12),
                           'shotgun': (12, 14, 16), 'sniper': (16, 18, 20)}
 CAMPAIGN_CHARACTER_PRICES = {'ice': (22, 26, 30), 'fire': (26, 30, 34),
@@ -351,5 +356,5 @@ CAMPAIGN_CHARACTER_PRICES = {'ice': (22, 26, 30), 'fire': (26, 30, 34),
 CAMPAIGN_BULLET_DAMAGE = {'pistol': 1.0, 'rifle': 1.35, 'shotgun': 0.85, 'sniper': 3.0}
 
 # 无限模式 Boss 首轮参数，按 BOSS_DEFS 顺序排列。
-INFINITE_BOSS_HP = (30, 46, 66, 90, 116, 144, 170, 192)
-INFINITE_BOSS_ATTACK_MS = (4400, 4100, 3900, 3700, 3500, 3400, 5800, 3700)
+INFINITE_BOSS_HP = (30, 46, 66, 90, 116, 144, 170, 192, 220)
+INFINITE_BOSS_ATTACK_MS = (4400, 4100, 3900, 3700, 3500, 3400, 5800, 3700, 3400)

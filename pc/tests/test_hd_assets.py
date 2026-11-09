@@ -30,7 +30,8 @@ class DesktopHDAssetsTests(unittest.TestCase):
             self.assertEqual([frame.get_size() for frame in frames], [(512, 512)] * 4)
             self.assertEqual(len(set(frames)), 4)
             self.assertIs(animation.frame('boss_attack', 4), frames[0])
-            self.assertEqual(animation.frame('player1_back', 0).get_size(), (192, 192))
+            self.assertEqual(animation.frame('player1_back', 0).get_size(),
+                             asset_loader.image_asset('players/player1.png').get_size())
         self.assertIs(animation.frame('boss_attack', 0), original)
 
     def test_redrawn_sheets_keep_original_frame_counts(self):
@@ -39,20 +40,23 @@ class DesktopHDAssetsTests(unittest.TestCase):
         pygame.display.set_mode((1, 1))
         desktop_assets = Path(__file__).resolve().parents[1] / 'assets'
         shared_animations = Path(asset_loader.ASSET_DIR) / 'animations'
+        shared_only = {'anim_boss_orochi_idle.png', 'anim_boss_zongzong_expressions.png'}
         with patch.object(asset_loader, 'PREFERRED_ASSET_DIR', desktop_assets):
             for original in sorted(shared_animations.glob('anim_*.png')):
-                if original.stem.startswith(('anim_player1_', 'anim_player2_')):
+                if original.stem.startswith('anim_player1_'):
                     continue
                 with self.subTest(sheet=original.name):
                     width, height = pygame.image.load(original).get_size()
                     sheet = asset_loader.image_asset(f'animations/{original.name}')
-                    self.assertEqual(sheet.get_size(), (512 * (width // height), 512))
+                    if original.name in shared_only:
+                        self.assertEqual(sheet.get_size(), (width, height))
+                    else:
+                        self.assertEqual(sheet.get_size(), (512 * (width // height), 512))
                     self.assertTrue(sheet.get_masks()[-1])
 
             title = asset_loader.image_asset('ui/title.png')
             self.assertGreaterEqual(title.get_width(), 1595)
             self.assertEqual(asset_loader.image_asset('effects/boss_claw.png').get_size(), (426, 640))
-            self.assertEqual(asset_loader.image_asset('effects/boss_ground_fire.png').get_size(), (640, 320))
             for color in ('gold', 'red'):
                 trident = asset_loader.image_asset(f'effects/boss_trident_{color}.png')
                 bounds = trident.get_bounding_rect(min_alpha=16)

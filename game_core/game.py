@@ -4,6 +4,7 @@ P1: WASD移动 J射击 K/L技能 1-4切换角色 Q/E切换武器
 P2: 方向键移动 小键盘1射击 小键盘2/3技能 小键盘Enter激光 小键盘+飞镖 小键盘7/8/9/4切换角色 小键盘5/6切换武器
 """
 import math, random, pygame
+from copy import deepcopy
 from . import config
 from .render import Draw, RenderSurface
 from .asset_loader import image_asset, scale_surface_cached
@@ -28,10 +29,11 @@ from .entities import (
     Player, Enemy, Bullet, Coin, GiftBox, Particle, Explosion,
     FireWall, IceFloor, SkillProjectile,
     MagneticStorm, RadiationLaser, Lightning, Boss, BossProjectile,
-    SpinningDarts,
+    SpinningDarts, DragonFireball,
 )
-from .boss_skills import BOSS_COLORS, BossSignature, SIGNATURES
-from .special_bosses import CrescentWave, NiuBoss, ReturningAxe, ZongBoss, ZongReflectBullet
+from .boss_skills import BOSS_COLORS, CRAB_BUBBLE_BURST_MS, CRAB_BUBBLE_COLORS, BossSignature, SIGNATURES, circle_hits_rect
+from .orochi import OrochiBoss
+from .special_bosses import CrescentWave, NiuBoss, ReturningAxe, ZongBomb, ZongBoss, ZongReflectBullet
 
 class GameState:
     DIFFICULTY_SELECT = 0; MENU = 1; PLAYING = 2; SHOP = 3
@@ -54,7 +56,7 @@ GIFT_DROP_MIN_MS = 15000
 GIFT_DROP_MAX_MS = 15000
 GIFT_BUFF_MS = 10000
 GIFT_LIGHTNING_DAMAGE = 5.0
-INFINITE_BG_FADE_MS = 900
+BG_FADE_MS = 900
 INFINITE_BOSS_CYCLE_HP_GROWTH = 0.10
 INFINITE_BOSS_STEP_HP_GROWTH = 0.02
 CONTROL_DEFS = [
@@ -173,6 +175,7 @@ class Game:
         self.spawn_interval = 2000; self.min_spawn_interval = 800; self.spawn_decrease = 5
         self.last_spawn_time = 0; self.last_switch_time = -9999
         self.game_over_reason = ''
+        self.level_checkpoint = None
         self.pause_prev_state = GameState.PLAYING
         self.shop_prev_state = GameState.PLAYING
         self.cursor_pos = (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
@@ -329,8 +332,11 @@ class Game:
                     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
                         continue
             if event.type == pygame.KEYDOWN:
-                if pygame.K_1 <= event.key <= pygame.K_8 and event.mod & pygame.KMOD_SHIFT:
-                    self._jump_to_level(event.key - pygame.K_0)
+                level = event.key - pygame.K_0
+                jump_limit = (len(config.INFINITE_BOSS_HP) if self.infinite_mode or self.selecting_infinite_mode
+                              else min(9, len(LEVEL_CONFIGS)))
+                if 1 <= level <= jump_limit and event.mod & pygame.KMOD_SHIFT:
+                    self._jump_to_level(level)
                     continue
                 if self.setting_key_action:
                     if event.key != pygame.K_ESCAPE:
@@ -379,9 +385,9 @@ class Game:
                 self.bg_transition_prev = self.bg.copy()
                 self.chapter = target
                 self.infinite_boss_index = target - 1
-                self.infinite_background_level = (target - 1) % len(LEVEL_CONFIGS) + 1
+                self.infinite_background_level = (target - 1) % len(config.INFINITE_BOSS_HP) + 1
                 self.bg = self._load_bg()
-                self.bg_transition_until = now + INFINITE_BG_FADE_MS
+                self.bg_transition_until = now + BG_FADE_MS
                 self.boss = None
                 self.boss_projectiles.clear(); self.enemy_projectiles.clear()
                 self.enemies.clear(); self.bullets.clear()
@@ -504,7 +510,8 @@ class Game:
                 elif k == pygame.K_RETURN:
                     self.setting_key_action = CONTROL_DEFS[self.key_settings_row][0]
         elif s == GameState.GAME_OVER:
-            if k in (pygame.K_RETURN, pygame.K_SPACE): self.reset()
+            if k in (pygame.K_RETURN, pygame.K_SPACE): self._retry_level()
+            elif k == pygame.K_n: self.reset()
         elif s == GameState.PAID_REVIVE:
             if k in (pygame.K_y, pygame.K_RETURN): self._paid_revive()
             elif k == pygame.K_n: self.state = GameState.GAME_OVER
@@ -554,7 +561,10 @@ class Game:
         elif s == GameState.INFINITE_CONTINUE:
             if self._hit(mx, my, config.SCREEN_WIDTH//2-170, config.SCREEN_HEIGHT//2+70, 150, 46): self._continue_infinite()
             elif self._hit(mx, my, config.SCREEN_WIDTH//2+20, config.SCREEN_HEIGHT//2+70, 150, 46): self.reset()
-        elif s == GameState.GAME_OVER: self.reset()
+        elif s == GameState.GAME_OVER:
+            retry, home = self._game_over_choice_rects()
+            if retry.collidepoint(pos): self._retry_level()
+            elif home.collidepoint(pos): self.reset()
 
     def _click_difficulty(self, mx, my):
         if self._mobile_custom_button().collidepoint(mx, my):
@@ -690,7 +700,8 @@ class Game:
         self.player_invincible_until = 0
         self.next_infinite_boss_time = now + 25000
         self.infinite_boss_index = start_chapter - 1
-        self.level_enemy_defs = get_level_enemy_defs(LEVEL_CONFIGS[-1])
+        # 沿用第 8 关的小怪池。第 9 关战役只有 Boss。
+        self.level_enemy_defs = get_level_enemy_defs(LEVEL_CONFIGS[7])
         self.level_title_until = 0
         self.bg_transition_until = 0
         self.bg_transition_prev = None
@@ -784,7 +795,7 @@ class Game:
     def _campaign_value(self, table):
         return table[self.current_level - 1][self._campaign_tier()]
 
-    def _start_level(self, n):
+    def _start_level(self, n, *, checkpoint=True):
         self.current_level = n; self.level_kills = 0
         self.bg = self._load_bg()
         self.level_title_until = config.game_ticks() + 2200
@@ -817,6 +828,59 @@ class Game:
         start_music(n)
         if LEVEL_CONFIGS[n-1].get('boss_on_start'):
             self._trigger_boss()
+        if checkpoint and not self.infinite_mode:
+            self._save_level_checkpoint(now)
+
+    def _save_level_checkpoint(self, now):
+        player = {}
+        for key, value in vars(self.player).items():
+            if key in ('surface', 'breath_base', '_breath_src'):
+                continue
+            if key in ('last_shot_time', 'animation_move_at', 'animation_skill_at') and value is not None:
+                value -= now
+            elif key.endswith('_until') and isinstance(value, (int, float)):
+                value = max(0, value - now)
+            elif key in ('skill_cooldowns', 'skill_active_until'):
+                value = {name: max(0, deadline - now) for name, deadline in value.items()}
+            player[key] = deepcopy(value)
+        fields = ('lives', 'revive_count', 'player_hp', 'max_player_hp', 'kill_count', 'score',
+                  'chapter', 'water_passive_kills', 'leak_count')
+        timers = ('player_invincible_until', 'water_temp_hp_until')
+        self.level_checkpoint = {
+            'level': self.current_level, 'player': player, 'surface': self.player.surface,
+            'fields': {key: getattr(self, key) for key in fields},
+            'timers': {key: max(0, getattr(self, key) - now) for key in timers},
+        }
+
+    def _retry_level(self):
+        checkpoint = self.level_checkpoint
+        if self.infinite_mode or checkpoint is None:
+            self.reset()
+            return
+        now = config.game_ticks()
+        for key, value in checkpoint['fields'].items():
+            setattr(self, key, value)
+        for key, value in checkpoint['player'].items():
+            value = deepcopy(value)
+            if key in ('last_shot_time', 'animation_move_at', 'animation_skill_at') and value is not None:
+                value += now
+            elif key.endswith('_until') and isinstance(value, (int, float)):
+                value = now + value if value else 0
+            elif key in ('skill_cooldowns', 'skill_active_until'):
+                value = {name: now + remaining for name, remaining in value.items() if remaining > 0}
+            setattr(self.player, key, value)
+        self.player.surface = checkpoint['surface']
+        self.player.breath_base = None
+        self.player._breath_src = None
+        for key, remaining in checkpoint['timers'].items():
+            setattr(self, key, now + remaining if remaining else 0)
+        self.coins.clear()
+        self.particles.clear()
+        self.water_heal_effects.clear()
+        self.warned_boss_shots.clear()
+        self.game_over_reason = ''
+        self.state = GameState.PLAYING
+        self._start_level(checkpoint['level'], checkpoint=False)
 
     def _trigger_boss(self):
         if self.boss:
@@ -852,9 +916,8 @@ class Game:
 
     def _trigger_infinite_boss(self):
         boss_number = self.infinite_boss_index
-        bdef = BOSS_DEFS[boss_number % len(BOSS_DEFS)]
-        cycle = boss_number // len(BOSS_DEFS)
-        index = boss_number % len(BOSS_DEFS)
+        cycle, index = divmod(boss_number, len(config.INFINITE_BOSS_HP))
+        bdef = BOSS_DEFS[index]
         health_percent = 100 + 20 * min(cycle, 6)
         interval_percent = max(70, 100 - 5 * cycle)
         bdef = {**bdef,
@@ -873,7 +936,8 @@ class Game:
         play_sound('boss_appear'); self.state = GameState.BOSS_FIGHT
 
     def _make_boss(self, bdef):
-        cls = NiuBoss if bdef['key'] == 'boss_niu' else ZongBoss if bdef['key'] == 'boss_zongzong' else Boss
+        cls = {'boss_niu': NiuBoss, 'boss_zongzong': ZongBoss,
+               'boss_orochi': OrochiBoss}.get(bdef['key'], Boss)
         boss = cls(bdef, self.difficulty)
         boss.intro_until = config.game_ticks() + 950
         return boss
@@ -892,7 +956,7 @@ class Game:
         play_sound('game_over')
 
     def _revive_cost(self):
-        return (70, 85, 100)[self._campaign_tier()]
+        return (50, 75, 100)[self._campaign_tier()]
 
     def _paid_revive(self):
         if self.state != GameState.PAID_REVIVE or self.revive_count or self.player.gold < self._revive_cost():
@@ -914,8 +978,11 @@ class Game:
         now = config.game_ticks()
         self._clear_invaded_enemies()
         if self.boss and self.boss.signature:
-            self.boss.signature.stop(self.boss)
-            self.boss.signature = None
+            signature = self.boss.signature
+            # A lethal bite must not cancel the rest of the dive.
+            if not (signature.key == 'boss' and signature.origin is not None):
+                signature.stop(self.boss)
+                self.boss.signature = None
         self.player_hp = self.max_player_hp
         self.infinite_countdown_end = pygame.time.get_ticks() + 3000
         self.player_invincible_until = now + (5000 if self.infinite_mode else 2000)
@@ -1140,6 +1207,8 @@ class Game:
         return getattr(e, 'is_zongzong', False)
 
     def _show_immune(self, e, now=None):
+        if (e.y + e.h <= 0 if isinstance(e, Enemy) else e.y < Enemy.ENTRY_DAMAGE_Y):
+            return True
         if self.infinite_mode and self._is_zongzong(e):
             now = config.game_ticks() if now is None else now
             if now < getattr(e, 'immune_text_until', 0):
@@ -1173,10 +1242,9 @@ class Game:
         label, color = labels.get(box.kind, ('大礼包', (255, 235, 150)))
         self.gift_messages.append((f'礼包：{label}', color, now + 3000, now))
         if box.kind == 'lightning':
-            # 闪电礼包加强：共 3 次，每次间隔 3s（打开瞬间第 1 次，6s 内打完）
             self.gift_lightning_remaining = 3 if self.infinite_mode else 2
             self.gift_lightning_next = now
-            self.gift_lightning_icon_until = now + (6000 if self.infinite_mode else 3000)  # 屏幕中心闪电图标显示到 3 次闪电结束
+            self.gift_lightning_icon_until = now + self.gift_lightning_remaining * 3000
             play_sound('lightning')
         elif box.kind == 'fire':
             self.gift_fire_until = now + (GIFT_BUFF_MS if self.infinite_mode else 7000)
@@ -1194,39 +1262,65 @@ class Game:
                 p.gift_speed_until = now + GIFT_BUFF_MS
             play_sound('level_up')
 
+    def _nearby_lightning_targets(self, x, y):
+        targets = self.enemies[:]
+        if self.boss and self.boss.entered:
+            targets.append(self.boss)
+        reach = min(280, config.SCREEN_HEIGHT * .55)
+        def point(target):
+            if isinstance(target, OrochiBoss):
+                return target.lightning_target(x, y)
+            return target.x, target.y + target.h // 2
+        targets = [e for e in targets if e.y + e.h > 0 and math.dist(point(e), (x, y)) <= reach
+                   and (not isinstance(e, OrochiBoss) or e.hitboxes())]
+        return sorted(targets, key=lambda e: math.dist(point(e), (x, y)))
+
     def _maybe_fire_gift_lightning(self, now):
-        if self.gift_lightning_remaining <= 0 or now < self.gift_lightning_next:
+        if (self.gift_lightning_remaining <= 0 or now < self.gift_lightning_next
+                or now >= self.gift_lightning_icon_until):
+            return
+        x, y = config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2
+        targets = self._nearby_lightning_targets(x, y)[:5 if self.infinite_mode else 3]
+        if not targets:
             return
         self.gift_lightning_remaining -= 1
         self.gift_lightning_next = now + 3000
-        # 闪电从屏幕正中心向四周的怪物发射
-        self._gift_lightning(now, config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
-
-    def _gift_lightning(self, now, x, y):
-        boss = self.boss
-        if self.infinite_mode:
-            enemies = self.enemies[:]
-        else:
-            enemies = sorted(self.enemies, key=lambda e: e.y, reverse=True)[:3]
-            if enemies:
-                boss = None
-        targets = enemies + ([boss] if boss else [])
-        if targets:
-            # 红黄混合闪电：红 + 黄两层叠加
-            self.lightnings.append(Lightning(x, y, [(e, e.x, e.y + e.h // 2) for e in targets], color=(255, 60, 40)))
-            self.lightnings.append(Lightning(x, y, [(e, e.x, e.y + e.h // 2) for e in targets], color=(255, 220, 70)))
-        for e in enemies:
-            if self._show_immune(e, now):
-                continue
-            e.hit_by('sniper', (GIFT_LIGHTNING_DAMAGE * self._gift_damage_mult(now) if self.infinite_mode else 3))
-            self._spawn_hit_effect(e.x, e.y + e.h // 2, (255, 55, 45), e.is_large)
-            if e.is_killed('sniper'):
-                self._kill_enemy(e)
-        if boss and self.boss is boss:
-            boss.hit_by('sniper', GIFT_LIGHTNING_DAMAGE * self._gift_damage_mult(now) if self.infinite_mode else 2)
-            self._spawn_hit_effect(self.boss.x, self.boss.y + self.boss.h // 2, (255, 55, 45), True)
-            self._settle_boss_if_killed()
+        damage = GIFT_LIGHTNING_DAMAGE * self._gift_damage_mult(now) if self.infinite_mode else 3
+        self.lightnings.append(Lightning(x, y, targets, damage, gift=True))
+        if not self.gift_lightning_remaining:
+            self.gift_lightning_icon_until = now + self.lightnings[-1].lifetime
         play_sound('lightning')
+
+    def _update_lightnings(self, now):
+        self.lightnings[:] = [bolt for bolt in self.lightnings if not bolt.is_expired()]
+        for bolt in self.lightnings[:]:
+            if not bolt.damage or now < bolt.spawn_time + bolt.TRAVEL_MS:
+                continue
+            damage, bolt.damage = bolt.damage, 0
+            for target in bolt.targets:
+                boss = target is self.boss
+                if not boss and target not in self.enemies:
+                    continue
+                if self._show_immune(target, now):
+                    continue
+                amount = 2 if boss and bolt.gift and not self.infinite_mode else damage
+                if isinstance(target, OrochiBoss):
+                    hitbox = target.lightning_hitbox(bolt.start_x, bolt.start_y)
+                    if hitbox is None:
+                        continue
+                    target.hit_by('sniper', amount, hit_rect=hitbox)
+                    x, y = hitbox.center
+                else:
+                    target.hit_by('sniper', amount)
+                    x, y = target.x, target.y + target.h // 2
+                self._spawn_hit_effect(x, y, (255, 95, 45), boss or target.is_large)
+                if boss:
+                    if self._settle_boss_if_killed():
+                        return
+                elif target.is_killed('sniper'):
+                    self._kill_enemy(target)
+                    if self.state not in (GameState.PLAYING, GameState.BOSS_FIGHT):
+                        return
 
     def _explode_enemy_bomb(self, p, now):
         self.explosions.append(Explosion(p.x, p.y, (255, 95, 35), 34))
@@ -1240,11 +1334,10 @@ class Game:
             if math.hypot(p.x - closest_x, p.y - closest_y) <= radius:
                 hit_player = player
                 break
-        if hit_player:
+        if hit_player and not self._player_is_invincible(now):
             self._apply_niu_ice_axe_effect(p, hit_player, now)
-        if hit_player and self._damage_player(now, getattr(p, 'damage', 1), getattr(p, 'blast_reason', '被小粽粽炸弹击败！')):
-            return True
-        play_sound('hit')
+            play_sound('hit')
+            return self._damage_player(now, getattr(p, 'damage', 1), getattr(p, 'blast_reason', '被小粽粽炸弹击败！'))
         return False
 
     def _apply_niu_ice_axe_effect(self, projectile, player, now):
@@ -1438,23 +1531,11 @@ class Game:
                 self.skill_projectiles.append(shot)
             play_sound('ice_cast')
         elif st == 'lightning':
-            self._start_skill_effect(player, st, cd_ms, 300, now)
-            targets = self.enemies[:]
-            if self.boss:
-                targets.append(self.boss)
-            targets.sort(key=lambda target: (
-                target.x - px) ** 2 + (target.y + target.h // 2 - py) ** 2)
-            targets = targets[:5 if self.infinite_mode else 4]
+            targets = self._nearby_lightning_targets(px, py)[:5 if self.infinite_mode else 4]
             if targets:
-                self.lightnings.append(Lightning(px, py, [(e, e.x, e.y+e.h//2) for e in targets]))
-                for e in targets:
-                    if self._show_immune(e, now):
-                        continue
-                    e.hit_by('sniper', 2.0 * self._gift_damage_mult(now))
-                    if e is self.boss:
-                        self._settle_boss_if_killed()
-                    elif e.is_killed('sniper'):
-                        self._kill_enemy(e)
+                bolt = Lightning(px, py, targets, 2.0 * self._gift_damage_mult(now))
+                self._start_skill_effect(player, st, cd_ms, bolt.lifetime, now)
+                self.lightnings.append(bolt)
                 play_sound('lightning')
         elif st == 'magnetic_storm':
             ms = MagneticStorm(px, max(120, player.y - 170))
@@ -1541,8 +1622,11 @@ class Game:
         if self.infinite_mode or self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
             self._expire_active_skills(now)
             self._maybe_fire_gift_lightning(now)
+            self._update_lightnings(now)
         if self.state == GameState.LEVEL_TRANSITION:
             if now >= self.level_transition_end:
+                self.bg_transition_prev = self.bg.copy()
+                self.bg_transition_until = now + BG_FADE_MS
                 self._start_level(self.current_level+1)
                 if self.state != GameState.BOSS_FIGHT:
                     self.state = GameState.PLAYING
@@ -1597,12 +1681,13 @@ class Game:
         for e in self.enemies[:]:
             if now - e.last_contact_damage_time < CONTACT_DAMAGE_COOLDOWN:
                 continue
-            if self._hit_player(e.rect()):
+            if not self._player_is_invincible(now) and self._hit_player(e.rect()):
                 e.last_contact_damage_time = now
                 amount = self._enemy_contact_damage(e)
                 if self._damage_player(now, amount, f'被{e.edef["name"]}撞击击败！'):
                     return True
         if (self.boss and not (self.boss.signature and self.boss.signature.origin is not None)
+                and not (isinstance(self.boss, OrochiBoss) and self.boss.skill in ('split', 'storm', 'laser'))
                 and any(self._hit_player(br) for br in self.boss.hitboxes())
                 and not self._player_is_invincible(now)):
             if self.infinite_mode:
@@ -1708,7 +1793,7 @@ class Game:
         return min(14, 4 + self.infinite_boss_index // 2) if self.infinite_mode else 1
 
     def _infinite_health_mult(self, now):
-        return 1.0 + 0.2 * min(self.infinite_boss_index // len(BOSS_DEFS), 6)
+        return 1.0 + 0.2 * min(self.infinite_boss_index // len(config.INFINITE_BOSS_HP), 6)
 
     def _infinite_damage_mult(self):
         return 1.0
@@ -1841,6 +1926,9 @@ class Game:
         elif b.character == 'ice':
             duration, multiplier = (4000, 0.7) if self.infinite_mode else (2500, 0.75)
             e.apply_slow(now, duration, multiplier)
+            e.snowflake_until = now + 900
+        elif b.character == 'water':
+            e.water_mark_until = now + 900
         elif b.character == 'radiation':
             e.infected = True
             e.infected_weapon = b.weapon_name
@@ -1873,6 +1961,9 @@ class Game:
         return math.ceil(price)
 
     def _update_playing(self, now):
+        if self.desktop_controls:
+            # Refresh held keys during catch-up updates without draining queued events.
+            pygame.event.pump()
         keys = pygame.key.get_pressed()
         self._move_player_from_controls(self.player, keys, now)
         self._expire_water_temp_hp(now)
@@ -1894,7 +1985,10 @@ class Game:
             b.update()
             if b.is_offscreen(): self.bullets.remove(b)
         for e in self.enemies[:]:
-            e.update()
+            if e.chase_color is None:
+                e.update()
+            else:
+                e.update(self._nearest_player(e.x, e.y))
             self._block_enemy_with_fire_walls(e, fire_wall_rects)
             if self._enemy_can_attack(e, now):
                 self.enemy_projectiles.extend(e.attack(now, self._nearest_player(e.x, e.y).x))
@@ -1928,7 +2022,7 @@ class Game:
             if self._handle_bullet_gift_hit(b, now):
                 continue
             for e in self.enemies[:]:
-                if (br.right < e.x - e.w // 2 or br.left > e.x + e.w // 2 or
+                if (e.y + e.h <= 0 or br.right < e.x - e.w // 2 or br.left > e.x + e.w // 2 or
                         br.bottom < e.y or br.top > e.y + e.h):
                     continue
                 if id(e) not in b.hit_targets and br.colliderect(e.rect()):
@@ -1960,7 +2054,7 @@ class Game:
                 self._remove_skill_projectile(sp, now); continue
             sr = sp.rect()
             for e in self.enemies[:]:
-                if (sr.right < e.x - e.w // 2 or sr.left > e.x + e.w // 2 or
+                if (e.y + e.h <= 0 or sr.right < e.x - e.w // 2 or sr.left > e.x + e.w // 2 or
                         sr.bottom < e.y or sr.top > e.y + e.h):
                     continue
                 if sr.colliderect(e.rect()):
@@ -2061,40 +2155,36 @@ class Game:
 
     def _update_special_boss_hazards(self, now):
         boss = self.boss
+        if isinstance(boss, OrochiBoss):
+            self.boss_projectiles.extend(boss.shots)
+            boss.shots.clear()
+            for x, y in boss.impacts:
+                self.explosions.append(Explosion(x, y, (250, 170, 84), 30))
+                self.particles.append(Particle(x, y, (215, 172, 109), 24))
+            if boss.impacts:
+                play_sound('hit')
+                boss.impacts.clear()
+            if boss.skill in ('slam', 'split', 'laser'):
+                age = boss.age(now)
+                hit = age // (boss.SLAM_ROUND if boss.skill == 'slam' else 1000)
+                if (boss.hazard_hit != hit and not self._player_is_invincible(now)
+                        and any(boss.hazard_hits(player.rect(), age) for player in self.players)):
+                    boss.hazard_hit = hit
+                    return self._damage_player(now, 2, f'被{boss.name}击败！')
+            return False
         if not isinstance(boss, NiuBoss):
             return False
-        if boss.vortex_warning_until <= now < boss.vortex_until:
-            for player in self.players:
-                dx, dy = boss.vortex_x - player.x, boss.vortex_y - player.y
-                distance = math.hypot(dx, dy)
-                if 1 < distance < 260:
-                    pull = 0.9 + (1 - distance / 260) * 1.2
-                    player.move(dx / distance * pull, dy / distance * pull)
-        if now < boss.vortex_until and now >= boss.vortex_next_tick:
-            boss.vortex_next_tick = now + 650
-            self.explosions.append(Explosion(boss.vortex_x + random.randint(-70, 70),
-                                             boss.vortex_y + random.randint(-70, 70), (255, 105, 30), 14))
-            for player in self.players:
-                if (not boss.vortex_hit and not self._player_is_invincible(now)
-                        and math.hypot(player.x - boss.vortex_x, player.y - boss.vortex_y) <= 155):
-                    boss.vortex_hit = not self.infinite_mode
-                    if self._damage_player(now, 1, '被牛魔王的漩涡击败！'):
-                        return True
-                    break
-            for e in self.enemies[:] if self.infinite_mode else ():
-                if math.hypot(e.x - boss.vortex_x, e.y + e.h // 2 - boss.vortex_y) > 155:
-                    continue
-                e.hit_by('pistol', 1.0)
-                boss.hp = min(boss.max_hp, boss.hp + boss.max_hp * 0.012)
-                self.explosions.append(Explosion(e.x, e.y + e.h // 2, (255, 100, 35), 9))
-                if e.is_killed('pistol'):
-                    self.enemies.remove(e)
-                    self.explosions.append(Explosion(e.x, e.y + e.h // 2, (255, 145, 45), 18))
+        slam = boss.axe_slam_rect(now)
+        strike = (now - boss.axe_slam_start) // boss.AXE_SLAM_CYCLE_MS if slam is not None else -1
+        if slam is not None and strike != boss.axe_slam_hit and self._hit_player(slam) and not self._player_is_invincible(now):
+            boss.axe_slam_hit = strike
+            if self._damage_player(now, 1, '被牛魔王的巨斧击败！'):
+                return True
         if now >= boss.lightning_warning_until and now >= boss.lightning_next_tick and boss.lightning_rects(now):
             boss.lightning_next_tick = now + 650
             if any(self._hit_player(rect) for rect in boss.lightning_rects(now)):
                 if self._damage_player(now, min(2, boss.bdef.get('damage_cap', 2)),
-                                       '被牛魔王的激光闪电击败！'):
+                                       '被牛魔王的雷电击败！'):
                     return True
         return False
 
@@ -2136,11 +2226,7 @@ class Game:
         return max(minimum, math.ceil(min(distances) / speed * 1000) + freeze_ms + reaction_ms)
 
     def _extend_ground_warning(self, boss, now):
-        if boss.vortex_warning_until > now:
-            zone = pygame.Rect(round(boss.vortex_x - 155), round(boss.vortex_y - 155), 310, 310)
-            fields = ('vortex_warning_until', 'vortex_until', 'vortex_next_tick')
-            zones = [zone]
-        elif boss.lightning_warning_until > now:
+        if boss.lightning_warning_until > now:
             fields = ('lightning_warning_until', 'lightning_until', 'lightning_next_tick')
             zones = list(boss.lightning_rects(now))
         else:
@@ -2179,6 +2265,9 @@ class Game:
         if warning is None:
             return
         self.warned_boss_shots = shots
+        for shot in shots:
+            if shot.big_fireball:
+                shot.launch_offset = (shot.x - self.boss.x, shot.y - self.boss.y)
         self.warned_boss_shots_at = now + warning
         if self.boss.can_laser():
             self.boss.next_death_laser_time = max(self.boss.next_death_laser_time,
@@ -2187,18 +2276,18 @@ class Game:
     def _try_boss_signature(self, now, *, opening=False):
         boss = self.boss
         key = boss.bdef.get('key')
-        if key not in SIGNATURES:
+        if key not in SIGNATURES or boss.signature is not None:
             return False
-        if not opening:
-            boss.signature_attacks += 1
-            if boss.signature_attacks < 4:
-                return False
-        warning = 1050 if self.infinite_mode else (1200, 1000, 850)[self._campaign_tier()]
-        boss.signature = BossSignature(boss, self.player, now, warning)
-        boss.signature_attacks = 0
+        if (key == 'boss'
+                and (boss.laser_warning_start or now < boss.laser_active_until)):
+            return False
+        if not opening and now < boss.next_signature_time:
+            return False
+        boss.signature = BossSignature(boss, self.player, now, 0, campaign=True)
+        if key != 'boss':
+            boss.next_signature_time = now + 10000
+        boss.animation_attack_at = now
         boss.signature_opening_pending = False
-        boss.last_attack_time = boss.signature.end_at
-        boss.next_death_laser_time = max(boss.next_death_laser_time, boss.signature.end_at + 500)
         return True
 
     def _update_boss_signature(self, now):
@@ -2206,16 +2295,60 @@ class Game:
         signature = boss.signature
         if signature is None or now < signature.impact_at:
             return False
+        if signature.key == 'boss_crab' and now >= signature.impact_at + CRAB_BUBBLE_BURST_MS:
+            for index in range(2):
+                self._release_crab_bubble(index, now)
         if now >= signature.end_at:
             signature.stop(boss)
             boss.signature = None
+            if signature.key == 'boss':
+                boss.next_signature_time = now + 10000
             return False
-        signature.move(boss, now)
+        if signature.key == 'boss_dragon' and now >= signature.next_fireball_at:
+            signature.next_fireball_at = now + 400
+            boss.animation_attack_at = now - 300
+            self._add_boss_projectiles([
+                DragonFireball(boss.x, boss.y + boss.h * .65, signature.damage)
+            ])
+        signature.move(boss, now, self.player)
         if not self._player_is_invincible(now) and signature.hit(boss, self.player.rect(), now):
             play_sound('hit')
             damage = (self.player_hp if signature.key == 'boss' else
                       min(signature.damage, boss.bdef.get('damage_cap', 2)))
             return self._damage_player(now, damage, f'被{signature.name}击败！')
+        return False
+
+    def _release_crab_bubble(self, index, now):
+        signature = self.boss.signature
+        if signature.bubble_released[index]:
+            return
+        signature.bubble_released[index] = True
+        x, y, _ = signature._bubbles(now - signature.impact_at)[index]
+        self._spawn_hit_effect(x, y, CRAB_BUBBLE_COLORS[index], False)
+        definition = next(edef for edef in ENEMY_DEFS if edef['key'] == 'crab')
+        crab = Enemy(definition)
+        crab.chase_color = CRAB_BUBBLE_COLORS[index]
+        crab.chase_side = (-1, 1)[index]
+        crab.max_hp = self.boss.max_hp * (.15, .20, .25)[self._campaign_tier()]
+        crab.speed = 1.9
+        crab.x = x
+        crab.y = max(Enemy.ENTRY_DAMAGE_Y, y - crab.h / 2)
+        crab.last_contact_damage_time = now - CONTACT_DAMAGE_COOLDOWN + 450
+        partner = signature.bubble_crabs[1 - index]
+        if partner in self.enemies:
+            crab.chase_partner = partner
+            partner.chase_partner = crab
+        signature.bubble_crabs[index] = crab
+        self.enemies.append(crab)
+
+    def _hit_crab_bubble(self, rect, now):
+        signature = self.boss.signature if self.boss else None
+        if not signature or signature.key != 'boss_crab' or not signature.impact_at <= now < signature.impact_at + CRAB_BUBBLE_BURST_MS:
+            return False
+        for index, (x, y, radius) in enumerate(signature._bubbles(now - signature.impact_at)):
+            if not signature.bubble_released[index] and circle_hits_rect(rect, x, y, radius):
+                self._release_crab_bubble(index, now)
+                return True
         return False
 
     def _add_boss_projectiles(self, projectiles):
@@ -2237,21 +2370,34 @@ class Game:
         if not self.boss: return
         if self._settle_boss_if_killed():
             return
+        if isinstance(self.boss, OrochiBoss) and self.boss.death_at is not None:
+            self.boss_projectiles.clear()
+            return
+        if self.desktop_controls:
+            pygame.event.pump()
         keys = pygame.key.get_pressed()
         self._move_player_from_controls(self.player, keys, now)
         self._expire_water_temp_hp(now)
         signature = self.boss.signature
         if not (signature and signature.key == 'boss' and now >= signature.impact_at):
-            self.boss.update()
+            if isinstance(self.boss, (ZongBoss, OrochiBoss)):
+                target = self._nearest_player(self.boss.x, self.boss.y)
+                self.boss.update(target.x, target.y)
+            else:
+                self.boss.update()
         if not self.infinite_mode and now and getattr(self.boss, 'laser_warning_start', 0) == now:
-            warning = self._hazard_warning_ms(list(self.boss.death_laser_zones()), now)
+            zones = self.boss.death_laser_zones()
+            if isinstance(self.boss, NiuBoss):
+                zones = [zone.inflate(80, 0) for zone in zones]
+            warning = self._hazard_warning_ms(list(zones), now)
             if warning is None:
                 self.boss.laser_warning_start = 0
-            else:
-                self.boss.laser_warning_ms = warning
         if isinstance(self.boss, ZongBoss) and now < self.boss.snow_until:
             for player in self.players:
                 player.snow_slow_until = max(player.snow_slow_until, self.boss.snow_until)
+        if isinstance(self.boss, ZongBoss) and self.boss.crescent_projectiles:
+            self._add_boss_projectiles(self.boss.crescent_projectiles[:])
+            self.boss.crescent_projectiles.clear()
         if isinstance(self.boss, ZongBoss) and self.boss.pending_projectiles:
             if not self.warned_boss_shots or self.infinite_mode:
                 self._queue_boss_shots(self.boss.pending_projectiles[:], now)
@@ -2261,7 +2407,9 @@ class Game:
         death_lasers = self.boss.death_laser_rects(now)
         single_hit_laser = not self.infinite_mode or 'laser_offsets' in self.boss.bdef
         if (not single_hit_laser or self.boss.last_laser_hit_until != self.boss.laser_active_until):
-            if any(self._hit_player(rect) for rect in death_lasers) and not self._player_is_invincible(now):
+            laser_hit = (any(self.boss.laser_hits(player.rect(), now) for player in self.players)
+                         if isinstance(self.boss, NiuBoss) else any(self._hit_player(rect) for rect in death_lasers))
+            if laser_hit and not self._player_is_invincible(now):
                 self.boss.last_laser_hit_until = self.boss.laser_active_until
                 if self._damage_player(now, 1, f'被{self.boss.name}毁灭激光击败！'): return
         boss_spawn_interval = 1600 if self.infinite_mode else self._campaign_value(config.CAMPAIGN_REINFORCEMENT_MS)
@@ -2277,7 +2425,10 @@ class Game:
         self._maybe_spawn_gift(now)
         fire_wall_rects = [fw.rect() for fw in self.fire_walls]
         for e in self.enemies[:]:
-            e.update()
+            if e.chase_color is None:
+                e.update()
+            else:
+                e.update(self._nearest_player(e.x, e.y))
             self._block_enemy_with_fire_walls(e, fire_wall_rects)
             if self._enemy_can_attack(e, now):
                 self.enemy_projectiles.extend(e.attack(now, self._nearest_player(e.x, e.y).x))
@@ -2309,29 +2460,41 @@ class Game:
             elif self._hit_player(ep.rect()):
                 self.enemy_projectiles.remove(ep)
                 if self._damage_player(now, 1, '被怪物子弹击败！'): return
+        if self.boss.entered and now - self.boss.fight_start_time >= 5000:
+            self._try_boss_signature(now, opening=self.boss.signature_opening_pending)
         if self.warned_boss_shots:
             if now >= self.warned_boss_shots_at:
                 for shot in self.warned_boss_shots:
                     shot.spawn_time = now
+                    if shot.big_fireball:
+                        shot.x = shot.prev_x = self.boss.x + shot.launch_offset[0]
+                        shot.y = shot.prev_y = self.boss.y + shot.launch_offset[1]
                 self._add_boss_projectiles(self.warned_boss_shots)
                 self.warned_boss_shots.clear()
                 self.boss.last_attack_time = now
                 self.boss.animation_attack_at = now
-        elif self.boss.entered and self.boss.signature_opening_pending:
+        elif (isinstance(self.boss, NiuBoss) and self.boss.entered
+              and self.boss.opening_skill_pending and now - self.boss.fight_start_time >= 5000):
+            self.boss.opening_skill_pending = False
             self.boss.animation_attack_at = now
-            self._try_boss_signature(now, opening=True)
-        elif self.boss.should_attack(now):
+            shots = self.boss.attack(now, self._nearest_player(self.boss.x, self.boss.y).x, opening=True)
+            self._add_boss_projectiles(shots)
+        elif now - self.boss.fight_start_time >= 5000 and self.boss.should_attack(now):
             self.boss.animation_attack_at = now
-            if not self._try_boss_signature(now):
-                shots = self.boss.attack(now, self._nearest_player(self.boss.x, self.boss.y).x)
-                if not self.infinite_mode and isinstance(self.boss, NiuBoss):
-                    self._extend_ground_warning(self.boss, now)
-                self._queue_boss_shots(shots, now)
+            target = self._nearest_player(self.boss.x, self.boss.y)
+            if isinstance(self.boss, ZongBoss):
+                shots = self.boss.attack(now, target.x, target.y)
+            else:
+                shots = self.boss.attack(now, target.x)
+            if not self.infinite_mode and isinstance(self.boss, NiuBoss):
+                self._extend_ground_warning(self.boss, now)
+            self._queue_boss_shots(shots, now)
         self._pull_projectiles_to_storms(self.boss_projectiles)
         for bp in self.boss_projectiles[:]:
             target = self._nearest_player(bp.x, bp.y)
             was_armed = getattr(bp, 'detonate_at', 0)
-            bp.update(target_x=target.x, target_y=target.y)
+            target_x, target_y = target.rect().center if isinstance(bp, ZongBomb) else (target.x, target.y)
+            bp.update(target_x=target_x, target_y=target_y)
             if not self.infinite_mode and not was_armed and getattr(bp, 'detonate_at', 0):
                 zones = []
                 for armed in self.boss_projectiles:
@@ -2349,7 +2512,8 @@ class Game:
                 if self._explode_enemy_bomb(bp, now): return
             if not bp.alive:
                 self.boss_projectiles.remove(bp)
-                if getattr(bp, 'bomb', False) and self._explode_enemy_bomb(bp, now): return
+                if (getattr(bp, 'bomb', False) and (not isinstance(bp, ZongBomb) or bp.proximity_detonated)
+                        and self._explode_enemy_bomb(bp, now)): return
             elif not getattr(bp, 'unblockable', False) and self._blocked_by_fire_wall(bp.block_rect(), fire_wall_rects):
                 self.boss_projectiles.remove(bp)
             elif not getattr(bp, 'unblockable', False) and self._blocked_by_ice_floor(bp):
@@ -2360,15 +2524,14 @@ class Game:
             elif getattr(bp, 'bomb', False) and self._hit_player(bp.rect()):
                 self.boss_projectiles.remove(bp)
                 if self._explode_enemy_bomb(bp, now): return
-            elif self._hit_player(bp.rect()):
+            elif (hit_player := self._hit_player(bp.rect())):
                 if not hasattr(bp, 'impact_pending'):
                     self.boss_projectiles.remove(bp)
-                if now - getattr(bp, 'last_player_hit', -9999) >= 800:
+                if (not self._player_is_invincible(now)
+                        and now - getattr(bp, 'last_player_hit', -9999) >= 800):
                     bp.last_player_hit = now
                     if isinstance(bp, ReturningAxe) and not bp.red:
-                        hit_player = self._hit_player(bp.rect())
-                        if hit_player:
-                            self._apply_niu_ice_axe_effect(bp, hit_player, now)
+                        self._apply_niu_ice_axe_effect(bp, hit_player, now)
                     if self._damage_player(now, bp.damage, f'被{self.boss.name}击败！'): return
         if (self._mobile_fire_active() or self._key_pressed(keys, 'p1_shoot')) and self.player.can_shoot(now):
             self._shoot(now, self.player)
@@ -2379,9 +2542,13 @@ class Game:
                 if self._handle_bullet_gift_hit(b, now):
                     continue
                 br = b.rect()
+                if self._hit_crab_bubble(br, now):
+                    self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), False, element=b.gift_kind or b.character)
+                    self.bullets.remove(b)
+                    continue
                 hit_enemy = False
                 for e in self.enemies[:]:
-                    if (br.right < e.x - e.w // 2 or br.left > e.x + e.w // 2 or
+                    if (e.y + e.h <= 0 or br.right < e.x - e.w // 2 or br.left > e.x + e.w // 2 or
                             br.bottom < e.y or br.top > e.y + e.h):
                         continue
                     if id(e) not in b.hit_targets and br.colliderect(e.rect()):
@@ -2409,11 +2576,12 @@ class Game:
                         self._add_boss_projectiles([ZongReflectBullet(b.x, b.y)])
                     previous_hp = self.boss.hp
                     self.boss.hit_by(b.weapon_name, damage, source='bullet', hit_rect=br)
-                    if self.boss.hp < previous_hp and (b.character == 'ice' or getattr(b, 'gift_kind', None) == 'ice'):
-                        self.boss.apply_slow(now, 4000, 0.7)
                     self.bullets.remove(b)
-                    play_sound('hit')
-                    self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), True, element=b.gift_kind or b.character)
+                    if self.boss.hp < previous_hp:
+                        if b.character == 'ice' or getattr(b, 'gift_kind', None) == 'ice':
+                            self.boss.apply_slow(now, 4000, 0.7)
+                        play_sound('hit')
+                        self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), True, element=b.gift_kind or b.character)
                     if self._settle_boss_if_killed():
                         return
         for sp in self.skill_projectiles[:]:
@@ -2427,7 +2595,7 @@ class Game:
                 self._remove_skill_projectile(sp, now); continue
             sr = sp.rect()
             for e in self.enemies[:]:
-                if (sr.right < e.x - e.w // 2 or sr.left > e.x + e.w // 2 or
+                if (e.y + e.h <= 0 or sr.right < e.x - e.w // 2 or sr.left > e.x + e.w // 2 or
                         sr.bottom < e.y or sr.top > e.y + e.h):
                     continue
                 if sr.colliderect(e.rect()):
@@ -2579,16 +2747,18 @@ class Game:
 
     def _advance_infinite_background(self, now):
         self.bg_transition_prev = self.bg.copy()
-        self.infinite_background_level = self.infinite_background_level % len(LEVEL_CONFIGS) + 1
+        self.infinite_background_level = self.infinite_background_level % len(config.INFINITE_BOSS_HP) + 1
         self.bg = self._load_bg()
-        self.bg_transition_until = now + INFINITE_BG_FADE_MS
+        self.bg_transition_until = now + BG_FADE_MS
 
     def _kill_boss(self):
         if not self.boss:
             return
         self.chapter += 1
-        b = self.boss; self.particles.append(Particle(b.x, b.y+b.h//2, (255, 200, 50), 30))
-        self.explosions.append(Explosion(b.x, b.y+b.h//2, (255, 130, 70), 28))
+        b = self.boss
+        if not isinstance(b, OrochiBoss):
+            self.particles.append(Particle(b.x, b.y+b.h//2, (255, 200, 50), 30))
+            self.explosions.append(Explosion(b.x, b.y+b.h//2, (255, 130, 70), 28))
         self.boss_projectiles.clear()
         if self.infinite_mode:
             self.score += 100
@@ -2716,7 +2886,7 @@ class Game:
         self.enemies.append(enemy)
 
     def _enemy_can_attack(self, enemy, now):
-        if not enemy.should_attack(now):
+        if enemy.chase_color is not None or not enemy.should_attack(now):
             return False
         if self.infinite_mode:
             return True
@@ -2763,6 +2933,9 @@ class Game:
 
     def _kill_enemy(self, e):
         if e not in self.enemies: return
+        if e.chase_partner:
+            e.chase_partner.chase_partner = None
+            e.chase_partner = None
         self.enemies.remove(e); self.kill_count += 1; self.level_kills += 1
         if any(player.character == 'water' for player in self.players):
             self.water_passive_kills += 1
@@ -2777,12 +2950,15 @@ class Game:
         cx, cy = e.x, e.y+e.h//2
         if not self.infinite_mode:
             for _ in range(e.gold_value): self.coins.append(Coin(cx+random.randint(-10,10), cy+random.randint(-5,5), 1))
-        self.explosions.append(Explosion(cx, cy, (255, 185, 70), 28 if e.is_large else 18))
-        self.particles.append(Particle(e.x, e.y+e.h//2, (255,200,50) if e.is_large else (255,255,100), 22 if e.is_large else 14))
-        # 副爆层：白闪核心 + 橙红飞散 + 残余火光，让死亡更有冲击力
-        self.explosions.append(Explosion(cx, cy, (255, 245, 170), 14 if e.is_large else 9))
-        self.particles.append(Particle(cx, cy, (255, 90, 40) if e.is_large else (255, 130, 50), 12 if e.is_large else 8))
-        self.particles.append(Particle(cx + random.randint(-6, 6), cy + random.randint(-6, 6), (255, 255, 255), 7 if e.is_large else 4))
+        if e.frozen:
+            self.explosions.append(Explosion(cx, cy, (137, 220, 255), 28 if e.is_large else 18, element='ice'))
+        else:
+            self.explosions.append(Explosion(cx, cy, (255, 185, 70), 28 if e.is_large else 18))
+            self.particles.append(Particle(e.x, e.y+e.h//2, (255,200,50) if e.is_large else (255,255,100), 22 if e.is_large else 14))
+            # 副爆层：白闪核心 + 橙红飞散 + 残余火光，让死亡更有冲击力
+            self.explosions.append(Explosion(cx, cy, (255, 245, 170), 14 if e.is_large else 9))
+            self.particles.append(Particle(cx, cy, (255, 90, 40) if e.is_large else (255, 130, 50), 12 if e.is_large else 8))
+            self.particles.append(Particle(cx + random.randint(-6, 6), cy + random.randint(-6, 6), (255, 255, 255), 7 if e.is_large else 4))
         if self._is_zongzong(e):
             for color, count in (
                 ((255, 90, 35), 48),
@@ -2890,7 +3066,8 @@ class Game:
         if self.bg_transition_prev:
             now = config.game_ticks()
             if now < self.bg_transition_until:
-                alpha = int(255 * (self.bg_transition_until - now) / INFINITE_BG_FADE_MS)
+                remaining = (self.bg_transition_until - now) / BG_FADE_MS
+                alpha = round(255 * remaining * remaining * (3 - 2 * remaining))
                 prev = self.bg_transition_prev
                 prev.set_alpha(alpha)
                 config.SCR.blit(prev, (0, 0))
@@ -3154,6 +3331,9 @@ class Game:
         active = self.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
         if not active:
             self._ui_labels = None  # Keep all labels behind the modal, like the scene itself.
+        if isinstance(self.boss, OrochiBoss) and self.boss.skill == 'storm':
+            now = config.game_ticks()
+            self.boss.draw_storm_lightning(config.SCR, now)
         draw_water_drift(config.SCR, config.game_ticks())
         if self.boss and self.boss.signature:
             self.boss.signature.draw(config.SCR, self.boss, config.game_ticks())
@@ -3190,6 +3370,11 @@ class Game:
         self._draw_laser_impacts()
         for lt in self.lightnings:
             if not lt.is_expired(): lt.draw(config.SCR)
+        for bp in self.boss_projectiles:
+            previous = getattr(bp, 'lightning_previous', None)
+            if previous in self.boss_projectiles:
+                draw_electric_arc(config.SCR, (previous.x, previous.y), (bp.x, bp.y),
+                                  (255, 190, 75), 230, now, bp.angle)
         for bp in self.boss_projectiles: bp.draw(config.SCR)
         if self.boss:
             signature = self.boss.signature
@@ -3198,6 +3383,8 @@ class Game:
             if not self.infinite_mode:
                 now = config.game_ticks()
                 for shot in self.warned_boss_shots:
+                    if shot.big_fireball:
+                        continue
                     if isinstance(shot, ReturningAxe):
                         center = (int(shot.target_x), config.GAME_AREA_BOTTOM - 20)
                         _circle(config.SCR, (255, 112, 53, 44), center, shot.explode_radius)
@@ -3212,9 +3399,6 @@ class Game:
                     distance = max(0, config.SCREEN_HEIGHT - shot.y)
                     Draw.line(config.SCR, (255, 150, 65), (int(shot.x), int(shot.y)),
                                      (int(shot.x + math.tan(angle) * distance), config.SCREEN_HEIGHT), 3)
-                if isinstance(self.boss, NiuBoss) and now < self.boss.vortex_warning_until:
-                    Draw.circle(config.SCR, (255, 165, 70),
-                                       (int(self.boss.vortex_x), int(self.boss.vortex_y)), 155, 3)
                 if isinstance(self.boss, ZongBoss):
                     message = None
                     if self.boss.fusion_warning_mode:
@@ -3280,6 +3464,15 @@ class Game:
             label = f'{boss.signature.name} · {countdown / 1000:.1f}s' if countdown else boss.signature.name
             self._draw_text_fit(label, self.font_tiny, (255, 229, 181),
                                 pygame.Rect(x, y + 40, width, 18), align='center')
+        elif isinstance(boss, OrochiBoss) and (boss.skill == 'storm' or now < boss.invincible_until):
+            if boss.skill == 'storm':
+                heads = sum(hp > 0 for hp in boss.head_hp)
+                seconds = max(0, boss.STORM_DURATION - boss.age(now)) / 1000
+                label = f'击碎蛇头 · {heads} · {seconds:.1f}s'
+            else:
+                label = f'再生护盾 · {(boss.invincible_until - now) / 1000:.1f}s'
+            self._draw_text_fit(label, self.font_tiny, (180, 215, 255),
+                                pygame.Rect(x, y + 40, width, 18), align='center')
         elif remaining > 0:
             self._draw_text_fit(f'危险 · {remaining / 1000:.1f}s', self.font_tiny, (255, 205, 139),
                                 pygame.Rect(x, y + 40, width, 18), align='center')
@@ -3331,7 +3524,7 @@ class Game:
         config.SCR.blit(surf2, (tx, ty))
 
     def _draw_gift_lightning_icon(self):
-        """闪电礼包激活期间（3 次闪电打完为止），在屏幕正中心显示脉动闪电图标。"""
+        """闪电礼包激活期间在屏幕正中心显示脉动反应堆。"""
         now = config.game_ticks()
         if now >= self.gift_lightning_icon_until:
             return
@@ -3340,16 +3533,19 @@ class Game:
         # 光晕
         _circle(config.SCR, (255, 220, 90, 40), (cx, cy), int(46 * s), 3)
         _circle(config.SCR, (255, 235, 160, 30), (cx, cy), int(56 * s), 1)
-        # 底板（半透明深色圆盘）
-        _circle(config.SCR, (20, 30, 55, 130), (cx, cy), int(34 * s))
-        _circle(config.SCR, (255, 210, 80, 110), (cx, cy), int(34 * s), 2)
-        # 金色闪电
-        pts = [
-            (cx + 7 * s, cy - 20 * s), (cx - 5 * s, cy + 1 * s), (cx - 1 * s, cy + 1 * s),
-            (cx - 7 * s, cy + 13 * s), (cx + 6 * s, cy - 7 * s), (cx + 2 * s, cy - 7 * s),
-        ]
-        _polygon(config.SCR, (255, 215, 60), pts)
-        _polygon(config.SCR, (255, 248, 180), pts, 1)
+        width, height = round(96 * s), round(64 * s)
+        size = (width, height)
+        position = (cx - width // 2, cy - height // 2)
+        reactor = image_asset('effects/lightning_reactor.png')
+        if reactor is not None:
+            if isinstance(config.SCR, RenderSurface):
+                config.SCR.blit(reactor, position, logical_size=size, static=True)
+            else:
+                config.SCR.blit(scale_surface_cached(reactor, size), position)
+        else:
+            _circle(config.SCR, (113, 30, 24), (cx, cy), round(29 * s))
+            _circle(config.SCR, (255, 163, 48), (cx, cy), round(24 * s), 4)
+            _circle(config.SCR, (255, 227, 115), (cx, cy), round(12 * s))
         # 环绕星点
         for i in range(6):
             a = now * 0.008 + i * math.tau / 6
@@ -3515,8 +3711,8 @@ class Game:
 
     def _draw_player_label(self, player, label):
         bounds = player.rect()
-        badge = pygame.Rect(0, bounds.bottom + 2, 28, 16)
-        badge.centerx = bounds.centerx
+        badge = pygame.Rect(0, 0, 28, 16)
+        badge.bottomright = (bounds.left - 4, bounds.bottom + 8)
         badge.clamp_ip(pygame.Rect(0, 0, config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
         _rect(config.SCR, (5, 18, 34, 185), badge, border_radius=5)
         color = (255, 230, 160) if label == 'P1' else (170, 230, 255)
@@ -3560,23 +3756,22 @@ class Game:
     def hud_diagnostics_y(self):
         return 119 if self.infinite_mode else 97
 
-    def _draw_gift_hud(self, now):
+    def _draw_gift_hud(self, now, right, y):
         effects = (
             ('火弹', self.gift_fire_until, (255, 153, 92)),
             ('冰弹', self.gift_ice_until, (122, 198, 255)),
             ('极速', max(p.gift_speed_until for p in self.players), (134, 244, 181)),
             ('闪电', self.gift_lightning_icon_until, (255, 219, 116)),
         )
-        x = config.SCREEN_WIDTH - (232 if config.MOBILE_LANDSCAPE_VIEW else 104)
-        y = 80
-        for name, end, color in effects:
+        for name, end, color in reversed(effects):
             if end <= now:
                 continue
-            self._draw_panel(x, y, 96, 22, accent=color, fill=(6, 23, 37), r=6, alpha=219)
+            x = right - 70
+            self._draw_panel(x, y, 70, 18, accent=color, fill=(6, 23, 37), r=6, alpha=219)
             seconds = (end - now + 999) // 1000
             self._draw_text_fit(f'{name} {seconds}s', self.font_tiny, color,
-                                pygame.Rect(x + 6, y + 1, 84, 20), align='center')
-            y += 25
+                                pygame.Rect(x + 4, y + 1, 62, 16), align='center')
+            right = x - 4
 
     def _draw_hud(self):
         now = config.game_ticks()
@@ -3599,7 +3794,6 @@ class Game:
             minutes, seconds = divmod((now - self.infinite_start_time) // 1000, 60)
             self._draw_text_fit(f'用时 {minutes:02d}:{seconds:02d}', self.font_tiny,
                                 (180, 220, 232), pygame.Rect(17, 88, 90, 21))
-        self._draw_gift_hud(now)
         left, health, right = self._hud_controls()
         labels = self._ui_labels
         # Keep the bottom controls and their text behind the player on every frame.
@@ -3692,9 +3886,7 @@ class Game:
     def _draw_level_transition(self):
         # 暗色叠加
         ov = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
-        for y_off in range(config.SCREEN_HEIGHT):
-            a = int(120 + 40 * (1 - y_off / config.SCREEN_HEIGHT))
-            _rect(ov, (0, 5, 20, a), (0, y_off, config.SCREEN_WIDTH, 1))
+        ov.fill((0, 5, 20, 140))
         config.SCR.blit(ov, (0, 0))
         # 中心面板
         pw, ph = 360, 120
@@ -3724,6 +3916,11 @@ class Game:
         self._draw_button('复活' if paid else '继续游戏', *left, key=pygame.K_y if paid else pygame.K_RETURN)
         self._draw_button('结束游戏' if paid else '退出本局', *right, (180, 60, 60), key=pygame.K_n)
 
+    def _game_over_choice_rects(self):
+        x = config.SCREEN_WIDTH // 2
+        y = config.SCREEN_HEIGHT // 2 + 70
+        return pygame.Rect(x - 150, y, 142, 42), pygame.Rect(x + 8, y, 142, 42)
+
     def _draw_game_over(self):
         # 暗色渐变叠加
         ov = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -3743,7 +3940,9 @@ class Game:
         self._draw_text_fit(f'击杀数: {self.kill_count}', self.font_med, WHITE, pygame.Rect(px+80, py+152, pw-160, 30), align='center')
         self._draw_text_fit(f'金币: {self.player.gold}', self.font_med, GOLD_COLOR, pygame.Rect(px+80, py+192, pw-160, 30), align='center')
         # 重新开始按钮
-        self._draw_button('重新开始', config.SCREEN_WIDTH//2 - 80, py + ph - 40, 160, 44, (200, 60, 60), key=pygame.K_RETURN)
+        retry, home = self._game_over_choice_rects()
+        self._draw_button('重玩本关', *retry, (45, 150, 70), key=pygame.K_RETURN)
+        self._draw_button('返回首页', *home, (180, 60, 60), key=pygame.K_n)
 
     def _draw_infinite_continue(self):
         ov = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -3904,12 +4103,13 @@ class Game:
         config.SCR.blit(shadow, rect.move(3, 4))
         config.SCR.blit(img, rect)
 
-    def _draw_scrim(self, alpha):
+    def _draw_scrim(self, alpha, color=(2, 16, 25)):
         size = config.SCR.get_size()
-        if getattr(self, '_scrim_size', None) != size:
-            self._scrim_size = size
+        key = size, color
+        if getattr(self, '_scrim_key', None) != key:
+            self._scrim_key = key
             self._scrim = pygame.Surface(size).convert()
-            self._scrim.fill((2, 16, 25))
+            self._scrim.fill(color)
         self._scrim.set_alpha(alpha)
         config.SCR.blit(self._scrim, (0, 0))
 

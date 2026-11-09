@@ -1,6 +1,5 @@
 """Animated Web-only Boss attacks, with collision geometry shared by their art."""
 import math
-import random
 from functools import lru_cache
 
 import pygame
@@ -11,31 +10,48 @@ from .render import Draw, RenderSurface
 from .sprites import blit_lit_sprite
 
 
+CLAW_DROP_MS = 990
+CLAW_DELAY_MS = 240
+
 SIGNATURES = {
-    'boss_lobster': ('赤钳合击', (255, 105, 78), 1, 1040),
+    'boss_lobster': ('赤钳合击', (255, 105, 78), 1, CLAW_DROP_MS + CLAW_DELAY_MS + 50),
     'boss_crab': ('潮汐横扫', (92, 221, 255), 1, 1260),
     'boss_octopus': ('墨涌陷阱', (192, 110, 255), 1, 2040),
-    'boss_shark': ('猎潮突进', (87, 202, 255), 2, 880),
+    'boss_shark': ('猎潮突进', (87, 202, 255), 2, 1320),
     'boss_dragon': ('火龙突击', (255, 137, 61), 1, 4000),
     'boss': ('深渊封潮', (236, 115, 255), 2, 2120),
 }
 BOSS_COLORS = {key: values[1] for key, values in SIGNATURES.items()}
 BOSS_COLORS.update(boss_niu=(255, 117, 50), boss_zongzong=(116, 237, 255))
 TRIDENT_IMAGES = ('effects/boss_trident_gold.png', 'effects/boss_trident_red.png')
-SKILL_IMAGES = ('effects/boss_bite.png', 'effects/boss_claw.png', 'effects/boss_ground_fire.png', *TRIDENT_IMAGES)
+TRIDENT_INTERVAL_MS = 220
+SKILL_IMAGES = ('effects/boss_bite.png', 'effects/boss_claw.png', *TRIDENT_IMAGES)
 
 LASH_MS = 680
 CHASE_MS = 1520
-BUBBLE_BLAST_RADIUS = 105
+BITE_REPEAT_MS = CHASE_MS + 2000
+BITE_RETURN_MS = 600
+CRAB_BUBBLE_BURST_MS = 860
+CRAB_BUBBLE_COLORS = ((255, 99, 92), (255, 222, 88))
 
 
 def _clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def _circle_hit(rect, x, y, radius):
+def circle_hits_rect(rect, x, y, radius):
     return math.hypot(x - _clamp(x, rect.left, rect.right),
                       y - _clamp(y, rect.top, rect.bottom)) <= radius
+
+
+def _tentacle_hits_rect(rect, points):
+    if any(circle_hits_rect(rect, *point) for point in points):
+        return True
+    for (x1, y1, width1), (x2, y2, width2) in zip(points, points[1:]):
+        padding = 2 * int(min(width1, width2))
+        if rect.inflate(padding, padding).clipline((round(x1), round(y1)), (round(x2), round(y2))):
+            return True
+    return False
 
 
 def _ripples(surface, x, y, radius, color, phase):
@@ -49,7 +65,7 @@ def _ripples(surface, x, y, radius, color, phase):
 
 
 class BossSignature:
-    def __init__(self, boss, player, now, warning):
+    def __init__(self, boss, player, now, warning, *, campaign=False):
         self.key = boss.bdef['key']
         self.name, self.color, self.damage, duration = SIGNATURES[self.key]
         self.impact_at = now + warning
@@ -57,72 +73,106 @@ class BossSignature:
         self.last_hit = -1
         self.origin = None
         self.chasing = False
+        self.campaign = campaign
         self.left, self.right = config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT
         self.bottom = config.SCREEN_HEIGHT
-        width = self.right - self.left
         self.target_x = _clamp(player.x, self.left + 80, self.right - 80)
         self.target_y = _clamp(player.y, 100, self.bottom - 14)
+        if campaign or self.key == 'boss':
+            self.target_x, self.target_y = player.rect().center
+        if self.key == 'boss':
+            self.end_at = self.impact_at + BITE_REPEAT_MS + CHASE_MS + BITE_RETURN_MS
+            self.second_target_x = None
         self.launch_y = max(32, round(boss.y + boss.h * .55))
+        if campaign:
+            self.launch_y = min(self.launch_y, self.target_y - 48)
         if self.key == 'boss_dragon':
-            self.fire_patches = [(self.left + width * (i + random.uniform(.31, .69)) / 3,
-                                  self.bottom * random.uniform(.42, .80), min(51, width * .11))
-                                 for i in range(3)]
+            self.next_fireball_at = self.impact_at
+        if self.key == 'boss_shark':
+            self.trident_lanes = []
+            self.trident_hits = set()
+        if self.key == 'boss_crab':
+            self.bubble_x = boss.x
+            self.bubble_spacing = min(48, boss.w * .3)
+            self.bubble_released = [False, False]
+            self.bubble_crabs = [None, None]
 
     def stop(self, boss):
         if self.origin is not None:
             boss.x, boss.y = self.origin
 
-    def move(self, boss, now):
-        """Only the chase takes over the Boss's actual position."""
+    def move(self, boss, now, player=None):
+        """Update timed throws and move the abyss boss during its chase."""
         age = now - self.impact_at
+        if self.key == 'boss_shark' and len(self.trident_lanes) < 3:
+            if age >= len(self.trident_lanes) * TRIDENT_INTERVAL_MS:
+                x = player.rect().centerx if player is not None else self.target_x
+                self.trident_lanes.append((age, x))
         if self.key != 'boss' or age < 0:
             return
         if self.origin is None:
             self.origin = (boss.x, boss.y)
-        self.chasing = age < CHASE_MS
+        if age >= BITE_REPEAT_MS and self.second_target_x is None:
+            self.second_target_x = player.rect().centerx if player is not None else self.target_x
+        second = age >= BITE_REPEAT_MS
+        rush_age = age - BITE_REPEAT_MS if second else age
+        self.chasing = rush_age < CHASE_MS
+        below = self.bottom + boss.h * .22 + 22
         if self.chasing:
-            if age < 340:
-                boss.x = _clamp(boss.x + _clamp(self.target_x - boss.x, -4.8, 4.8),
-                                self.left + boss.w / 2, self.right - boss.w / 2)
-            start_y = self.origin[1]
-            exit_y = self.bottom + boss.h * .30 + 22
-            boss.y = start_y + (exit_y - start_y) * age / CHASE_MS
+            boss.x = (self.second_target_x if second else
+                      self.origin[0] + (self.target_x - self.origin[0]) * rush_age / CHASE_MS)
+            start_y, end_y = (below, self.origin[1]) if second else (self.origin[1], below)
+            boss.y = start_y + (end_y - start_y) * rush_age / CHASE_MS
+        elif second:
+            t = _clamp((rush_age - CHASE_MS) / BITE_RETURN_MS, 0, 1)
+            boss.y = self.origin[1]
+            boss.x = self.second_target_x + (self.origin[0] - self.second_target_x) * t
         else:
-            return_ms = self.end_at - self.impact_at - CHASE_MS
-            t = _clamp((age - CHASE_MS) / return_ms, 0, 1)
-            boss.x, patrol_y = self.origin
-            above = -boss.h - 20
-            boss.y = above + (patrol_y - above) * t
+            boss.x, boss.y = self.target_x, below
 
     def _claws(self, age):
-        t = _clamp(age / 990, 0, 1)
-        drop = self.launch_y + (self.bottom + 150 - self.launch_y) * t ** 1.25
-        return [(x, drop, 39) for x in (self.left + 60, self.right - 60)]
+        lanes = ((self.target_x - 46, self.target_x + 46) if self.campaign
+                 else (self.left + 60, self.right - 60))
+        claws = []
+        for index, x in enumerate(lanes):
+            t = _clamp((age - index * CLAW_DELAY_MS) / CLAW_DROP_MS, 0, 1)
+            drop = self.launch_y + (self.bottom + 150 - self.launch_y) * t ** 1.25
+            claws.append((x, drop, 39))
+        return claws
 
     def _bubbles(self, age):
-        t = _clamp(age / 860, 0, 1)
-        middle = (self.left + self.right) / 2
-        return [(x + (middle - x) * t, self.target_y + side * math.sin(t * math.pi) * 17, 45)
-                for x, side in ((self.left, -1), (self.right, 1))]
+        t = _clamp(age / CRAB_BUBBLE_BURST_MS, 0, 1)
+        y = self.launch_y + (self.bottom * .5 - self.launch_y) * t
+        return [(self.bubble_x + side * self.bubble_spacing, y, 45) for side in (-1, 1)]
 
     def _tentacles(self, boss, age):
         progress = _clamp(age % LASH_MS / LASH_MS, 0, 1)
         lash = math.sin(math.pi * progress)
         for side in (-1, 1):
             start = (boss.x + side * boss.w * .32, boss.y + boss.h * .58)
-            tip_y = start[1] + (self.bottom + 7 - start[1]) * lash
-            points = []
-            for i in range(13):
-                t = i / 12
-                curve = math.sin(t * math.tau - progress * 6) * 15 * math.sin(math.pi * t)
-                x = start[0] + curve
-                y = start[1] + (tip_y - start[1]) * t
+            steps = 24
+            reach = max(0, self.bottom - start[1])
+            segment = reach / steps
+            target_angle = math.atan2(self.target_y - start[1], self.target_x - start[0])
+            angle = target_angle + side * .28 * math.sin(progress * math.tau)
+            target_fraction = min(1, math.hypot(self.target_x - start[0], self.target_y - start[1])
+                                  / max(1, reach))
+            x, y = start
+            points = [(x, y, 23)]
+            for i in range(1, steps + 1):
+                t = i / steps
+                phase = (t - .5 / steps - target_fraction / 2) * math.tau
+                wave = math.sin(phase - (progress - .5) * math.tau)
+                tangent = angle + wave * (.46 + .10 * (1 - lash))
+                x += math.cos(tangent) * segment
+                y += math.sin(tangent) * segment
                 points.append((x, y, max(3, 23 * (1 - t) ** .7)))
             yield points
 
     def _tridents(self, age):
-        y = self.launch_y + max(0, age) * max(.70, (self.bottom - self.launch_y + 100) / 780)
-        return [(self.target_x + offset, y - (52 if offset else 0), 12) for offset in (-55, 0, 55)]
+        speed = max(.70, (self.bottom - self.launch_y + 100) / 780)
+        return [(index, x, self.launch_y + (age - launch) * speed)
+                for index, (launch, x) in enumerate(self.trident_lanes) if age >= launch]
 
     def hit(self, boss, rect, now):
         age = now - self.impact_at
@@ -130,30 +180,35 @@ class BossSignature:
             return False
         tick = 0
         if self.key == 'boss_lobster':
-            if not 110 <= age < 990:
-                return False
-            shapes = self._claws(age)
+            hit = any(circle_hits_rect(rect, x, y, radius)
+                      or rect.colliderect(pygame.Rect(round(x) - 10, round(y) - 95, 20, 60))
+                      for index, (x, y, radius) in enumerate(self._claws(age))
+                      if 110 <= age - index * CLAW_DELAY_MS < CLAW_DROP_MS)
         elif self.key == 'boss_crab':
-            if not 860 <= age < 1100:
-                return False
-            shapes = [((self.left + self.right) / 2, self.target_y, BUBBLE_BLAST_RADIUS)]
+            return False
         elif self.key == 'boss_octopus':
             tick = age // LASH_MS
             if not 150 <= age % LASH_MS < 475:
                 return False
-            shapes = [point for tentacle in self._tentacles(boss, age) for point in tentacle]
+            hit = tick != self.last_hit and any(
+                _tentacle_hits_rect(rect, points) for points in self._tentacles(boss, age))
         elif self.key == 'boss_shark':
-            shapes = [(x, y + 17, radius + 4) for x, y, radius in self._tridents(age) if y >= self.launch_y]
+            for index, x, y in self._tridents(age):
+                if index in self.trident_hits:
+                    continue
+                shaft = pygame.Rect(round(x) - 5, round(y) - 53, 11, 80)
+                if rect.colliderect(shaft) or circle_hits_rect(rect, x, y + 21, 20):
+                    self.trident_hits.add(index)
+                    return True
+            return False
         elif self.key == 'boss_dragon':
-            if self.last_hit >= 0 and now - self.last_hit < 1000:
-                return False
-            tick = now
-            shapes = self.fire_patches
+            return False
         else:
             if not self.chasing:
                 return False
-            shapes = [(boss.x, boss.y + boss.h * .80, boss.w * .28)]
-        if tick != self.last_hit and any(_circle_hit(rect, *shape) for shape in shapes):
+            tick = int(age >= BITE_REPEAT_MS)
+            hit = circle_hits_rect(rect, boss.x, boss.y + boss.h * .80, boss.w * .28)
+        if tick != self.last_hit and hit:
             self.last_hit = tick
             return True
         return False
@@ -167,20 +222,11 @@ class BossSignature:
                     Draw.line(surface, (*self.color, 95), (x, y), (x, self.bottom), 1)
                 _draw_claw(surface, x, y, i)
         elif self.key == 'boss_crab':
-            if age < 860:
-                for i, (x, y, radius) in enumerate(self._bubbles(age)):
-                    color = (255, 99, 92) if i == 0 else (255, 222, 88)
-                    _draw_bubble(surface, x, y, radius, now, color)
-            else:
-                x = (self.left + self.right) / 2
-                spread = _clamp((age - 860) / 400, 0, 1)
-                _ripples(surface, x, self.target_y, BUBBLE_BLAST_RADIUS, self.color, spread)
-                for i in range(22):
-                    angle = i * math.tau / 22
-                    px = x + math.cos(angle) * (30 + 111 * spread)
-                    py = self.target_y + math.sin(angle) * (30 + 93 * spread)
-                    tint = (255, 112, 94) if i % 2 else (255, 227, 113)
-                    Draw.ellipse(surface, (*tint, round(225 * (1 - spread))), (px - 2, py - 5, 4, 9))
+            if 0 <= age < CRAB_BUBBLE_BURST_MS:
+                for i, ((x, y, radius), color) in enumerate(zip(self._bubbles(age), CRAB_BUBBLE_COLORS)):
+                    if not self.bubble_released[i]:
+                        _draw_bubble(surface, x, y, radius, now, color)
+                        draw_bubble_crab(surface, x, y, radius, color, now)
         elif self.key == 'boss_octopus':
             for tentacle in self._tentacles(boss, max(0, age)):
                 _draw_tentacle(surface, tentacle)
@@ -188,17 +234,12 @@ class BossSignature:
                 for side in (-1, 1):
                     _ripples(surface, boss.x + side * boss.w * .32, self.bottom - 16, 24, self.color, phase)
         elif self.key == 'boss_shark':
-            for x, y, radius in self._tridents(age):
-                if age < 0:
-                    Draw.line(surface, (124, 213, 245, 100), (x, self.launch_y), (x, self.bottom), 1)
-                if age < 0 or y >= self.launch_y:
-                    _draw_trident(surface, x, y, x == self.target_x)
+            for index, x, y in self._tridents(age):
+                _draw_trident(surface, x, y, index == 1)
         elif self.key == 'boss_dragon':
-            for index, (x, y, radius) in enumerate(self.fire_patches):
-                if age < 0:
-                    _ripples(surface, x, y, radius, self.color, phase)
-                else:
-                    _draw_fire(surface, x, y, radius, now, index)
+            if age >= 0:
+                Draw.circle(surface, (*self.color, 95), (boss.x, boss.y + boss.h * .65),
+                            12 + round(4 * math.sin(now * .02)), 2)
         elif age < 0:
             _ripples(surface, boss.x, boss.y + boss.h * .8, boss.w * .30, self.color, phase)
         elif self.chasing:
@@ -244,6 +285,42 @@ def _draw_claw(surface, x, y, side):
                       (x + sign * 21, y + 4)))
         Draw.line(surface, (250, 129, 65), (x + sign * 36, y - 20),
                   (x + sign * 37, y + 8), 3)
+
+
+@lru_cache(maxsize=16)
+def _tinted_crab(image, red):
+    if not red:
+        return image
+    tinted = image.copy()
+    tinted.fill((255, 115, 195, 255), special_flags=pygame.BLEND_RGBA_MULT)
+    return tinted
+
+
+def draw_bubble_crab(surface, x, y, size, color, now):
+    image = image_asset('effects/bubble_crab.png')
+    if image is not None:
+        width = round(size * 1.35)
+        height = round(width * image.get_height() / image.get_width())
+        bob = math.sin(now * .018) * 2
+        _blit_art(surface, _tinted_crab(image, color == CRAB_BUBBLE_COLORS[0]),
+                  (round(x - width / 2), round(y - height / 2 + bob)), (width, height))
+        return
+    r = size * .32
+    for side in (-1, 1):
+        for i in range(3):
+            step = math.sin(now * .018 + i * 2 + side) * .20
+            foot = (x + side * r * (1.1 + i * .22), y + r * (.95 - i * .23 + step))
+            Draw.line(surface, color, (x + side * r * .58, y + r * .34), foot, 2)
+        cx = x + side * r * 1.14
+        Draw.line(surface, color, (x, y), (cx, y - r * .42), 3)
+        Draw.polygon(surface, color, ((cx, y - r * .16), (cx - r * .36, y - r * .48),
+                                     (cx - r * .30, y - r * .94), (cx, y - r * .65),
+                                     (cx + r * .30, y - r * .94), (cx + r * .36, y - r * .48)))
+    body = (x - r, y - r * .48, r * 2, r * 1.13)
+    Draw.ellipse(surface, (74, 32, 38), body)
+    Draw.ellipse(surface, color, (body[0] + 2, body[1] + 2, body[2] - 4, body[3] - 4))
+    for side in (-1, 1):
+        Draw.circle(surface, (55, 28, 38), (x + side * r * .34, y - r * .23), 2)
 
 
 def _draw_bubble(surface, x, y, radius, now, tint):
@@ -299,20 +376,20 @@ def _draw_trident(surface, x, y, red):
     metal = (251, 89, 74) if red else (255, 208, 66)
     image = _trident_image(red)
     if image is not None:
-        width = _clamp(round(image.get_width() * 81 / image.get_height()), 28, 42)
+        width = _clamp(round(image.get_width() * 100 / image.get_height()), 35, 52)
         left = round(x - width / 2)
-        top = round(y + 30 - 81)
+        top = round(y + 37 - 100)
         Draw.line(surface, (*metal, 115), (x, top + 4), (x, top - 19), 3)
-        _blit_art(surface, image, (left, top), (width, 81))
+        _blit_art(surface, image, (left, top), (width, 100))
         return
     shadow = (116, 33, 35) if red else (153, 96, 25)
-    Draw.line(surface, shadow, (x, y - 43), (x, y + 22), 9)
-    Draw.line(surface, metal, (x, y - 44), (x, y + 22), 4)
+    Draw.line(surface, shadow, (x, y - 53), (x, y + 27), 11)
+    Draw.line(surface, metal, (x, y - 54), (x, y + 27), 5)
     Draw.lines(surface, shadow, False,
-               ((x - 15, y + 18), (x - 15, y + 1), (x + 15, y + 1), (x + 15, y + 18)), 7)
-    for offset, length in ((-15, 18), (0, 30), (15, 18)):
+               ((x - 19, y + 22), (x - 19, y + 1), (x + 19, y + 1), (x + 19, y + 22)), 8)
+    for offset, length in ((-19, 22), (0, 37), (19, 22)):
         tip = (x + offset, y + length)
-        Draw.polygon(surface, metal, ((x + offset - 5, y + 8), tip, (x + offset + 5, y + 8)))
+        Draw.polygon(surface, metal, ((x + offset - 6, y + 10), tip, (x + offset + 6, y + 10)))
         Draw.line(surface, (255, 245, 199), (x + offset, y + 8), tip, 1)
     Draw.line(surface, (*metal, 110), (x, y - 45), (x, y - 64), 3)
 
@@ -322,42 +399,3 @@ def _blit_art(surface, image, position, size):
         surface.blit(image, position, static=True, logical_size=size)
     else:
         surface.blit(scale_surface_cached(image, size), position)
-
-
-def _draw_fire(surface, x, y, radius, now, seed):
-    for scale, alpha in ((1, 26), (.86, 44), (.68, 63)):
-        Draw.circle(surface, (117, 43, 21, alpha), (x, y), round(radius * scale))
-    Draw.circle(surface, (255, 108, 43, 117), (x, y), radius, 1)
-    image = image_asset('effects/boss_ground_fire.png')
-    if image is not None:
-        width = round(radius * 2.1)
-        height = round(radius * (1.2 + .05 * ((now // 95 + seed) % 4)))
-        _blit_art(surface, image, (round(x - width / 2), round(y + radius * .37 - height)), (width, height))
-        width = round(radius * 1.58)
-        height = round(radius * (.86 + .05 * ((now // 110 + seed) % 3)))
-        _blit_art(surface, image, (round(x - width / 2 + radius * .08),
-                                  round(y + radius * .71 - height)), (width, height))
-        for i in range(8):
-            phase = (now * .0014 + i * .17 + seed * .2) % 1
-            px = x + math.sin(i * 2.4 + phase * 3) * radius * .8
-            py = y + 5 - phase * radius * 1.5
-            Draw.circle(surface, (255, 200, 95, round(210 * (1 - phase))), (px, py), 1 + i % 2)
-        return
-    for i in range(15):
-        angle = i * 2.399
-        spread = radius * .81 * math.sqrt((i + .5) / 15)
-        px, py = x + math.cos(angle) * spread, y + math.sin(angle) * spread
-        flicker = (1 + math.sin(now * .021 + i * 3.7 + seed)) / 2
-        h = 10 + flicker * 24
-        w = 4 + i % 4
-        drift = math.sin(now * .015 + i) * 7
-        tip = (px + drift, py - h)
-        Draw.polygon(surface, (195, 48, 16, 215),
-                     ((px - w, py), (px - w * .7, py - h * .46), tip,
-                      (px + w, py - h * .26), (px + w, py)))
-        Draw.polygon(surface, (255, 125 + int(flicker * 49), 29),
-                     ((px - w * .66, py), (px - 2, py - h * .45),
-                      (px + drift * .8, py - h * .83), (px + w * .55, py)))
-        Draw.polygon(surface, (255, 223, 119),
-                     ((px - 2, py), (px + drift * .43, py - h * .55), (px + 3, py)))
-        Draw.circle(surface, (255, 201, 91, round(185 * flicker)), (tip[0] + 2, tip[1] - 7), 2)

@@ -198,8 +198,9 @@ def make_background(level=1, *, art_size=None):
                  (rx - rr // 2, ry - rr // 3, rr, rr // 3))
 
     # ── 10. 沙滩 ──
+    sand_height = config.SCREEN_HEIGHT - sand_top
     for y in range(sand_top, config.SCREEN_HEIGHT):
-        t = (y - sand_top) / max(1, BEACH_HEIGHT)
+        t = (y - sand_top) / max(1, sand_height)
         # 从深渊色渐变到沙滩色
         base = lerp_color(abyss_color, SAND_COLOR, t)
         surf.set_at((0, y), base)

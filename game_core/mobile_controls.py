@@ -294,6 +294,7 @@ class MobileControls:
             game._draw_keycap(key, (key_x + key_width // 2, row_y + row_height // 2))
             game._draw_text_fit(text, game.font_skill_status, color,
                                 pygame.Rect(status_x, row_y, status_width, row_height), align='right')
+        game._draw_gift_hud(now, cx + radius, y + 12 + row_height * len(skills))
 
     def draw(self, surface, game):
         hd = isinstance(surface, RenderSurface)
@@ -390,6 +391,8 @@ class MobileControls:
         if game.desktop_controls:
             self._draw_desktop_skill_status(game, buttons[-1])
             return
+        _, (cx, cy), radius, _, _ = buttons[-1]
+        game._draw_gift_hud(config.game_ticks(), cx + radius, cy + radius + 3)
 
         short = config.SCREEN_HEIGHT < 500
         center = self.joystick_origin or ((70, config.SCREEN_HEIGHT - 70) if short else

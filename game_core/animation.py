@@ -1,10 +1,24 @@
 """Small sprite-sheet helper for character and boss animations."""
+from functools import lru_cache
+
 from .asset_loader import image_asset
 
 _FRAMES = {}
+DOWNWARD_LASER_POSES = {
+    'boss_crab': (0, .50, .57),
+    'boss_octopus': (1, .50, .64),
+    'boss_shark': (1, .70, .74),
+    'boss_dragon': (1, .62, .32),
+    'boss': (1, .68, .77),
+}
 
 
 def frame(name, index):
+    if name in ('boss_dragon_attack', 'boss_dragon_laser') and index % 4 == 2:
+        fire_breath = image_asset('animations/boss_dragon_fire_breath.png')
+        if fire_breath is not None:
+            return fire_breath
+        index = 1
     sheet = image_asset('animations/anim_' + name + '.png')
     if sheet is None:
         return None
@@ -16,6 +30,21 @@ def frame(name, index):
     if key not in _FRAMES:
         _FRAMES[key] = sheet.subsurface(((index % count) * size, 0, size, size))
     return _FRAMES[key]
+
+
+@lru_cache(maxsize=128)
+def _visible_height_ratio(sprite):
+    return sprite.get_bounding_rect(min_alpha=33).height / sprite.get_height()
+
+
+def boss_action_size(sprite, idle, size):
+    """Compensate for frame padding while limiting changes from pose to pose."""
+    visible = _visible_height_ratio(sprite)
+    idle_visible = _visible_height_ratio(idle)
+    if not visible or not idle_visible:
+        return size
+    scale = max(.85, min(1.30, idle_visible / visible))
+    return tuple(max(1, round(value * scale)) for value in size)
 
 
 def action_frame(start, now):
@@ -36,6 +65,16 @@ def boss_frame(boss, now):
     warning = getattr(boss, 'laser_warning_start', 0)
     laser_active = now < getattr(boss, 'laser_active_until', 0)
     if warning or laser_active:
+        if boss.bdef['key'] == 'boss_niu':
+            elapsed = now - (boss.laser_active_until - 2000 if laser_active else warning)
+            sprite = frame('boss_niu_laser', max(0, elapsed // (75 if laser_active else 50)) % 8)
+            if sprite is not None:
+                return sprite
+        pose = DOWNWARD_LASER_POSES.get(boss.bdef['key'])
+        if laser_active and pose and 1 <= boss.bdef.get('campaign_level', 0) <= 6:
+            sprite = frame(boss.bdef['key'] + '_laser', pose[0])
+            if sprite is not None:
+                return sprite
         index = 1 if laser_active else min(1, max(0, (now - warning) // 250))
         name = boss.bdef['key']
         sprite = frame(name + '_laser', index) or frame(name + '_attack', index)
@@ -45,6 +84,8 @@ def boss_frame(boss, now):
     if index is None:
         return None
     name = boss.bdef['key']
+    if name == 'boss_niu':
+        index = min(7, (now - boss.animation_attack_at) // 75)
     pattern = getattr(boss, 'last_pattern', '')
     if name == 'boss_zongzong':
         action = 'bomb' if getattr(boss, 'attack_phase', 1) % 2 else 'wave'

@@ -122,7 +122,7 @@ def prepare_sources():
     target_images.mkdir(parents=True)
     # Keep sprites lossless and cap JPEG background dimensions for browser decoding.
     for path in sorted(IMAGE_SOURCE.rglob('*.png')):
-        if path.name == 'player2.png' or path.stem.startswith('ui_'):
+        if path.stem.startswith('ui_'):
             continue  # The web UI does not load these desktop assets.
         target_dir = target_images / path.parent.relative_to(IMAGE_SOURCE)
         target_dir.mkdir(parents=True, exist_ok=True)

@@ -222,13 +222,6 @@ def make_weapon(key):
     return surf
 
 
-def make_bullet(color):
-    surf = pygame.Surface((16, 16), pygame.SRCALPHA)
-    glow_circle(surf, (*color, 220), (8, 6), 4)
-    ellipse(surf, (*color, 110), (5, 7, 6, 8))
-    return surf
-
-
 def make_coin():
     surf = pygame.Surface((26, 26), pygame.SRCALPHA)
     glow_circle(surf, (255, 220, 60, 255), (13, 13), 10)
@@ -256,11 +249,9 @@ def main():
     for bdef in BOSS_DEFS:
         save(make_boss(bdef['key']), f"bosses/{bdef.get('sprite_key', bdef['key'])}.png")
 
-    for key, wdef in WEAPON_DEFS.items():
+    for key in WEAPON_DEFS:
         name = {'shotgun': 'shortgun', 'sniper': 'awm'}.get(key, key)
         save(make_weapon(key), f'weapons/weapon_{name}.png')
-        color_key = f'{wdef.color[0]}_{wdef.color[1]}_{wdef.color[2]}'
-        save(make_bullet(wdef.color), f'weapons/bullet_{color_key}.png')
 
     save(make_coin(), 'ui/coin.png')
 

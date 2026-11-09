@@ -4,11 +4,12 @@
 """
 import math
 import random
+from functools import lru_cache
 import pygame
 from .render import Draw, RenderSurface, blit_effect, effect_layer
 from . import config
 from .visuals import blit_label, draw_electric_arc, draw_glow
-from .boss_skills import BOSS_COLORS, SIGNATURES
+from .boss_skills import BOSS_COLORS, SIGNATURES, draw_bubble_crab
 from .asset_loader import image_asset, image_asset_supersampled, scale_surface_cached
 from . import animation
 
@@ -31,6 +32,20 @@ from .sprites import (
     make_enemy_surface, make_coin_surface,
     make_boss_surface, blit_lit_sprite,
 )
+
+
+@lru_cache(maxsize=64)
+def _laser_flash_sprite(image):
+    flash = image.copy()
+    flash.fill((90, 90, 90, 0), special_flags=pygame.BLEND_RGBA_ADD)
+    return flash
+
+
+@lru_cache(maxsize=64)
+def _niu_slam_sprite(image):
+    sprite = image.copy()
+    sprite.fill((255, 90, 90, 255), special_flags=pygame.BLEND_RGBA_MULT)
+    return sprite
 
 
 def _breathing_scale(elapsed_ms, growth, period_ms):
@@ -192,6 +207,8 @@ class Player:
 
 
 class Enemy:
+    ENTRY_DAMAGE_Y = 8
+    ENTRY_END_Y = 10
     def __init__(self, edef):
         self.edef = edef
         self.is_large = edef['is_large']
@@ -226,6 +243,11 @@ class Enemy:
         self.burn_damage = False
         self.frozen = False
         self.frozen_until = 0
+        self.snowflake_until = 0
+        self.water_mark_until = 0
+        self.chase_color = None
+        self.chase_side = 0
+        self.chase_partner = None
         self.slowed_until = 0
         self.slow_mult = 1.0
         self.infected = False
@@ -278,7 +300,7 @@ class Enemy:
     def rect(self):
         return pygame.Rect(int(self.x - self.w // 2), int(self.y), self.w, self.h)
 
-    def update(self):
+    def update(self, target=None):
         now = config.game_ticks()
         if self.frozen:
             if now >= self.frozen_until:
@@ -289,15 +311,38 @@ class Enemy:
             if now - self.burn_start >= self.burn_duration:
                 self.burning = False
                 self.burn_damage = False
-            elif self.burn_damage and now - self.last_burn_tick >= 500:
-                self.burn_hits += 1
+            elif self.burn_damage and self.y + self.h > 0 and now - self.last_burn_tick >= 500:
+                self.burn_hits += 0.5 if self.y < self.ENTRY_END_Y else 1
                 self.last_burn_tick = now
         move_mult = self.slow_mult if now < self.slowed_until else 1.0
         if move_mult == 1.0:
             self.slow_mult = 1.0
-        self.y += self.speed * move_mult
+        if self.chase_color is None:
+            step = self.speed * move_mult
+            if self.y < self.ENTRY_END_Y:
+                step *= 1 + 4 * min(1, (self.ENTRY_END_Y - self.y) / (self.h + self.ENTRY_END_Y))
+            self.y += step
+        elif target is not None:
+            left = config.GAME_AREA_LEFT + self.w / 2
+            right = config.GAME_AREA_RIGHT - self.w / 2
+            gap = self.w + 8
+            center = max(left + gap / 2, min(right - gap / 2, target.x))
+            target_x = center + self.chase_side * gap / 2 if self.chase_partner else target.x
+            dx, dy = target_x - self.x, target.rect().centery - (self.y + self.h / 2)
+            step = min(1, self.speed * move_mult / max(1, math.hypot(dx, dy)))
+            if self.chase_partner:
+                if self.chase_side < 0:
+                    right = min(right, self.chase_partner.x - gap)
+                else:
+                    left = max(left, self.chase_partner.x + gap)
+            self.x = max(left, min(right, self.x + dx * step * .85))
+            self.y += dy * step
 
     def hit_by(self, weapon_name, amount=1.0):
+        if self.y + self.h <= 0:
+            return
+        if self.y < self.ENTRY_END_Y:
+            amount *= 0.5
         now = config.game_ticks()
         if self.frozen and now < self.frozen_until:
             amount *= 2.0 if self.max_hp is None else 1.25
@@ -396,7 +441,7 @@ class Enemy:
         return (self.hits.get(weapon_name, 0) + self.burn_hits) >= needed
 
     def reached_bottom(self):
-        return self.y > config.GAME_AREA_BOTTOM + 20
+        return self.chase_color is None and self.y > config.GAME_AREA_BOTTOM + 20
 
     def draw(self, surf):
         # 阴影
@@ -419,7 +464,10 @@ class Enemy:
                 _line(surf, (120, 255, 170, 118), (x1, y1), (x2, y2), 3)
                 _circle(surf, (255, 245, 150, 155), (x2, y2), 3)
         # 精灵（非 zongzong：从 1.3x 高分辨率基准缩小采样，消除呼吸放大模糊）
-        if self.is_zongzong:
+        if self.chase_color is not None:
+            draw_bubble_crab(surf, self.x, self.y + self.h * .5, self.w,
+                             self.chase_color, now)
+        elif self.is_zongzong:
             sw, sh = self.surface.get_size()
             image = self.surface
             sprite = None
@@ -449,29 +497,32 @@ class Enemy:
                             accent, 105, source=self.sprite_asset)
         # 燃烧效果
         if self.burning:
-            overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
-            overlay.fill((255, 80, 20, 80))
-            surf.blit(overlay, (int(self.x - self.w // 2), int(self.y)))
-            # 火焰粒子
-            now = config.game_ticks()
-            for fi in range(3):
-                fx = self.x - self.w // 3 + fi * self.w // 3 + int(math.sin(now * 0.005 + fi) * 4)
-                fy = self.y + int(math.sin(now * 0.006 + fi) * 3)
-                _circle(surf, (255, 200, 50, 150), (fx, fy + 2), 3)
-                _circle(surf, (255, 100, 20, 120), (fx, fy), 2)
-        # 冰冻效果
-        if self.frozen:
-            overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
-            overlay.fill((100, 180, 255, 120))
-            surf.blit(overlay, (int(self.x - self.w // 2), int(self.y)))
-            # 冰晶
-            _circle(surf, (200, 240, 255, 120), (int(self.x), int(self.y + self.h // 3)), 4)
-        if config.game_ticks() < self.slowed_until:
+            x, y = self.x, self.y - 7
+            tip = math.sin(now * 0.016) * 2
+            _polygon(surf, (255, 105, 28),
+                     ((x, y + 4), (x - 6, y + 1), (x - 6, y - 4),
+                      (x - 3, y - 8), (x + tip, y - 14), (x + 2, y - 6),
+                      (x + 5, y - 9), (x + 7, y), (x + 4, y + 3)))
+            _polygon(surf, (255, 221, 106),
+                     ((x, y + 3), (x - 3, y + 1), (x - 2, y - 3),
+                      (x + tip, y - 7), (x + 4, y), (x + 2, y + 2)))
+        self._draw_ice_status(surf, now)
+        if now < self.slowed_until and now >= self.snowflake_until and not self.frozen:
             _circle(surf, (120, 210, 255, 100), (int(self.x), int(self.y + self.h // 2)),
                     max(round(14 * self.size_scale), self.w // 3), max(1, round(2 * self.size_scale)))
+        if now < self.water_mark_until:
+            x, y = self.x - 10, self.y - 17
+            _polygon(surf, (76, 192, 255), ((x, y - 7), (x - 5, y), (x + 5, y)))
+            _circle(surf, (76, 192, 255), (x, y), 5)
+            _circle(surf, (224, 251, 255), (x - 2, y - 1), 2)
         if self.infected:
-            _circle(surf, (160, 255, 80, 90), (int(self.x), int(self.y + self.h // 2)),
-                    max(round(12 * self.size_scale), self.w // 4), max(1, round(2 * self.size_scale)))
+            x, y = self.x + 10, self.y - 17
+            _circle(surf, (35, 58, 34), (x, y), 7)
+            for i in range(3):
+                angle = i * math.tau / 3 - math.pi / 2
+                _circle(surf, (177, 249, 99),
+                        (x + 4 * math.cos(angle), y + 4 * math.sin(angle)), 2)
+            _circle(surf, (210, 255, 136), (x, y), 1)
         if self.is_zongzong and self.label_font:
             height = self.label_font.size('粽')[1]
             center = (int(self.x), int(self.y - height - 18) + height // 2)
@@ -498,6 +549,47 @@ class Enemy:
         _rect(surf, HEALTH_RED, (bx, by, bar_w, bar_h), border_radius=2)
         _rect(surf, HEALTH_GREEN, (bx, by, int(bar_w * ratio), bar_h), border_radius=2)
         _rect(surf, (150, 255, 100, 80), (bx, by, int(bar_w * ratio), 2), border_radius=1)
+
+    def _draw_ice_status(self, surf, now):
+        if self.frozen or now < self.snowflake_until:
+            x, y = self.x, self.y - 12
+            for i in range(6):
+                angle = i * math.tau / 6
+                dx, dy = math.cos(angle), math.sin(angle)
+                _line(surf, (225, 250, 255), (x, y), (x + dx * 8, y + dy * 8), 2)
+                for side in (-1, 1):
+                    _line(surf, (165, 227, 255), (x + dx * 5, y + dy * 5),
+                          (x + dx * 3 - side * dy * 3, y + dy * 3 + side * dx * 3))
+
+        x, y = self.x, self.y + self.h * .5
+        w, h = self.w * .56, self.h * .58
+        if self.frozen:
+            layer = effect_layer(surf, (math.ceil(w * 2) + 4, math.ceil(h * 2) + 4))
+            position = (round(x - w - 2), round(y - h - 2))
+            x, y = w + 2, h + 2
+            crown, base = (x + w * .22, y - h), (x - w * .25, y + h)
+            left, right = (x - w, y - h * .32), (x + w, y + h * .27)
+            shell = (crown, (x + w * .8, y - h * .68), right,
+                     (x + w * .54, y + h * .84), base, (x - w, y + h * .4), left)
+            _polygon(layer, (100, 202, 249, 82), shell)
+            ridge = (x + w * .14, y + h * .20)
+            _polygon(layer, (196, 245, 255, 75), (crown, left, ridge))
+            _polygon(layer, (61, 161, 230, 75), (crown, right, base, ridge))
+            for corner in (crown, left, right, base):
+                _line(layer, (205, 246, 255, 145), corner, ridge)
+            _polygon(layer, (220, 250, 255, 210), shell, 2)
+            blit_effect(surf, layer, position)
+        elif self.frozen_until and 0 <= now - self.frozen_until < 420:
+            t = (now - self.frozen_until) / 420
+            alpha = round(235 * (1 - t))
+            for i in range(8):
+                angle = i * math.tau / 8
+                px = x + math.cos(angle) * (w + 22 * t)
+                py = y + math.sin(angle) * (h + 22 * t) + 20 * t * t
+                size = 3 + i % 3
+                shard = ((px - size, py + size), (px + size, py + size * .45), (px, py - size))
+                _polygon(surf, (121, 210, 250, alpha), shard)
+                _line(surf, (225, 249, 255, alpha), shard[0], shard[2])
 
 
 class Bullet:
@@ -922,31 +1014,32 @@ class SkillProjectile:
 
     def draw(self, surf):
         if self.ptype == 'fireball':
+            radius = 20
             # 外圈光晕
             for i in range(4, 0, -1):
-                _circle(surf, (255, 100, 20, 25 - i * 5), (int(self.x), int(self.y)), int(self.r) + i)
-            _circle(surf, (255, 60, 10), (int(self.x), int(self.y)), int(self.r))
-            _circle(surf, (255, 140, 30), (int(self.x), int(self.y)), int(self.r) - 4)
-            _circle(surf, (255, 200, 80), (int(self.x), int(self.y)), int(self.r) - 8)
-            _circle(surf, (255, 255, 200), (int(self.x) - 3, int(self.y) - 3), int(self.r) // 4)
+                _circle(surf, (255, 100, 20, 25 - i * 5), (int(self.x), int(self.y)), radius + i)
+            _circle(surf, (255, 60, 10), (int(self.x), int(self.y)), radius)
+            _circle(surf, (255, 140, 30), (int(self.x), int(self.y)), radius - 3)
+            _circle(surf, (255, 200, 80), (int(self.x), int(self.y)), radius - 6)
+            _circle(surf, (255, 255, 200), (int(self.x) - 3, int(self.y) - 3), radius // 4)
             # 旋转纹理
             now = config.game_ticks()
             for a in range(0, 360, 72):
                 rad = math.radians(a + now * 0.1)
-                ex = self.x + math.sin(rad) * (self.r * 0.6)
-                ey = self.y - math.cos(rad) * (self.r * 0.6)
+                ex = self.x + math.sin(rad) * (radius * 0.6)
+                ey = self.y - math.cos(rad) * (radius * 0.6)
                 _circle(surf, (255, 228, 105), (ex, ey), 3)
         elif self.ptype == 'fire_rocket':
             angle = math.radians(self.angle)
             dx, dy = math.sin(angle), -math.cos(angle)
             nx, ny = -dy, dx
-            nose = (self.x + dx * 16, self.y + dy * 16)
-            left = (self.x - dx * 12 + nx * 4, self.y - dy * 12 + ny * 4)
-            right = (self.x - dx * 12 - nx * 4, self.y - dy * 12 - ny * 4)
-            tail = (self.x - dx * 33, self.y - dy * 33)
+            nose = (self.x + dx * 24, self.y + dy * 24)
+            left = (self.x - dx * 16 + nx * 7, self.y - dy * 16 + ny * 7)
+            right = (self.x - dx * 16 - nx * 7, self.y - dy * 16 - ny * 7)
+            tail = (self.x - dx * 43, self.y - dy * 43)
             _polygon(surf, (255, 100, 25, 185), (left, tail, right))
             _polygon(surf, (255, 174, 67), (left, nose, right))
-            _line(surf, (255, 245, 176), (self.x, self.y), nose, 2)
+            _line(surf, (255, 245, 176), (self.x, self.y), nose, 3)
         elif self.ptype == 'grenade':
             _circle(surf, (40, 90, 50, 230), (int(self.x), int(self.y)), int(self.r))
             _circle(surf, (105, 145, 80, 210), (int(self.x) - 2, int(self.y) - 3), int(self.r) - 4)
@@ -973,13 +1066,15 @@ class SkillProjectile:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class Lightning:
-    def __init__(self, src_x, src_y, targets, color=(255, 230, 80)):
-        """targets: [(enemy_ref, ex, ey), ...] 最多 5 个目标"""
+    TRAVEL_MS = 55
+
+    def __init__(self, src_x, src_y, targets, damage, *, gift=False):
         self.start_x = src_x
         self.start_y = src_y
         self.targets = targets
-        self.color = color
-        self.lifetime = 300
+        self.damage = damage
+        self.gift = gift
+        self.lifetime = 430
         self.spawn_time = config.game_ticks()
 
     def is_expired(self):
@@ -987,17 +1082,16 @@ class Lightning:
 
     def draw(self, surf):
         now = config.game_ticks()
-        alpha = max(0, int(255 * (1 - (now - self.spawn_time) / self.lifetime)))
-        for index, (_, x, y) in enumerate(self.targets):
+        age = now - self.spawn_time
+        travel = min(1, max(0, age / self.TRAVEL_MS))
+        alpha = round(255 * max(0, 1 - max(0, age - self.TRAVEL_MS) / (self.lifetime - self.TRAVEL_MS)))
+        for index, target in enumerate(self.targets):
             start = (self.start_x, self.start_y)
-            draw_electric_arc(surf, start, (x, y), self.color, alpha, now, index, 3)
-            if self.color == (255, 230, 80):
-                for direction in (-1, 1):
-                    fork = (x + direction * 24, y + direction * 17)
-                    draw_electric_arc(surf, ((start[0] + x) / 2, (start[1] + y) / 2),
-                                      fork, (172, 126, 255), alpha * 2 // 3, now, index + direction)
-                _circle(surf, (255, 231, 122, alpha // 2), (x, y), 14, 2)
-                _circle(surf, (255, 252, 220, alpha), (x, y), 5)
+            target_point = getattr(target, 'lightning_target', None)
+            tx, ty = target_point(*start) if target_point else (target.x, target.y + target.h // 2)
+            end = (self.start_x + (tx - self.start_x) * travel,
+                   self.start_y + (ty - self.start_y) * travel)
+            draw_electric_arc(surf, start, end, (255, 202, 58), alpha, now, index, 3)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1144,12 +1238,12 @@ class RadiationLaser:
         return now - self.spawn_time >= self.duration
 
     def beam_width(self):
-        return int(Player.SIZE[0] * 0.50)
+        return int(Player.SIZE[0] * 0.40)
 
     def rect(self):
         w = self.beam_width()
         bottom = int(self.owner.y - Player.SIZE[1] // 2)
-        extra = int(abs(self.swing_power) + 12)
+        extra = int(abs(self.swing_power) + 10)
         return pygame.Rect(int(self.owner.x - w // 2 - extra), 0, w + extra * 2, max(1, bottom))
 
     def whip(self, now):
@@ -1199,13 +1293,13 @@ class RadiationLaser:
         for y in range(0, r.h, 8):
             t = y / max(1, r.h)
             offset = math.sin(now * speed + t * 8.5) * swing * (0.2 + 0.9 * (1 - t))
-            width = base_width + int(12 * (1 - t))
+            width = base_width + int(10 * (1 - t))
             outer = (cx + int(offset), y)
             inner = (cx + int(offset * 0.72), y)
             core = (cx + int(offset * 0.52), y)
             if last_outer:
-                _line(beam, (*c, 125), last_outer, outer, width + 32)
-                _line(beam, (20, 8, 28, 218), last_inner, inner, max(8, width + 8))
+                _line(beam, (*c, 125), last_outer, outer, width + 26)
+                _line(beam, (20, 8, 28, 218), last_inner, inner, max(6, width + 6))
                 _line(beam, (*c, 235), last_inner, inner, max(6, width // 2))
                 _line(beam, (255, 245, 230, 220), last_core, core, max(4, width // 5))
             last_outer, last_inner, last_core = outer, inner, core
@@ -1214,15 +1308,15 @@ class RadiationLaser:
             phase = math.sin(now * 0.055 + y * 0.14)
             c2 = colors[(y // 15 + now // 45) % len(colors)]
             _line(beam, (*c2, 220),
-                  (cx + whip_offset - base_width // 2 - 12, y),
-                  (cx + whip_offset + base_width // 2 + 12, y + int(phase * 16)), 3)
+                  (cx + whip_offset - base_width // 2 - 10, y),
+                  (cx + whip_offset + base_width // 2 + 10, y + int(phase * 16)), 3)
             if y % 45 == 0:
                 bx = cx + int(math.sin(now * 0.03 + y) * (r.w * 0.75))
-                _circle(beam, (*c2, 180), (bx, y), 12)
-                _circle(beam, (255, 255, 255, 160), (bx, y), 4)
+                _circle(beam, (*c2, 180), (bx, y), 10)
+                _circle(beam, (255, 255, 255, 160), (bx, y), 3)
         blit_effect(surf, beam, (r.x - 36, r.y))
         head = (int(self.owner.x), int(self.owner.y - Player.SIZE[1] // 2))
-        for rr, alpha in ((42, 80), (30, 125), (20, 185)):
+        for rr, alpha in ((34, 80), (24, 125), (16, 185)):
             _circle(surf, (*c, alpha), head, rr)
         _circle(surf, (255, 245, 230, 210), head, max(5, r.w // 5))
 
@@ -1500,7 +1594,7 @@ class BossProjectile:
         return current.union(previous)
 
     def draw(self, surf):
-        if self.tint:
+        if self.tint and not self.big_fireball:
             now = config.game_ticks()
             center = (round(self.x), round(self.y))
             radius = self.r + 4
@@ -1518,17 +1612,13 @@ class BossProjectile:
             _circle(surf, (255, 80, 35, 180), spark, 7, 1)
             return
         if self.big_fireball:
-            now = config.game_ticks()
-            for i in range(5, 0, -1):
-                _circle(surf, (255, 40, 35, 38 - i * 5), (int(self.x), int(self.y)), self.r + i * 2)
-            _circle(surf, (255, 35, 25, 230), (int(self.x), int(self.y)), self.r)
-            _circle(surf, (190, 55, 255, 230), (int(self.x), int(self.y)), self.r - 5)
-            _circle(surf, (95, 20, 165, 235), (int(self.x), int(self.y)), self.r - 10)
-            for a in range(0, 360, 90):
-                rad = math.radians(a + now * 0.18)
-                _circle(surf, (255, 95, 65, 170),
-                        (self.x + math.sin(rad) * (self.r * 0.75),
-                         self.y - math.cos(rad) * (self.r * 0.75)), 3)
+            center = (round(self.x), round(self.y))
+            _circle(surf, (255, 117, 48, 55), center, self.r + 5)
+            _circle(surf, (116, 30, 69), center, self.r + 1)
+            _circle(surf, (222, 54, 54), center, self.r)
+            _circle(surf, (255, 130, 47), center, self.r - 4)
+            _circle(surf, (255, 197, 81), (self.x - 2, self.y - 2), self.r - 9)
+            _circle(surf, (255, 242, 190), (self.x - 5, self.y - 6), 3)
             return
         if self.homing:
             now = config.game_ticks()
@@ -1577,6 +1667,31 @@ class BossProjectile:
 
 
 
+class DragonFireball(BossProjectile):
+    def __init__(self, x, y, damage):
+        super().__init__(x, y, 0, 5.5, damage=damage, bomb=True, explode_radius=55)
+        self.blast_reason = '被火龙追踪火球击败！'
+
+    def update(self, target_x=None, target_y=None):
+        super().update()
+        if (not self.alive or target_x is None or target_y is None
+                or config.game_ticks() - self.spawn_time < 350):
+            return
+        self.x += max(-2.5, min(2.5, (target_x - self.x) * .035))
+        if math.hypot(target_x - self.x, target_y - self.y) <= self.explode_radius * .55:
+            self.alive = False
+
+    def draw(self, surf):
+        x, y = self.x, self.y
+        drift = math.sin(config.game_ticks() * .025) * 5
+        _polygon(surf, (255, 84, 25, 210),
+                 ((x - 14, y), (x - 12, y - 18), (x + drift - 8, y - 35),
+                  (x + 3, y - 22), (x + drift + 10, y - 31), (x + 15, y - 8), (x + 9, y + 11)))
+        _circle(surf, (255, 99, 24), (x, y), self.r)
+        _circle(surf, (255, 178, 52), (x, y), self.r - 4)
+        _circle(surf, (255, 238, 144), (x - 3, y + 2), self.r - 9)
+
+
 class Boss:
     def __init__(self, bdef, difficulty):
         self.bdef = bdef
@@ -1596,7 +1711,7 @@ class Boss:
         self.homing_chance = min(0.75, bdef.get('homing_chance', 0.22) * homing_mult)
         self.laser_chance = bdef.get('laser_chance', 0)
         self.signature = None
-        self.signature_attacks = 0
+        self.next_signature_time = 0
         self.signature_opening_pending = bdef['key'] in SIGNATURES
         self.last_attack_time = 0
         self.base_w, self.base_h = bdef.get('size', (130, 120))
@@ -1612,7 +1727,7 @@ class Boss:
         self.slowed_until = 0
         self.slow_mult = 1.0
         self.laser_warning_start = 0
-        self.laser_warning_ms = 900
+        self.laser_warning_ms = 1500
         self.laser_active_until = 0
         self.next_death_laser_time = 0
         self.last_laser_hit_until = 0
@@ -1630,6 +1745,11 @@ class Boss:
 
     def can_laser(self):
         return self.laser_chance > 0
+
+    def _laser_mouth_pose(self):
+        if 1 <= self.bdef.get('campaign_level', 0) <= 6:
+            return animation.DOWNWARD_LASER_POSES.get(self.bdef['key'])
+        return None
 
     def rect(self):
         return pygame.Rect(int(self.x - self.w // 2), int(self.y), self.w, self.h)
@@ -1674,26 +1794,26 @@ class Boss:
             return
 
         if self.can_laser() and self.laser_warning_start:
-            tier = self.bdef.get('campaign_tier')
+            self._move(0.5, laser=True)
             if now - self.laser_warning_start >= self.laser_warning_ms:
-                self.laser_active_until = now + (2000 if tier is None else (1000, 1200, 1300)[tier])
+                self.laser_active_until = now + 2000
                 self.laser_warning_start = 0
             return
 
         if self.can_laser() and now < self.laser_active_until:
-            self._move(0.5)
+            self._move(0.5, laser=True)
             return
 
         if self.can_laser() and self.next_death_laser_time and now >= self.next_death_laser_time and random.random() < self.laser_chance:
+            self._keep_laser_inside()
             self.laser_warning_start = now
-            tier = self.bdef.get('campaign_tier')
-            self.laser_warning_ms = 900 if tier is None else (1200, 1000, 850)[tier]
+            self.laser_warning_ms = 1500
             self.next_death_laser_time = now + random.randint(9000, 16000) * self.bdef.get('laser_interval_mult', 1)
             return
 
         self._move(1.0)
 
-    def _move(self, speed_mult):
+    def _move(self, speed_mult, laser=False):
         now = config.game_ticks()
         move_mult = self.slow_mult if now < self.slowed_until else 1.0
         if move_mult == 1.0:
@@ -1708,6 +1828,14 @@ class Boss:
         else:
             center = config.SCREEN_WIDTH // 2
         self.x = center + math.sin(self.movement_timer * 0.02) * patrol_half_width
+        if laser:
+            previous_x = self.x
+            self._keep_laser_inside()
+            if self.x != previous_x and patrol_half_width > 0:
+                angle = math.asin(max(-1, min(1, (self.x - center) / patrol_half_width)))
+                if self.x < previous_x:
+                    angle = math.pi - angle
+                self.movement_timer = angle / 0.02
 
     def should_attack(self, now):
         if not self.entered or self.laser_warning_start or now < self.laser_active_until:
@@ -1730,8 +1858,8 @@ class Boss:
         self.last_attack_time = now
         projectiles = []
         if self.bdef.get('campaign_level', 3) >= 3 and random.random() < 0.25:
-            for angle in (-24, 0, 24):
-                projectiles.append(BossProjectile(self.x, self.y + self.h // 2 + 24, angle, 3.4,
+            for index, angle in enumerate((-24, 0, 24)):
+                projectiles.append(BossProjectile(self.x + (index - 1) * 40, self.y + self.h // 2 + 24, angle, 3.4,
                                                   damage=3, big_fireball=True))
             return projectiles
         if self.bdef.get('final_boss'):
@@ -1770,6 +1898,8 @@ class Boss:
             projectiles.append(p)
         return projectiles
     def hit_by(self, weapon_name, amount=1.0, source='skill', hit_rect=None):
+        if self.y < Enemy.ENTRY_DAMAGE_Y:
+            return
         self.hp -= amount * getattr(self, 'damage_mult', 1.0)
 
     def apply_slow(self, now, duration=4000, mult=0.7):
@@ -1785,12 +1915,30 @@ class Boss:
         now = config.game_ticks() if now is None else now
         if now >= self.laser_active_until:
             return None
+        if self._laser_mouth_pose():
+            return self.death_laser_zones()[0]
         w = max(24, self.w // 2)
         top = int(self.y + self.h * 0.72)
         return pygame.Rect(int(self.x - w // 2), top, w, max(1, config.SCREEN_HEIGHT - top))
 
     def death_laser_xs(self):
+        pose = self._laser_mouth_pose()
+        if pose:
+            return (self.x + self.surface.get_width() * (pose[1] - .5),)
         return (self.x,)
+
+    def _safe_laser_x(self, x):
+        player_width = round(Player.SIZE[0] * _mobile_entity_scale())
+        clearance = max(math.ceil(player_width * 1.5), 41 + (player_width + 1) // 2)
+        beam_width = max(24, self.w // 2)
+        left = config.GAME_AREA_LEFT + clearance + beam_width // 2
+        right = config.GAME_AREA_RIGHT - clearance - (beam_width + 1) // 2
+        return max(left, min(right, x))
+
+    def _keep_laser_inside(self):
+        # Move the Boss with the beam so a mouth-fired laser stays aligned.
+        x = self.death_laser_xs()[0]
+        self.x += self._safe_laser_x(x) - x
 
     def death_laser_rects(self, now=None):
         if not self.can_laser():
@@ -1802,8 +1950,10 @@ class Boss:
 
     def death_laser_zones(self):
         w = max(24, self.w // 2)
-        top = int(self.y + self.h * 0.72)
-        return tuple(pygame.Rect(int(x - w // 2), top, w,
+        pose = self._laser_mouth_pose()
+        top = (round(self.y + self.h // 2 + self.surface.get_height() * (pose[2] - .5))
+               if pose else int(self.y + self.h * 0.72))
+        return tuple(pygame.Rect((round(x) if pose else int(x)) - w // 2, top, w,
                                  max(1, config.SCREEN_HEIGHT - top))
                      for x in self.death_laser_xs())
 
@@ -1811,6 +1961,7 @@ class Boss:
         now = config.game_ticks()
         size_scale = self.size_scale
         scale = _breathing_scale(now - self.breath_start_time, 0.30, 2800)
+        mouth_laser = now < self.laser_active_until and self._laser_mouth_pose()
         center_y = self.y + self.h // 2
         # —— 质感光晕 + 悬浮粒子：血量越低越红、越狂暴 ——
         hp_ratio = max(0, self.hp / self.max_hp)
@@ -1891,20 +2042,53 @@ class Boss:
             self.breath_base, (round(sw * scale / 1.3), round(sh * scale / 1.3))
         )
         sprite = animation.boss_frame(self, now)
+        sprite_x, sprite_y = self.x, center_y
         if sprite is not None:
-            breathing_surface = scale_surface_cached(sprite, breathing_surface.get_size())
+            size = self.surface.get_size() if mouth_laser else breathing_surface.get_size()
+            action_size = animation.boss_action_size(sprite, self.surface, size)
+            if mouth_laser:
+                # Keep the mouth at the existing beam origin when the frame grows.
+                sprite_x += (size[0] - action_size[0]) * (mouth_laser[1] - .5)
+                sprite_y += (size[1] - action_size[1]) * (mouth_laser[2] - .5)
+            breathing_surface = scale_surface_cached(sprite, action_size)
+        elif self.bdef['key'] == 'boss':
+            breathing_surface = scale_surface_cached(
+                breathing_surface, tuple(round(value * .85) for value in breathing_surface.get_size()))
+        slam_start = getattr(self, 'axe_slam_start', None)
+        slam_active = slam_start is not None and 0 <= now - slam_start < self.axe_slam_duration
+        if slam_active:
+            breathing_surface = _niu_slam_sprite(scale_surface_cached(
+                breathing_surface, tuple(round(value * 1.35) for value in breathing_surface.get_size())))
         bsw, bsh = breathing_surface.get_size()
-        blit_lit_sprite(surf, breathing_surface, (self.x - bsw // 2, center_y - bsh // 2), glow_c, 185, source=sprite or self.sprite_asset)
+        source = breathing_surface if slam_active else sprite or self.sprite_asset
+        if self.laser_warning_start and (now - self.laser_warning_start) // 150 % 2 == 0:
+            breathing_surface = _laser_flash_sprite(breathing_surface)
+            source = breathing_surface
+        blit_lit_sprite(surf, breathing_surface, (sprite_x - bsw // 2, sprite_y - bsh // 2), glow_c, 185, source=source)
         if self.laser_warning_start:
             elapsed = now - self.laser_warning_start
-            if 'campaign_tier' in self.bdef:
-                for rect in self.death_laser_zones():
-                    Draw.rect(surf, (255, 95, 65), rect, 2)
             if (elapsed // 220) % 2 == 0:
                 for x in self.death_laser_xs():
                     _circle(surf, (255, 255, 255, 190), (int(x), int(self.y + self.h // 2)), int(self.w * 0.72), 4)
                     _circle(surf, (255, 60, 40, 160), (int(x), int(self.y + self.h * 0.75)), int(self.w * 0.32))
         for lr in self.death_laser_rects(now):
+            if self.bdef['key'] == 'boss_niu':
+                continue
+            if mouth_laser:
+                x, y = lr.centerx, lr.top
+                half = lr.w / 2
+                neck = min(28, lr.h)
+                _polygon(surf, (*skill_color, 140),
+                         ((x - 6, y), (x + 6, y), (x + half + 6, y + neck),
+                          (x + half + 6, lr.bottom), (x - half - 6, lr.bottom),
+                          (x - half - 6, y + neck)))
+                _polygon(surf, (*skill_color, 245),
+                         ((x - 3, y), (x + 3, y), (lr.right, y + neck),
+                          (lr.right, lr.bottom), (lr.left, lr.bottom), (lr.left, y + neck)))
+                _line(surf, (255, 247, 220), (x, y), (x, lr.bottom), max(3, lr.w // 5))
+                _circle(surf, (*skill_color, 225), (x, y), 8)
+                _circle(surf, (255, 247, 220), (x, y), 4)
+                continue
             beam = effect_layer(surf, (lr.w + 54, lr.h))
             cx = beam.get_size()[0] // 2
             for i in range(8):

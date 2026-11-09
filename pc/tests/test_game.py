@@ -8,12 +8,86 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 
 from game_core import config
+from game_core.entities import Bullet, Enemy
 from game_core.game import Game, GameState
 from game_core.render import RenderSurface
 from run_pc import main
 
 
 class DesktopGameTests(unittest.TestCase):
+    def test_enemy_entry_halves_direct_and_burn_damage(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((1, 1))
+        definition = next(e for e in config.ENEMY_DEFS if e['key'] == 'goldfish')
+
+        for max_hp in (None, 3):
+            enemy = Enemy(definition)
+            enemy.max_hp = max_hp
+            for y, expected in ((-enemy.h, 0), (-1, 0.5), (9, 0.5), (10, 1)):
+                with self.subTest(max_hp=max_hp, y=y):
+                    enemy.y = y
+                    enemy.hits.clear()
+                    enemy.damage_taken = 0
+                    enemy.hit_by('pistol')
+                    damage = enemy.hits.get('pistol', 0) if max_hp is None else enemy.damage_taken
+                    self.assertEqual(damage, expected)
+
+        enemy.burning = enemy.burn_damage = True
+        enemy.speed = 0
+        for now, y, expected in ((500, 9, 0.5), (1000, 10, 1.5)):
+            enemy.y = y
+            with patch.object(config, 'game_ticks', return_value=now):
+                enemy.update()
+            self.assertEqual(enemy.burn_hits, expected)
+
+    def test_invincible_contact_does_not_start_enemy_cooldown(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 540))
+        config.update_mobile_view((960, 540))
+        game = Game(desktop_controls=True)
+        game._start_game('medium')
+        enemy = Enemy(next(e for e in config.ENEMY_DEFS if e['key'] == 'goldfish'))
+        enemy.x, enemy.y = game.player.x, game.player.rect().top
+        game.enemies = [enemy]
+        hp = game.player_hp
+        game.player_invincible_until = 1500
+
+        game._damage_player_on_contacts(1000)
+        self.assertEqual(game.player_hp, hp)
+        game._damage_player_on_contacts(1500)
+        self.assertEqual(game.player_hp, hp - 1)
+        game._damage_player_on_contacts(2300)
+        self.assertEqual(game.player_hp, hp - 1)
+
+    def test_boss_bullet_hit_feedback_requires_damage(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 540))
+        config.update_mobile_view((960, 540))
+        game = Game(desktop_controls=True)
+        game._start_game('medium')
+        game._start_level(6)
+        now = config.game_ticks()
+        game.last_spawn_time = now
+        boss = game.boss
+        hp = boss.hp
+
+        for vulnerable in (False, True):
+            with self.subTest(vulnerable=vulnerable):
+                boss.y = Enemy.ENTRY_DAMAGE_Y if vulnerable else Enemy.ENTRY_DAMAGE_Y - 1
+                bullet = Bullet(boss.x, boss.rect().centery, config.WEAPON_DEFS['pistol'], 'pistol')
+                game.bullets = [bullet]
+                with patch.object(boss, 'update'), patch.object(bullet, 'update'), \
+                        patch.object(game, '_spawn_hit_effect') as effect, \
+                        patch('game_core.game.play_sound') as sound:
+                    game._update_boss_fight(now)
+                self.assertNotIn(bullet, game.bullets)
+                self.assertEqual(boss.hp < hp, vulnerable)
+                self.assertEqual(effect.called, vulnerable)
+                self.assertEqual(any(call.args == ('hit',) for call in sound.call_args_list), vulnerable)
+
     def test_desktop_shortcuts_match_battle_keycaps_and_pause_actions(self):
         pygame.init()
         self.addCleanup(pygame.quit)
@@ -191,6 +265,10 @@ class DesktopGameTests(unittest.TestCase):
                 self.assertGreater(game.player.y, y)
 
         game.player.character = 'radiation'
+        from game_core.entities import Enemy
+        nearby = Enemy(config.ENEMY_DEFS[0])
+        nearby.x, nearby.y = game.player.x, game.player.y - 100
+        game.enemies.append(nearby)
         game.handle_events([
             pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)
             for key in (pygame.K_k, pygame.K_l, pygame.K_r)
@@ -198,6 +276,40 @@ class DesktopGameTests(unittest.TestCase):
         self.assertTrue(game.lightnings)
         self.assertTrue(game.magnetic_storms)
         self.assertTrue(game.dart_shields)
+
+    def test_movement_refreshes_direction_between_updates_after_cast(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 540))
+        config.update_mobile_view((960, 540))
+        for boss_fight in (False, True):
+            with self.subTest(boss_fight=boss_fight):
+                game = Game(desktop_controls=True)
+                game._start_game('medium')
+                if boss_fight:
+                    game._start_level(6)
+                game.player.character = 'radiation'
+                game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_l, mod=0)])
+                self.assertTrue(game.magnetic_storms)
+                update = game._update_boss_fight if boss_fight else game._update_playing
+                now = config.game_ticks()
+                keys = {pygame.K_a: True}
+
+                def pump():
+                    keys.clear()
+                    keys.update(pending_keys)
+
+                positions = [game.player.x]
+                with patch('pygame.event.pump', side_effect=pump), \
+                        patch('pygame.key.get_pressed', return_value=keys):
+                    for pending_keys in ({pygame.K_a: True}, {pygame.K_d: True}, {}, {}):
+                        update(now)
+                        positions.append(game.player.x)
+
+                start, left, right, released, idle = positions
+                self.assertLess(left, start)
+                self.assertEqual((released, idle), (right, right))
+                self.assertGreater(right, left)
 
     def test_desktop_entry_starts_web_campaign_with_one_player(self):
         frames = []

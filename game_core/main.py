@@ -163,7 +163,7 @@ async def main():
             draw_started = perf_counter()
         labels = [] if draw_ui else None
         level = game.infinite_background_level if game.infinite_mode else game.current_level
-        use_hd = game.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
+        use_hd = game.state in (GameState.PLAYING, GameState.BOSS_FIGHT, GameState.LEVEL_TRANSITION)
         scene = config.SCR
         try:
             if use_hd or browser_window is None:
@@ -244,7 +244,8 @@ async def main():
             if frame != previous_ui:
                 draw_ui(json.dumps(labels, separators=(",", ":")), *frame[1:])
                 previous_ui = frame
-        next_index = level % len(config.LEVEL_CONFIGS)
+        level_count = len(config.INFINITE_BOSS_HP if game.infinite_mode else config.LEVEL_CONFIGS)
+        next_index = level % level_count
         next_level = next_index + 1
         background_key = (next_level, scene.get_size(), config.VIEW_SIZE)
         # Let the victory cue play before decoding the next stage behind the clear panel.

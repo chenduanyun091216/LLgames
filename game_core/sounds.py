@@ -258,6 +258,15 @@ def _snd_lightning():
         (_gen_tone(130, 60, 0.08, 'sine', 0.16, attack=0.001, decay=20), 0.0, 1.0),
     ])
 
+def _snd_orochi_thunder():
+    """Sharp lightning followed by a low rolling thunderclap."""
+    return _mix_layers([
+        (_snd_lightning(), 0.0, 0.8),
+        (_gen_fnoise(0.52, 0.45, lp=0.12, attack=0.025, decay=4.5), 0.03, 1.0),
+        (_gen_tone(92, 39, 0.46, 'sine', 0.32, attack=0.02, decay=5), 0.06, 1.0),
+    ])
+
+
 def _snd_storm():
     """磁暴：低频电磁呼啸 + 脉冲震颤。"""
     return _mix_layers([
@@ -315,6 +324,7 @@ _SOUND_BUILDERS = {
     'water_cast': _snd_water_cast,
     'grenade': _snd_grenade,
     'lightning': _snd_lightning,
+    'orochi_thunder': _snd_orochi_thunder,
     'storm': _snd_storm,
     'laser': _snd_laser,
     'laser_hit': _snd_laser_hit,
