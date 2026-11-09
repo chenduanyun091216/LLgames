@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from web.main import _browser_frame_deadline, _browser_size
+from game_core.main import _browser_frame_deadline, _browser_size
 
 
 class BrowserFramePacingTests(unittest.TestCase):

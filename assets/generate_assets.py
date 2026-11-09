@@ -20,8 +20,9 @@ sys.path.insert(0, ROOT)
 
 
 def save(surf, name):
-    os.makedirs(ASSET_DIR, exist_ok=True)
-    pygame.image.save(surf, os.path.join(ASSET_DIR, name))
+    path = os.path.join(ASSET_DIR, name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pygame.image.save(surf, path)
 
 
 def circle(surf, color, pos, radius, width=0):
@@ -57,21 +58,6 @@ def gradient(size, top, bottom):
         t = y / max(1, h - 1)
         c = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
         line(surf, c, (0, y), (w, y))
-    return surf
-
-
-def rounded_gradient(size, top, bottom, border, radius=16):
-    w, h = size
-    surf = pygame.Surface(size, pygame.SRCALPHA)
-    rect(surf, (0, 0, 0, 80), (5, 6, w - 8, h - 8), radius=radius)
-    body = gradient((w - 6, h - 7), top, bottom)
-    mask = pygame.Surface(body.get_size(), pygame.SRCALPHA)
-    rect(mask, (255, 255, 255, 245), mask.get_rect(), radius=radius)
-    body.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-    surf.blit(body, (0, 0))
-    rect(surf, border, (0, 0, w - 6, h - 7), 2, radius)
-    rect(surf, (255, 255, 255, 70), (6, 6, w - 18, h - 19), 1, max(4, radius - 5))
-    line(surf, (255, 255, 255, 90), (18, 10), (w - 24, 10), 2)
     return surf
 
 
@@ -208,7 +194,7 @@ def make_enemy(kind, large=False):
 
 def make_boss(kind):
     base = kind.replace('boss_', '')
-    if base == 'dragon':
+    if base in ('dragon', 'boss', 'niu', 'zongzong'):
         base = 'shark'
     surf = pygame.transform.smoothscale(make_enemy(base, large=True), (150, 140))
     aura = pygame.Surface((150, 140), pygame.SRCALPHA)
@@ -224,6 +210,7 @@ def make_weapon(key):
     colors = {
         'pistol': ((255, 220, 80), (35, 55, 90)),
         'rifle': ((100, 200, 255), (35, 60, 110)),
+        'shotgun': ((110, 235, 180), (35, 60, 55)),
         'sniper': ((255, 100, 120), (70, 40, 80)),
     }
     c, dark = colors[key]
@@ -255,33 +242,27 @@ def main():
     pygame.init()
     pygame.display.set_mode((1, 1))
 
-    from config import WEAPON_DEFS, BOSS_DEFS
+    from game_core.config import WEAPON_DEFS, BOSS_DEFS
 
-    save(make_background(), 'background.png')
-    save(make_guardian((70, 190, 255), (255, 225, 90), 'trident'), 'player.png')
-    save(make_guardian((255, 96, 64), (255, 210, 70), 'blade'), 'player_fire.png')
-    save(make_guardian((90, 210, 255), (210, 250, 255), 'trident'), 'player_ice.png')
-    save(make_guardian((180, 105, 255), (120, 255, 110), 'orb'), 'player_radiation.png')
+    save(make_background(), 'backgrounds/background.png')
+    save(make_guardian((70, 190, 255), (255, 225, 90), 'trident'), 'players/player.png')
+    save(make_guardian((255, 96, 64), (255, 210, 70), 'blade'), 'players/player_fire.png')
+    save(make_guardian((90, 210, 255), (210, 250, 255), 'trident'), 'players/player_ice.png')
+    save(make_guardian((180, 105, 255), (120, 255, 110), 'orb'), 'players/player_radiation.png')
 
     for key, large in (('lobster', False), ('crab', False), ('goldfish', False), ('octopus', True), ('shark', True)):
-        save(make_enemy(key, large), f'enemy_{key}.png')
+        save(make_enemy(key, large), f'enemies/enemy_{key}.png')
 
     for bdef in BOSS_DEFS:
-        save(make_boss(bdef['key']), f"{bdef['key']}.png")
+        save(make_boss(bdef['key']), f"bosses/{bdef.get('sprite_key', bdef['key'])}.png")
 
     for key, wdef in WEAPON_DEFS.items():
-        save(make_weapon(key), f'weapon_{key}.png')
+        name = {'shotgun': 'shortgun', 'sniper': 'awm'}.get(key, key)
+        save(make_weapon(key), f'weapons/weapon_{name}.png')
         color_key = f'{wdef.color[0]}_{wdef.color[1]}_{wdef.color[2]}'
-        save(make_bullet(wdef.color), f'bullet_{color_key}.png')
+        save(make_bullet(wdef.color), f'weapons/bullet_{color_key}.png')
 
-    save(make_coin(), 'coin.png')
-    save(rounded_gradient((180, 50), (45, 165, 245), (15, 80, 180), (125, 230, 255), 15), 'ui_button_blue.png')
-    save(rounded_gradient((180, 50), (55, 195, 110), (22, 115, 65), (145, 255, 180), 15), 'ui_button_green.png')
-    save(rounded_gradient((180, 50), (245, 90, 90), (155, 35, 50), (255, 155, 150), 15), 'ui_button_red.png')
-    save(rounded_gradient((160, 48), (35, 88, 145), (8, 24, 58), (105, 190, 245), 12), 'ui_panel.png')
-    save(rounded_gradient((220, 260), (20, 110, 80), (6, 36, 52), (100, 245, 160), 18), 'ui_card_easy.png')
-    save(rounded_gradient((220, 260), (24, 95, 160), (8, 32, 75), (245, 210, 75), 18), 'ui_card_medium.png')
-    save(rounded_gradient((220, 260), (120, 38, 68), (38, 12, 35), (250, 100, 105), 18), 'ui_card_hard.png')
+    save(make_coin(), 'ui/coin.png')
 
 
 if __name__ == '__main__':

@@ -18,7 +18,7 @@
 
 ## 2. 当前版本的有效参数与问题
 
-主要依据为 [web/config.py](../web/config.py) 的预设与数据、[web/game.py](../web/game.py) 的战役和无限覆盖、[web/entities.py](../web/entities.py) 的伤害与时钟、[web/special_bosses.py](../web/special_bosses.py) 的第 7、8 关逻辑，以及 [web/main.py](../web/main.py) 的浏览器主循环。
+主要依据为 [game_core/config.py](../game_core/config.py) 的预设与数据、[game_core/game.py](../game_core/game.py) 的战役和无限覆盖、[game_core/entities.py](../game_core/entities.py) 的伤害与时钟、[game_core/special_bosses.py](../game_core/special_bosses.py) 的第 7、8 关逻辑，以及 [game_core/main.py](../game_core/main.py) 的浏览器主循环。
 
 | 关卡 | 现行杂兵击杀数 简/中/困 | 现行 Boss HP 简/中/困 | 现行 Boss 基础出招间隔 简/中/困 |
 | --- | --- | --- | --- |

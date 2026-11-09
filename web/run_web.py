@@ -40,7 +40,9 @@ PYGBAG_RAW_URL = f'https://raw.githubusercontent.com/pygame-web/pygbag/{PYGBAG_S
 FONT_URL = 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf'
 FONT_LICENSE_URL = 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/LICENSE'
 WEB_SOURCE = ROOT / 'web'
-SOURCE_FILES = tuple(sorted(path for path in WEB_SOURCE.glob('*.py') if path.name != 'run_web.py'))
+GAME_SOURCE = ROOT / 'game_core'
+IMAGE_SOURCE = ROOT / 'assets' / 'images'
+SOURCE_FILES = tuple(sorted(GAME_SOURCE.glob('*.py')))
 SHELL_FILES = tuple(WEB_SOURCE / name for name in ('shell.css', 'shell.js', 'sw.js'))
 PYGAME_WHEEL = 'cp312/pygame_ce-2.5.7-cp312-cp312-wasm32_bi_emscripten.whl'
 PACKAGE_INDEX = f'index-{PYGBAG_VERSION}-cp{PYBUILD.replace(".", "")}.json'
@@ -62,7 +64,7 @@ CDN_FILES = (
 def source_manifest():
     entries = []
     paths = [*SOURCE_FILES, *SHELL_FILES, Path(__file__), ROOT / 'requirements.txt']
-    paths.extend(sorted((ROOT / 'assets' / 'images').glob('*.png')))
+    paths.extend(sorted(IMAGE_SOURCE.rglob('*.png')))
     for path in paths:
         stat = path.stat()
         entries.append([str(path.relative_to(ROOT)), stat.st_size, stat.st_mtime_ns])
@@ -110,19 +112,21 @@ def prepare_image(path, target_images):
 def prepare_sources():
     shutil.rmtree(STAGING, ignore_errors=True)
     STAGING.mkdir(parents=True)
-    package = STAGING / 'web'
+    package = STAGING / GAME_SOURCE.name
     package.mkdir()
     for source in SOURCE_FILES:
         shutil.copy2(source, package / source.name)
     (STAGING / 'main.py').write_text(
-        'import asyncio\nimport pygame\nfrom web.main import main\nasyncio.run(main())\n', encoding='utf-8')
+        'import asyncio\nimport pygame\nfrom game_core.main import main\nasyncio.run(main())\n', encoding='utf-8')
     target_images = STAGING / 'assets' / 'images'
     target_images.mkdir(parents=True)
     # Keep sprites lossless and cap JPEG background dimensions for browser decoding.
-    for path in sorted((ROOT / 'assets' / 'images').glob('*.png')):
+    for path in sorted(IMAGE_SOURCE.rglob('*.png')):
         if path.name == 'player2.png' or path.stem.startswith('ui_'):
             continue  # The web UI does not load these desktop assets.
-        prepare_image(path, target_images)
+        target_dir = target_images / path.parent.relative_to(IMAGE_SOURCE)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        prepare_image(path, target_dir)
     font_dir = STAGING / 'assets' / 'fonts'
     cached_font_dir = RESOURCE_CACHE / 'fonts'
     download(FONT_URL, cached_font_dir / 'NotoSansCJKsc-Regular.otf', 1_000_000)
@@ -153,7 +157,7 @@ def build_pygbag():
     command = [
         sys.executable, '-m', 'pygbag', '--build', '--PYBUILD', PYBUILD,
         '--cdn', CDN_URL, '--template', 'default.tmpl', '--can_close', '1',
-        '--icon', 'assets/images/title.png', '--title', '海洋生物入侵', '.',
+        '--icon', 'assets/images/ui/title.png', '--title', '海洋生物入侵', '.',
     ]
     subprocess.run(command, cwd=STAGING, check=True)
     result = STAGING / 'build' / 'web'
@@ -381,6 +385,8 @@ def lan_addresses():
 
 def release_port(port):
     """启动前强制结束指定 TCP 端口的监听进程，不依赖终端密码输入。"""
+    if sys.platform == 'win32':
+        return  # Windows 直接绑定端口，端口占用时由系统报告。
     try:
         result = subprocess.run(
             ['lsof', '-t', f'-iTCP:{port}', '-sTCP:LISTEN'],

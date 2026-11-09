@@ -10,11 +10,11 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 import pygame
 
-from web import config
-from web.game import Game, GameState
-from web.entities import Bullet, Enemy, GiftBox, SkillProjectile
-from web.entities import MagneticStorm, SpinningDarts
-from web import sounds
+from game_core import config
+from game_core.game import Game, GameState
+from game_core.entities import Bullet, Enemy, GiftBox, SkillProjectile
+from game_core.entities import MagneticStorm, SpinningDarts
+from game_core import sounds
 
 
 class MobileWebTests(unittest.TestCase):
@@ -105,10 +105,10 @@ class MobileWebTests(unittest.TestCase):
         self.assertEqual(len(niu.death_laser_rects(1000)), 2)
         niu.laser_active_until = 0
         niu.y = 60
-        with patch('pygame.time.get_ticks', return_value=1000), patch('web.entities.random.randint', return_value=7000):
+        with patch('pygame.time.get_ticks', return_value=1000), patch('game_core.entities.random.randint', return_value=7000):
             niu.update()
         self.assertEqual(niu.next_death_laser_time, 15000)
-        with patch('web.special_bosses.random.choice', return_value='axes'):
+        with patch('game_core.special_bosses.random.choice', return_value='axes'):
             game._add_boss_projectiles(niu.attack(1000, game.player.x))
         self.assertEqual([projectile.damage for projectile in game.boss_projectiles], [1, 1])
         game.boss = None
@@ -155,7 +155,7 @@ class MobileWebTests(unittest.TestCase):
                 if boss.can_laser():
                     boss.entered = True
                     old_x = boss.x
-                    with patch('web.config.game_ticks', return_value=1000):
+                    with patch('game_core.config.game_ticks', return_value=1000):
                         boss.update()
                     self.assertNotEqual(boss.x, old_x)
                     self.assertTrue(all(rect.bottom == config.SCREEN_HEIGHT
@@ -193,7 +193,7 @@ class MobileWebTests(unittest.TestCase):
         boss.y = 60
         boss.next_death_laser_time = now
         game.player.niu_freeze_until = now + 1500
-        with patch('pygame.time.get_ticks', return_value=now), patch('web.entities.random.random', return_value=0):
+        with patch('pygame.time.get_ticks', return_value=now), patch('game_core.entities.random.random', return_value=0):
             game.update()
         self.assertEqual(boss.laser_warning_start, now)
         self.assertGreater(boss.laser_warning_ms, 1500)
@@ -213,7 +213,7 @@ class MobileWebTests(unittest.TestCase):
         now = 4000
         game.player.y = config.GAME_AREA_BOTTOM * 0.62
         game.player.niu_freeze_until = now + 1200
-        with patch('web.special_bosses.random.choice', return_value='vortex'):
+        with patch('game_core.special_bosses.random.choice', return_value='vortex'):
             boss.attack(now, game.player.x)
         original_warning = boss.vortex_warning_until
         game._extend_ground_warning(boss, now)
@@ -334,7 +334,7 @@ class MobileWebTests(unittest.TestCase):
                 game.infinite_mode = infinite
                 player.rage_until = 0
                 normal_speed = game._player_speed(player, 1000)
-                with patch('web.config.game_ticks', return_value=1000):
+                with patch('game_core.config.game_ticks', return_value=1000):
                     game._activate_rage()
                 self.assertAlmostEqual(game._player_speed(player, 20999), normal_speed * 1.6)
                 self.assertAlmostEqual(game._player_speed(player, 21000), normal_speed)
@@ -375,11 +375,11 @@ class MobileWebTests(unittest.TestCase):
             controls._update_axis((124, 300))
             self.assertEqual(controls.axis, (1, 0))
             before = self.game.player.x
-            self.game._move_player_from_mobile_controls(self.game.player, pygame.time.get_ticks())
+            self.game._move_player_from_controls(self.game.player, {}, pygame.time.get_ticks())
             self.assertGreater(self.game.player.x, before)
             controls.release(7)
             before = self.game.player.x
-            self.game._move_player_from_mobile_controls(self.game.player, pygame.time.get_ticks())
+            self.game._move_player_from_controls(self.game.player, {}, pygame.time.get_ticks())
             self.assertEqual(self.game.player.x, before)
 
     def test_difficulty_starts_single_player_without_mode_select(self):
@@ -607,7 +607,7 @@ class MobileWebTests(unittest.TestCase):
         controls = game.mobile_controls
         game.player.skill_cooldowns['fisher_grenade'] = 3500
         game._ui_labels = []
-        with patch('web.config.game_ticks', return_value=1000):
+        with patch('game_core.config.game_ticks', return_value=1000):
             controls.draw(pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT)), game)
         countdown = next(row for row in game._ui_labels if row[0] == '3s')
         self.assertEqual(countdown[1:3], (16, True))
@@ -636,7 +636,7 @@ class MobileWebTests(unittest.TestCase):
                         self.assertEqual(surface.get_at((61, 40)).a, 255)
 
     def test_background_preparation_reuses_hd_art_for_the_game_surface(self):
-        from web import background
+        from game_core import background
         logical_size = (config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
         view_size = (logical_size[0] * 2, logical_size[1] * 2)
         art = pygame.Surface(view_size)
@@ -687,7 +687,7 @@ class MobileWebTests(unittest.TestCase):
         game._start_game('easy')
         game._start_skill_effect(game.player, 'fisher_grenade', 4000, 0, now=1000)
         for now, fraction in ((2000, 0.75), (4000, 0.25), (5000, 0)):
-            with patch('web.config.game_ticks', return_value=now), patch('web.render.Draw.arc') as arc:
+            with patch('game_core.config.game_ticks', return_value=now), patch('game_core.render.Draw.arc') as arc:
                 game.mobile_controls.draw(config.SCR, game)
                 if fraction:
                     arc.assert_called_once()
@@ -712,7 +712,7 @@ class MobileWebTests(unittest.TestCase):
         self.assertEqual(random.getstate(), rng)
 
     def test_projectile_trails_follow_flight_direction(self):
-        from web.entities import Bullet, BossProjectile
+        from game_core.entities import Bullet, BossProjectile
         player = Bullet(60, 60, config.WEAPON_DEFS['pistol'], 'pistol')
         enemy = BossProjectile(60, 60, 0, 3)
         for projectile, behind, ahead in ((player, (60, 75), (60, 45)),
@@ -732,7 +732,7 @@ class MobileWebTests(unittest.TestCase):
             self.assertEqual(surface.get_at((75, 60)).a, 0)
 
     def test_player_bullet_speed_is_reduced(self):
-        from web.entities import Bullet
+        from game_core.entities import Bullet
         bullet = Bullet(100, 100, config.WEAPON_DEFS['pistol'], 'pistol')
         self.assertEqual(bullet.speed, config.WEAPON_DEFS['pistol'].speed * 0.8)
 
@@ -773,7 +773,7 @@ class MobileWebTests(unittest.TestCase):
         config.update_mobile_view((844, 390))
         left, right = config.SCREEN_WIDTH // 4, config.SCREEN_WIDTH * 3 // 4
         expected_x_bounds = (left + GiftBox.SIZE // 2, right - GiftBox.SIZE // 2)
-        with patch('web.entities.random.uniform', return_value=config.SCREEN_WIDTH // 2) as choose_x:
+        with patch('game_core.entities.random.uniform', return_value=config.SCREEN_WIDTH // 2) as choose_x:
             box = GiftBox()
         choose_x.assert_called_once_with(*expected_x_bounds)
         self.assertGreaterEqual(box.rect().left, left)
@@ -921,7 +921,7 @@ class MobileWebTests(unittest.TestCase):
         config.update_mobile_view((844, 390))
         center = (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
         owner = SimpleNamespace(x=center[0], y=center[1] + self.game.player.SIZE[1] // 2 - 12)
-        with patch('web.config.game_ticks', return_value=0):
+        with patch('game_core.config.game_ticks', return_value=0):
             storm = MagneticStorm(*center)
             shield = SpinningDarts(owner)
             for effect in (storm, shield):
@@ -968,7 +968,7 @@ class MobileWebTests(unittest.TestCase):
                         entrance_ms = math.ceil(math.ceil((60 - boss.y) / 1.5) * 1000 / config.FPS)
                         now = 1000 + entrance_ms
                         boss.y = 59
-                        with patch('web.config.game_ticks', return_value=now), \
+                        with patch('game_core.config.game_ticks', return_value=now), \
                                 patch.object(boss, 'should_attack', return_value=False):
                             game._update_boss_fight(now)
                         self.assertFalse(boss.signature_opening_pending)
@@ -978,7 +978,7 @@ class MobileWebTests(unittest.TestCase):
                         self.assertFalse(game._try_boss_signature(now + 5000))
 
     def test_six_bosses_have_animated_attacks_and_two_keep_original_moves(self):
-        from web.boss_skills import SIGNATURES
+        from game_core.boss_skills import SIGNATURES
 
         game = self.game
         for size in ((844, 390), (390, 844)):
@@ -1008,7 +1008,7 @@ class MobileWebTests(unittest.TestCase):
                     self.assertIsNone(boss.signature)
 
     def test_tridents_use_distinct_transparent_sprites(self):
-        from web.boss_skills import _trident_image
+        from game_core.boss_skills import _trident_image
 
         gold, red = (_trident_image(color) for color in (False, True))
         for sprite in (gold, red):
@@ -1018,7 +1018,7 @@ class MobileWebTests(unittest.TestCase):
         self.assertNotEqual(pygame.image.tostring(gold, 'RGBA'), pygame.image.tostring(red, 'RGBA'))
 
     def test_claws_bubbles_and_tridents_damage_at_their_visible_impact(self):
-        from web.boss_skills import BossSignature
+        from game_core.boss_skills import BossSignature
 
         game = self.game
         game._start_game('medium')
@@ -1041,7 +1041,7 @@ class MobileWebTests(unittest.TestCase):
                     self.assertGreater(attack._claws(990)[0][1] - 145, config.SCREEN_HEIGHT)
 
     def test_boss_fire_burns_for_four_seconds_with_one_hit_per_second(self):
-        from web.boss_skills import BossSignature
+        from game_core.boss_skills import BossSignature
 
         game = self.game
         game._start_game('medium')
@@ -1065,7 +1065,7 @@ class MobileWebTests(unittest.TestCase):
         self.assertFalse(delayed.hit(boss, inside, 3000))
 
     def test_octopus_lashes_three_times_and_abyss_bite_is_lethal(self):
-        from web.boss_skills import BossSignature, LASH_MS
+        from game_core.boss_skills import BossSignature, LASH_MS
 
         game = self.game
         game._start_game('medium')
@@ -1103,7 +1103,7 @@ class MobileWebTests(unittest.TestCase):
             damage.assert_not_called()
 
     def test_abyss_bite_exits_below_and_returns_from_above(self):
-        from web.boss_skills import BossSignature, CHASE_MS
+        from game_core.boss_skills import BossSignature, CHASE_MS
 
         game = self.game
         for size in ((844, 390), (390, 844)):
@@ -1147,7 +1147,7 @@ class MobileWebTests(unittest.TestCase):
                 self.assertLessEqual(name_rect.bottom, hp_rect.top)
 
     def test_hd_controls_match_native_at_one_to_one_scale(self):
-        from web.render import RenderSurface
+        from game_core.render import RenderSurface
 
         self.game._start_game('medium')
         for size in ((480, 850), (844, 390)):
@@ -1164,7 +1164,7 @@ class MobileWebTests(unittest.TestCase):
             self.assertEqual(pygame.image.tobytes(actual, 'RGBA'), pygame.image.tobytes(expected, 'RGBA'))
 
     def test_hd_battle_draws_at_physical_resolution_without_moving_hitboxes(self):
-        from web.render import RenderSurface, Draw
+        from game_core.render import RenderSurface, Draw
 
         self.game._start_game('medium')
         for size in ((780, 1688), (1688, 780)):
@@ -1202,9 +1202,9 @@ class MobileWebTests(unittest.TestCase):
                     config.SCR = scene
 
     def test_hd_projectiles_and_skills_render_without_changing_hitboxes(self):
-        from web.entities import BossProjectile, Bullet, FireWall, IceFloor, MagneticStorm, RadiationLaser
-        from web.render import RenderSurface
-        from web.special_bosses import CrescentWave, ReturningAxe, ZongBomb
+        from game_core.entities import BossProjectile, Bullet, FireWall, IceFloor, MagneticStorm, RadiationLaser
+        from game_core.render import RenderSurface
+        from game_core.special_bosses import CrescentWave, ReturningAxe, ZongBomb
 
         for size in ((780, 1688), (1688, 780)):
             config.update_mobile_view(size)

@@ -16,7 +16,7 @@
 | 杂兵按武器分别累计伤害，换枪后需要重新打对应的阈值。第二轮起部分玩家输出每轮增长 30%。 | 杂兵与 Boss 的成长和玩家成长互相抵消，伤害来源难比较。 | 统一生命结算，取消轮次给玩家加伤。 |
 | 单个敌人越线或 Boss 接触可直接触发续关。无限计时用实时时钟，开商店、暂停与切后台会影响压力。 | 同一次失误的惩罚受设备和场景影响，续关也可能接着被近身弹击中。 | 越线按血量惩罚，统一保护和有效战斗时钟，续关保留进度并留出操作窗口。 |
 
-现行入口及覆盖逻辑在 [web/game.py](../web/game.py)，Boss 基础定义在 [web/config.py](../web/config.py)，时钟入口在 [web/main.py](../web/main.py)，实体与专属 Boss 规则在 [web/entities.py](../web/entities.py) 和 [web/special_bosses.py](../web/special_bosses.py)。
+现行入口及覆盖逻辑在 [game_core/game.py](../game_core/game.py)，Boss 基础定义在 [game_core/config.py](../game_core/config.py)，时钟入口在 [game_core/main.py](../game_core/main.py)，实体与专属 Boss 规则在 [game_core/entities.py](../game_core/entities.py) 和 [game_core/special_bosses.py](../game_core/special_bosses.py)。
 
 ## 2. 模式流程与唯一进度口径
 
@@ -87,10 +87,10 @@
 
 ## 6. 时钟、界面与代码落点
 
-1. **进度和参数**。在 `web/config.py` 定义独立无限模式参数，在 `web/game.py` 的 `_begin_infinite_run`、`_trigger_infinite_boss`、`_kill_boss` 接入统一累计进度。移除仅用于旧无限增长的公式。以同一已击败数量派生 Boss 编号、轮次、难度和密度，避免重复写入互相矛盾的计数器。
+1. **进度和参数**。在 `game_core/config.py` 定义独立无限模式参数，在 `game_core/game.py` 的 `_begin_infinite_run`、`_trigger_infinite_boss`、`_kill_boss` 接入统一累计进度。移除仅用于旧无限增长的公式。以同一已击败数量派生 Boss 编号、轮次、难度和密度，避免重复写入互相矛盾的计数器。
 2. **生成和伤害**。修改 `spawn_enemy`、`_spawn_infinite_enemies_to_target` 及两条战斗更新路径。使用已存在的共享生命结算和弹幕调度方法，给无限模式显式传入它自己的参数。Boss 和杂兵攻防、道具、角色技能统一使用独立模式规则。避免把模式名设成战役困难，或通过伪造战役档位来驱动分支。
-3. **计时与续关**。让 `web/main.py` 的固定步进覆盖无限模式。复用 `config.game_ticks()`，有效时间只在实际战斗更新时推进。暂停、商店、页面不可见、等待续关和续关倒计时都停止战斗时钟，倒计时用独立实时时钟，避免把倒计时加进下一次刷怪。关闭商店返回进入前的实际状态。低帧恢复每帧追赶最多 4 步，后台恢复首帧清除积压。
-4. **可达性与界面**。复用 `_hazard_warning_ms`、`_queue_boss_shots`、激光危险区和实际战斗边界。专属招式在 `web/special_bosses.py` 读取独立规则。旋转时映射在场实体和锁定危险区的相对坐标，保留倒计时与阶段，旋转当帧跳过额外碰撞。HUD 显示轮次、轮内 Boss 序号、积分和续关数。入口文案改为「全装备 · 免费弹药」，避免把缩短冷却写成无冷却。
+3. **计时与续关**。让 `game_core/main.py` 的固定步进覆盖无限模式。复用 `config.game_ticks()`，有效时间只在实际战斗更新时推进。暂停、商店、页面不可见、等待续关和续关倒计时都停止战斗时钟，倒计时用独立实时时钟，避免把倒计时加进下一次刷怪。关闭商店返回进入前的实际状态。低帧恢复每帧追赶最多 4 步，后台恢复首帧清除积压。
+4. **可达性与界面**。复用 `_hazard_warning_ms`、`_queue_boss_shots`、激光危险区和实际战斗边界。专属招式在 `game_core/special_bosses.py` 读取独立规则。旋转时映射在场实体和锁定危险区的相对坐标，保留倒计时与阶段，旋转当帧跳过额外碰撞。HUD 显示轮次、轮内 Boss 序号、积分和续关数。入口文案改为「全装备 · 免费弹药」，避免把缩短冷却写成无冷却。
 5. **隔离与回归**。原来将战役与无限分开的逻辑按功能提取必要的共用部分，各模式配置留在各自入口。更新旧无限测试里的 300/400 HP 断言，保留战役与自定义的既有断言。实施后更新 [WEB.md](WEB.md) 的无限模式玩法说明。
 
 ## 7. 验收清单

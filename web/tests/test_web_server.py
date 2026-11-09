@@ -157,6 +157,18 @@ class WebServerTests(unittest.TestCase):
                     worker.join()
 
 
+class WindowsPortTests(unittest.TestCase):
+    def test_windows_does_not_run_posix_port_cleanup(self):
+        from web.run_web import release_port
+        with patch('web.run_web.sys.platform', 'win32'), \
+                patch('web.run_web.subprocess.run') as run, patch('web.run_web.os.kill') as kill:
+            release_port(8000)
+        run.assert_not_called()
+        kill.assert_not_called()
+
+
+@patch('web.run_web.sys.platform', 'linux')
+@patch('web.run_web.signal.SIGKILL', 9, create=True)
 class PortCleanupTests(unittest.TestCase):
     def test_kills_only_listening_processes_on_requested_port(self):
         import signal
