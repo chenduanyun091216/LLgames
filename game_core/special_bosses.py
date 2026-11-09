@@ -9,7 +9,7 @@ from . import config
 from .asset_loader import scale_surface_cached
 from .entities import Boss, BossProjectile
 from .sprites import _circle, _rect, blit_lit_sprite
-from .visuals import draw_electric_arc
+from .visuals import blit_label, draw_electric_arc
 
 
 class ReturningAxe(BossProjectile):
@@ -630,13 +630,18 @@ class ZongBoss(Boss):
                                      (x - dx, y - dy), (x + dx, y + dy), 2)
         pygame.draw.rect(snow, (170, 230, 255, 95), snow.get_rect(), 5)
         message = '极寒暴雪 · 移速与射速减半' if reduction == 50 else f'极寒暴雪 · 移速与射速降低 {reduction}%'
-        label = font.render(message, True, (225, 250, 255))
-        box = pygame.Rect(config.SCREEN_WIDTH // 2 - label.get_width() // 2 - 16, 246,
-                          label.get_width() + 32, label.get_height() + 12)
-        pygame.draw.rect(snow, (8, 38, 78, 175), box, border_radius=8)
-        pygame.draw.rect(snow, (180, 235, 255, 190), box, 2, border_radius=8)
-        surf.blit(snow, (0, 0))
-        surf.blit(label, (box.x + 16, box.y + 6))
+        width, height = font.size(message)
+        box = pygame.Rect(config.SCREEN_WIDTH // 2 - width // 2 - 16, 246,
+                          width + 32, height + 12)
+        if isinstance(surf, RenderSurface) and surf.desktop_ui:
+            surf.blit(snow, (0, 0))
+            Draw.rect(surf, (8, 38, 78, 175), box, border_radius=8)
+            Draw.rect(surf, (180, 235, 255, 190), box, 2, 8)
+        else:
+            pygame.draw.rect(snow, (8, 38, 78, 175), box, border_radius=8)
+            pygame.draw.rect(snow, (180, 235, 255, 190), box, 2, border_radius=8)
+            surf.blit(snow, (0, 0))
+        blit_label(surf, font, message, (225, 250, 255), box.center, 20)
 
     def draw(self, surf):
         now = config.game_ticks()
@@ -669,5 +674,5 @@ class ZongBoss(Boss):
                                             int(bar_width * self.body_hp[i] / (self.max_hp / 2)),
                                             bar_height))
                 if label:
-                    title = self.font_hp.render(label, True, (255, 250, 215))
-                    surf.blit(title, (int(x - title.get_width() // 2), int(self.y + self.h + 16)))
+                    center = (int(x), int(self.y + self.h + 16) + self.font_hp.get_height() // 2)
+                    blit_label(surf, self.font_hp, label, (255, 250, 215), center, 14, bold=True)

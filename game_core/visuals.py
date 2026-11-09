@@ -5,11 +5,12 @@ from functools import lru_cache
 
 import pygame
 
-from .render import Draw
+from .config import make_font
+from .render import Draw, RenderSurface
 
 
 @lru_cache(maxsize=96)
-def panel_surface(w, h, accent, fill, radius, alpha):
+def panel_surface(w, h, accent, fill, radius, alpha, stroke=1):
     # Draw the contour at 2× so rounded edges survive narrow-screen scaling.
     size = (w * 2, h * 2)
     panel = pygame.Surface(size, pygame.SRCALPHA)
@@ -22,10 +23,39 @@ def panel_surface(w, h, accent, fill, radius, alpha):
                     for base, tint in zip(fill, accent))
         pygame.draw.line(panel, (*rgb, alpha), (0, row), (size[0] - 1, row))
     panel.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-    pygame.draw.rect(panel, (*accent, 216), panel.get_rect(), 2, border_radius=radius)
-    pygame.draw.rect(panel, (*accent, 54), panel.get_rect().inflate(-4, -4),
-                     2, border_radius=max(1, radius - 2))
+    pygame.draw.rect(panel, (*accent, 216), panel.get_rect(), 2 * stroke, border_radius=radius)
+    pygame.draw.rect(panel, (*accent, 54), panel.get_rect().inflate(-4 * stroke, -4 * stroke),
+                     2, border_radius=max(1, radius - 2 * stroke))
     return pygame.transform.smoothscale(panel, (w, h))
+
+
+@lru_cache(maxsize=128)
+def _native_label(text, size, bold, color):
+    return make_font(size, bold=bold).render(text, True, color)
+
+
+@lru_cache(maxsize=256)
+def small_desktop_label(font, text, color, size, *, alpha=255):
+    # Average the coverage of a 2× glyph raster at the final pixel size.
+    image = pygame.transform.smoothscale(font.render(text, True, color), size)
+    if alpha != 255:
+        image.set_alpha(alpha)
+    return image
+
+
+def blit_label(target, font, text, color, center, size, *, bold=False, alpha=255):
+    native = isinstance(target, RenderSurface) and target.desktop_ui
+    if native:
+        image = _native_label(text, target.length(size), bold, color)
+        center = target.point(center)
+        blit = target.blit_pixels
+    else:
+        image = font.render(text, True, color)
+        blit = target.blit
+    if alpha != 255:
+        image = image.copy()
+        image.set_alpha(alpha)
+    blit(image, image.get_rect(center=center))
 
 
 @lru_cache(maxsize=32)
@@ -44,26 +74,49 @@ def draw_glow(surface, center, radius, color, opacity=255):
     surface.blit(glow, glow.get_rect(center=center))
 
 
-@lru_cache(maxsize=3)
-def _bubble(radius):
+@lru_cache(maxsize=48)
+def _bubble(radius, opacity):
     bubble = pygame.Surface((radius * 2 + 2, radius * 2 + 2), pygame.SRCALPHA)
     center = (radius + 1, radius + 1)
-    pygame.draw.circle(bubble, (140, 223, 240, 54), center, radius, 1)
-    pygame.draw.circle(bubble, (223, 249, 255, 98), (radius, radius), 1)
+    pygame.draw.circle(bubble, (162, 225, 238, round(95 * opacity / 16)), center, radius, 1)
+    bubble.set_at((radius, 2), (222, 247, 255, round(156 * opacity / 16)))
     return bubble
 
 
-def draw_water_drift(surface, left, right, bottom, now):
-    if bottom <= 0:
-        return
-    width = right - left
-    for i in range(18):
-        x = left + width * (((i * 47 + 13) % 97) / 97)
-        x += math.sin(now * 0.0008 + i) * 7
-        near = i % 3 == 0
-        y = (i * 71 - now * (0.032 if near else 0.013)) % bottom
-        bubble = _bubble(4 if near else 2 + i % 2)
-        surface.blit(bubble, bubble.get_rect(center=(round(x), round(y))))
+@lru_cache(maxsize=48)
+def _scaled_bubble(radius, opacity, diameter):
+    bubble = _bubble(radius, opacity)
+    if diameter == bubble.get_width():
+        return bubble
+    return pygame.transform.smoothscale(bubble, (diameter, diameter))
+
+
+def draw_water_drift(surface, now):
+    width, height = surface.get_size()
+    rendered = isinstance(surface, RenderSurface)
+    if rendered:
+        diameters = {radius: surface.length(radius * 2 + 2) for radius in (2, 3, 4)}
+    margin = 8  # Wrap fully outside the visible area.
+    for rise, count, seed in ((height, 24, 0), (max(1, height // 4), 12, 24)):
+        travel = rise + 2 * margin
+        for index in range(count):
+            i = index + seed
+            radius = 2 if seed else 2 + i % 3
+            speed = 0.015 + (radius - 2) * 0.007 + (i % 4) * 0.001
+            distance = now * speed
+            position = (travel * index / count - distance) % travel - margin
+            opacity = round(16 * max(0, min(1, position / rise)))
+            if opacity == 0:
+                continue
+            y = height - rise + position
+            x = width * (0.06 + 0.88 * ((i * 47 + 13) % 97) / 97)
+            x += math.sin(distance * 0.045 + i) * (radius + 2)
+            position = (round(x) - radius - 1, round(y) - radius - 1)
+            if rendered:
+                bubble = _scaled_bubble(radius, opacity, diameters[radius])
+                surface.blit_pixels(bubble, surface.point(position))
+            else:
+                surface.blit(_bubble(radius, opacity), position)
 
 
 def draw_electric_arc(surface, start, end, color, alpha, now, seed=0, thickness=2):

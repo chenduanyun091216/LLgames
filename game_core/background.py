@@ -39,7 +39,7 @@ def background_art(level, size):
             image = cover_image_asset(f'backgrounds/{stem}.{suffix}', size)
             if image is not None:
                 fade = pygame.Surface(size, pygame.SRCALPHA)
-                fade.fill((20, 39, 48, 52))
+                fade.fill((20, 39, 48, 76))
                 image.blit(fade, (0, 0))
                 return image.convert()
     return None

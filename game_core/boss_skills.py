@@ -6,7 +6,7 @@ from functools import lru_cache
 import pygame
 
 from . import config
-from .asset_loader import image_asset
+from .asset_loader import image_asset, scale_surface_cached
 from .render import Draw, RenderSurface
 from .sprites import blit_lit_sprite
 
@@ -218,20 +218,21 @@ class BossSignature:
         if image is None:
             return False
         blit_lit_sprite(surface, image, (boss.x - image.get_width() / 2,
-                                        boss.y - boss.h * .22), (130, 189, 207), 155)
+                                        boss.y - boss.h * .22), (130, 189, 207), 155,
+                        source='effects/boss_bite.png')
         return True
 
 
 @lru_cache(maxsize=2)
-def _claw_image(side):
-    image = image_asset('effects/boss_claw.png', (103, 145))
-    return pygame.transform.flip(image, not side, False) if image is not None else None
+def _claw_image(image, side):
+    return pygame.transform.flip(image, not side, False)
 
 
 def _draw_claw(surface, x, y, side):
-    image = _claw_image(side)
+    image = image_asset('effects/boss_claw.png')
     if image is not None:
-        _blit_art(surface, image, (round(x - image.get_width() / 2), round(y - image.get_height() + 24)))
+        image = _claw_image(image, side)
+        _blit_art(surface, image, (round(x - 103 / 2), round(y - 145 + 24)), (103, 145))
         return
     # Procedural fallback preserves the pincer silhouette if image assets are disabled.
     Draw.ellipse(surface, (111, 29, 25), (x - 20, y - 95, 40, 68))
@@ -282,25 +283,27 @@ def _draw_tentacle(surface, points):
 
 
 @lru_cache(maxsize=2)
-def _trident_image(red):
-    image = image_asset(TRIDENT_IMAGES[red])
-    if image is None:
-        return None
+def _crop_trident(image):
     bounds = image.get_bounding_rect(min_alpha=16)
     if not bounds:
         return None
-    size = (_clamp(round(bounds.w * 81 / bounds.h), 28, 42), 81)
-    return pygame.transform.smoothscale(image.subsurface(bounds), size)
+    return image.subsurface(bounds)
+
+
+def _trident_image(red):
+    source = image_asset(TRIDENT_IMAGES[red])
+    return _crop_trident(source) if source is not None else None
 
 
 def _draw_trident(surface, x, y, red):
     metal = (251, 89, 74) if red else (255, 208, 66)
     image = _trident_image(red)
     if image is not None:
-        left = round(x - image.get_width() / 2)
-        top = round(y + 30 - image.get_height())
+        width = _clamp(round(image.get_width() * 81 / image.get_height()), 28, 42)
+        left = round(x - width / 2)
+        top = round(y + 30 - 81)
         Draw.line(surface, (*metal, 115), (x, top + 4), (x, top - 19), 3)
-        _blit_art(surface, image, (left, top))
+        _blit_art(surface, image, (left, top), (width, 81))
         return
     shadow = (116, 33, 35) if red else (153, 96, 25)
     Draw.line(surface, shadow, (x, y - 43), (x, y + 22), 9)
@@ -314,25 +317,26 @@ def _draw_trident(surface, x, y, red):
     Draw.line(surface, (*metal, 110), (x, y - 45), (x, y - 64), 3)
 
 
-def _blit_art(surface, image, position):
+def _blit_art(surface, image, position, size):
     if isinstance(surface, RenderSurface):
-        surface.blit(image, position, static=True)
+        surface.blit(image, position, static=True, logical_size=size)
     else:
-        surface.blit(image, position)
+        surface.blit(scale_surface_cached(image, size), position)
 
 
 def _draw_fire(surface, x, y, radius, now, seed):
     for scale, alpha in ((1, 26), (.86, 44), (.68, 63)):
         Draw.circle(surface, (117, 43, 21, alpha), (x, y), round(radius * scale))
     Draw.circle(surface, (255, 108, 43, 117), (x, y), radius, 1)
-    image = image_asset('effects/boss_ground_fire.png', (round(radius * 2.1),
-                        round(radius * (1.2 + .05 * ((now // 95 + seed) % 4)))))
+    image = image_asset('effects/boss_ground_fire.png')
     if image is not None:
-        _blit_art(surface, image, (round(x - image.get_width() / 2), round(y + radius * .37 - image.get_height())))
-        foreground = image_asset('effects/boss_ground_fire.png', (round(radius * 1.58),
-                                 round(radius * (.86 + .05 * ((now // 110 + seed) % 3)))))
-        _blit_art(surface, foreground, (round(x - foreground.get_width() / 2 + radius * .08),
-                                       round(y + radius * .71 - foreground.get_height())))
+        width = round(radius * 2.1)
+        height = round(radius * (1.2 + .05 * ((now // 95 + seed) % 4)))
+        _blit_art(surface, image, (round(x - width / 2), round(y + radius * .37 - height)), (width, height))
+        width = round(radius * 1.58)
+        height = round(radius * (.86 + .05 * ((now // 110 + seed) % 3)))
+        _blit_art(surface, image, (round(x - width / 2 + radius * .08),
+                                  round(y + radius * .71 - height)), (width, height))
         for i in range(8):
             phase = (now * .0014 + i * .17 + seed * .2) % 1
             px = x + math.sin(i * 2.4 + phase * 3) * radius * .8

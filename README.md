@@ -33,6 +33,8 @@ python -m pip install -r requirements.txt
 | 通过 HTTPS 提供局域网访问 | `python run_web.py --cert /path/to/cert.pem --key /path/to/key.pem` |
 | 只构建 Web 版 | `python run_web.py --build-only` |
 
+PC 版支持键盘和鼠标。战斗中用键盘移动、射击和施放技能，右侧角色图标下方显示当前技能冷却。可点击「自动关」开启自动射击。
+
 本机浏览器可打开 `http://localhost:8001/`。首次 Web 构建需要联网获取运行时和字体，产物位于 `build/web-offline/`。
 
 Web 游戏由浏览器中的 Python 3.12（WASM）执行。通过 HTTPS 或本机 `localhost` 打开，等页面显示「离线资源已保存」后，可以在同一浏览器离线重开原地址。手机访问、证书和部署细节见 [Web 使用说明](docs/WEB.md)。

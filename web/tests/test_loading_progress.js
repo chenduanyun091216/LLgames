@@ -11,12 +11,16 @@ const box = {textContent: '', dataset: {}, addEventListener() {}, setAttribute()
 const button = {addEventListener() {}, toggleAttribute() {}};
 const choices = [{value: '1'}, {value: '1.5', checked: true}, {value: '2'}];
 const qualityHandlers = {};
+const qualityAttributes = new Set();
 const quality = {
-    style: {},
+    style: {setProperty(name, value) { this[name] = value; }},
     querySelectorAll: () => choices,
     querySelector: () => ({focus() {}}),
     addEventListener: (event, handler) => { qualityHandlers[event] = handler; },
-    toggleAttribute() {},
+    toggleAttribute(name, enabled) {
+        if (enabled) qualityAttributes.add(name);
+        else qualityAttributes.delete(name);
+    },
 };
 const storage = new Map();
 const cleared = [];
@@ -37,6 +41,9 @@ let callback;
 const context = {window: {isSecureContext: true, localStorage: {getItem: key => storage.get(key),
     setItem: (key, value) => storage.set(key, value)}},
     navigator: {serviceWorker: {register: async () => ({installing: worker})}}, console,
+    getComputedStyle: () => ({getPropertyValue: name => ({
+        '--quality-menu-width': '216px', '--quality-safe-right': '0px',
+    })[name]}),
     requestAnimationFrame: fn => { callback = fn; },
     document: {getElementById: id => elements[id], documentElement: {}, addEventListener() {}},
     MutationObserver: class { constructor(fn) { this.callback = fn; observers.push(this); } observe() {} }};
@@ -76,6 +83,13 @@ assert.strictEqual(loading.hidden, true);
 context.window.ttgamesDrawUI('[]', 480, 850, false, false);
 assert.strictEqual(quality.hidden, true);
 assert.deepStrictEqual(cleared, [[0, 0, 480, 850], [13, 93, 73, 21]]);
+assert.strictEqual(quality.style['--pause-bottom'], '500px');
+assert(!qualityAttributes.has('data-side'));
+canvas.clientWidth = 844;
+canvas.clientHeight = 390;
+context.window.ttgamesDrawUI('[]', 960, 444, false, true);
+assert.strictEqual(quality.style['--pause-right'], `${844 / 2 + 160 * 844 / 960}px`);
+assert(qualityAttributes.has('data-side'));
 
 assert.match(offlineStatus.textContent, /正在自动保存/);
 setImmediate(() => {

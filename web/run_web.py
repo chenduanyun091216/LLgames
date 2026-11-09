@@ -244,7 +244,7 @@ def finalize_webroot(pygbag_output):
                         '<fieldset><legend>画质设置</legend>'
                         '<label><input type="radio" name="quality" value="1">普通 <span>1 倍</span></label>'
                         '<label><input type="radio" name="quality" value="1.5" checked>默认 <span>1.5 倍</span></label>'
-                        '<label><input type="radio" name="quality" value="2">高清 <span>2 倍</span></label>'
+                        '<label><input type="radio" name="quality" value="2">高清 <span>1080p 级别</span></label>'
                         '</fieldset></details></body>')
     from PIL import Image
     with Image.open(WEBROOT / 'favicon.png') as icon:

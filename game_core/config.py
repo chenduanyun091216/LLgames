@@ -83,7 +83,8 @@ def update_mobile_view(window_size, layout_size=None):
     else:
         GAME_AREA_LEFT = 0
         GAME_AREA_RIGHT = SCREEN_WIDTH
-    SCR = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT)).convert()
+    # The composed scene is opaque, even when the native window has an alpha channel.
+    SCR = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), depth=32)
 
 
 def window_to_game(pos):

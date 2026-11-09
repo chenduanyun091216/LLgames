@@ -162,9 +162,21 @@
         loading.hidden = true;
         button.toggleAttribute('data-menu', !inBattle);
         quality.hidden = !paused;
-        if (!paused) quality.open = false;
-        quality.style.left = `${canvas.clientWidth / 2 + 100 * canvas.clientWidth / width}px`;
-        quality.style.top = `${canvas.clientHeight / 2 - 61 * canvas.clientHeight / height}px`;
+        if (paused) {
+            const scaleX = canvas.clientWidth / width;
+            const scaleY = canvas.clientHeight / height;
+            const pauseRight = canvas.clientWidth / 2 + 160 * scaleX;
+            const style = getComputedStyle(quality);
+            const menuWidth = parseFloat(style.getPropertyValue('--quality-menu-width'));
+            const safeRight = parseFloat(style.getPropertyValue('--quality-safe-right'));
+            quality.toggleAttribute('data-side', canvas.clientWidth - pauseRight >= menuWidth + 20 + safeRight);
+            quality.style.left = `${canvas.clientWidth / 2 + 100 * scaleX}px`;
+            quality.style.setProperty('--quality-top', `${canvas.clientHeight / 2 - 61 * scaleY}px`);
+            quality.style.setProperty('--pause-right', `${pauseRight}px`);
+            quality.style.setProperty('--pause-bottom', `${canvas.clientHeight / 2 + 75 * scaleY}px`);
+        } else {
+            quality.open = false;
+        }
         if (!ctx) return;
         prepareCache();
         const dpr = Math.min(3, window.devicePixelRatio || 1);

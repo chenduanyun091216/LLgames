@@ -13,6 +13,7 @@ from .render import RenderSurface
 
 FRAME_TIMING_TOLERANCE = 0.002
 DEFAULT_BROWSER_RENDER_DENSITY = 1.5
+HD_SHORT_EDGE = 1080
 
 
 def _draw_scaled(window, scaled):
@@ -30,7 +31,9 @@ def _draw_scaled(window, scaled):
 
 def _browser_size(window, viewport):
     density = getattr(window, 'ttgamesRenderDensity', None)
-    if density not in (1, 1.5, 2):
+    if density == 2 and min(viewport) > 0:
+        density = HD_SHORT_EDGE / min(viewport)
+    elif density not in (1, 1.5, 2):
         density = DEFAULT_BROWSER_RENDER_DENSITY
     return tuple(round(value * density) for value in viewport)
 
@@ -163,21 +166,21 @@ async def main():
         use_hd = game.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
         scene = config.SCR
         try:
-            if use_hd:
+            if use_hd or browser_window is None:
                 if foreground is None or foreground.get_size() != window.get_size():
                     foreground = pygame.Surface(window.get_size(), pygame.SRCALPHA)
                     rendered = None
                 if rendered is None or resized:
                     rendered = RenderSurface(foreground, scene.get_size(), config.VIEW_SIZE,
-                                             config.VIEW_OFFSET, track_damage=True)
+                                             config.VIEW_OFFSET, track_damage=True, desktop_ui=browser_window is None)
                     previous_background = None
                 config.SCR = rendered
                 background = background_art(level, config.VIEW_SIZE)
                 game.draw(labels, draw_background=background is None)
                 if show_timings:
                     compose_started = perf_counter()
-                if background is not None and background is previous_background and config.VIEW_OFFSET == (0, 0):
-                    rendered.restore_background(window, background)
+                if background is not None and background is previous_background:
+                    rendered.restore_background(window, background, config.OCEAN_DEEP)
                 elif background is not None:
                     if config.VIEW_SIZE != window.get_size():
                         window.fill(config.OCEAN_DEEP)
@@ -185,7 +188,7 @@ async def main():
                 else:
                     window.fill(config.OCEAN_DEEP)
                 rendered.composite_onto(window)
-                previous_background = background if config.VIEW_SIZE == window.get_size() else None
+                previous_background = background
             else:
                 previous_background = None
                 game.draw(labels)
@@ -201,8 +204,10 @@ async def main():
             in_battle = game.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
             if in_battle and not hidden:
                 submitted_at = perf_counter()
-                if fps_started is None:
+                if fps_started is None or resized:
                     fps_started = submitted_at
+                    fps_frames = 0
+                    update_seconds = draw_seconds = compose_seconds = submit_seconds = 0.0
                 else:
                     fps_frames += 1
                     if show_timings:
@@ -223,9 +228,12 @@ async def main():
                         fps_started = submitted_at
                         fps_frames = 0
                 fps_label = 'FPS --' if displayed_fps is None else f'FPS {displayed_fps}'
-                labels.append((fps_label, 10, False, (180, 220, 232), 17, 97, 65, 13, 'left'))
+                diagnostics_y = game.hud_diagnostics_y
+                labels.append((fps_label, 10, False, (180, 220, 232), *game.hud_fps_rect, 'right'))
                 if timing_label:
-                    labels.append((timing_label, 10, False, (180, 220, 232), 17, 111, 285, 13, 'left'))
+                    labels.append((timing_label, 10, False, (180, 220, 232), 17, diagnostics_y + 14, 285, 13, 'left'))
+                    labels.append((f'{window_size[0]} × {window_size[1]}', 10, False,
+                                   (180, 220, 232), 17, diagnostics_y + 28, 115, 13, 'left'))
             else:
                 fps_started = None
                 fps_frames = 0

@@ -1,11 +1,11 @@
-"""浏览器版触屏操作层；不改变桌面版输入。"""
+"""共用的屏幕控件，支持触屏和鼠标操作。"""
 import math
 from functools import lru_cache
 
 import pygame
 from . import config
 from .asset_loader import image_asset, scale_surface_cached
-from .render import Draw, RenderSurface
+from .render import Draw, RenderSurface, trim_transparent
 from .visuals import panel_surface
 from .config import CHARACTER_DEFS, WEAPON_DEFS, _CHAR_KEYS_ORDERED, _WEAPON_KEYS_ORDERED
 
@@ -28,7 +28,7 @@ _WEAPON_ASSETS = {
 
 
 @lru_cache(maxsize=96)
-def _control_art(diameter, corner, color, enabled, active, action, selected, source, icon_size):
+def _control_art(diameter, corner, color, enabled, active, action, selected, source, icon_size, stroke=1):
     padding = max(4, diameter // 7)
     size = diameter + 2 * padding
     tile = pygame.Surface((size, size), pygame.SRCALPHA)
@@ -39,7 +39,7 @@ def _control_art(diameter, corner, color, enabled, active, action, selected, sou
         fill = tuple(15 + channel // (4 if active else 6) for channel in color)
         border = color
     pygame.draw.rect(tile, (0, 7, 15, 170), rect.move(0, max(2, diameter // 24)), border_radius=corner)
-    tile.blit(panel_surface(diameter, diameter, border, fill, corner, 242 if enabled else 216), rect)
+    tile.blit(panel_surface(diameter, diameter, border, fill, corner, 242 if enabled else 216, stroke), rect)
     if source is not None:
         ratio = min(wanted / original for wanted, original in zip(icon_size, source.get_size()))
         icon = scale_surface_cached(source, tuple(max(1, round(value * ratio)) for value in source.get_size()))
@@ -49,11 +49,11 @@ def _control_art(diameter, corner, color, enabled, active, action, selected, sou
         tile.blit(icon, icon.get_rect(center=rect.center))
     if source is not None and not enabled:
         lock = pygame.Rect(0, 0, max(8, diameter // 4), max(6, diameter // 6))
-        lock.bottomright = (rect.right - 3, rect.bottom - 3)
+        lock.bottomright = (rect.right - 3 * stroke, rect.bottom - 3 * stroke)
         metal = (194, 216, 227)
         shackle = lock.inflate(-lock.w // 3, 0).move(0, -lock.h // 2)
-        pygame.draw.rect(tile, metal, shackle, width=1, border_radius=3)
-        pygame.draw.rect(tile, metal, lock, border_radius=2)
+        pygame.draw.rect(tile, metal, shackle, width=stroke, border_radius=3 * stroke)
+        pygame.draw.rect(tile, metal, lock, border_radius=2 * stroke)
     if selected:
         gold = (255, 224, 110)
         pygame.draw.rect(tile, gold, rect, max(2, diameter // 20), border_radius=corner)
@@ -124,15 +124,22 @@ class MobileControls:
         arc_long, arc_short = (88, 32) if compact else (96, 35)
         utility_y = 40 if compact else 48
         utility_radius = 22 if compact else 27
-        if compact:
-            char_y, char_gap, char_radius = 102, 62, 21
-            weapon_y, weapon_x, weapon_radius, weapon_gap = height - 191, (36, 104), 24, 66
+        if game.desktop_controls:
+            utility_y += 5
+            char_radius = weapon_radius = 20
+            char_positions = [(right, 104 + index * 48) for index in range(len(_CHAR_KEYS_ORDERED))]
+            weapon_positions = [(36, 144 + index * 48) for index in range(len(_WEAPON_KEYS_ORDERED))]
         else:
-            char_y = 145 if config.MOBILE_LANDSCAPE_VIEW else 222
-            char_gap, char_radius = 67, 25
-            weapon_y, weapon_x, weapon_radius, weapon_gap = height - 270, (56, 136), 30, 78
-        char_positions = ((left, char_y), (right, char_y),
-                          (left, char_y + char_gap), (right, char_y + char_gap))
+            if compact:
+                char_y, char_gap, char_radius = 102, 62, 21
+                weapon_y, weapon_x, weapon_radius, weapon_gap = height - 191, (36, 104), 24, 66
+            else:
+                char_y = 145 if config.MOBILE_LANDSCAPE_VIEW else 222
+                char_gap, char_radius = 67, 25
+                weapon_y, weapon_x, weapon_radius, weapon_gap = height - 270, (56, 136), 30, 78
+            char_positions = ((left, char_y), (right, char_y),
+                              (left, char_y + char_gap), (right, char_y + char_gap))
+            weapon_positions = [(x, y) for y in (weapon_y - weapon_gap, weapon_y) for x in weapon_x]
         skill_radius = 24 if compact else 28
         button_rows = [
             ('shop', (left, utility_y), utility_radius, '商店', (85, 190, 230)),
@@ -140,13 +147,15 @@ class MobileControls:
             ('skill1', (right - arc_long, fire_y - arc_short), skill_radius, 'S1', (115, 205, 255)),
             ('skill2', (right - arc_short, fire_y - arc_long), skill_radius, 'S2', (115, 205, 255)),
             ('attack', (right, fire_y), 34 if compact else 36, '射击', (255, 125, 95)),
-            ('auto_fire', (right - 78, fire_y + 36), 24 if compact else 25, '自动', (70, 220, 145)),
+            ('auto_fire', (right if game.desktop_controls else right - 78, fire_y + 36),
+             24 if compact else 25, '自动', (70, 220, 145)),
         ]
-        for index, key in enumerate(_WEAPON_KEYS_ORDERED):
-            center = (weapon_x[index % 2], weapon_y - weapon_gap * (1 - index // 2))
+        for key, center in zip(_WEAPON_KEYS_ORDERED, weapon_positions):
             button_rows.append((f'weapon:{key}', center, weapon_radius,
                                 WEAPON_DEFS[key].name, WEAPON_DEFS[key].color))
-        if game.player.character == 'radiation':
+        if game.desktop_controls:
+            button_rows = [row for row in button_rows if row[0] not in ('attack', 'skill1', 'skill2')]
+        elif game.player.character == 'radiation':
             special_x = right - 174
             button_rows.extend([
                 ('laser', (special_x, fire_y - gap), utility_radius, 'L', (165, 245, 125)),
@@ -194,10 +203,12 @@ class MobileControls:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             for action, center, radius, _label, _color in self._buttons(game):
                 padding = 0 if action.startswith('weapon:') else 8
+                if game.desktop_controls and action.startswith('character:'):
+                    padding = 4
                 if math.hypot(position[0] - center[0], position[1] - center[1]) <= radius + padding:
                     self.fingers[-1] = action
                     return action
-            if (self.joystick_id is None and
+            if (not game.desktop_controls and self.joystick_id is None and
                     position[0] <= config.SCREEN_WIDTH * 0.45 and
                     position[1] >= config.SCREEN_HEIGHT * 0.5):
                 self.fingers[-1] = 'joystick'
@@ -238,15 +249,67 @@ class MobileControls:
         scale = min(1.0, (distance - dead_zone) / (radius * 0.5 - dead_zone))
         self.axis = (dx / distance * scale, dy / distance * scale)
 
+    def _skill_timing(self, game, skill_type, now):
+        player = game.player
+        end = player.skill_cooldowns.get(skill_type, 0)
+        duration = player.skill_display_duration.get(skill_type, 0)
+        active_end = player.skill_active_until.get(skill_type, 0)
+        if active_end > now:
+            end = active_end + player.skill_active_cd.get(skill_type, 0)
+        if skill_type == 'radiation_laser':
+            laser = next((item for item in game.radiation_lasers
+                          if item.owner is player and not item.is_expired(now)), None)
+            if laser:
+                duration = laser.duration + laser.cooldown_ms
+                end = laser.spawn_time + duration
+        return end, duration
+
+    def _draw_desktop_skill_status(self, game, character_button):
+        _, (cx, cy), radius, _, _ = character_button
+        character = CHARACTER_DEFS.get(game.player.character)
+        skill_actions = {'K': 'p1_skill1', 'L': 'p1_skill2'}
+        skills = [(skill.name, skill.skill_type, skill_actions[skill.key_name])
+                  for skill in character.skills] if character else [
+            ('手榴弹', 'fisher_grenade', 'p1_skill1')]
+        if game.player.character == 'radiation':
+            skills.extend([('辐射激光', 'radiation_laser', 'p1_laser'),
+                           ('飞镖', 'dart_shield', 'p1_dart')])
+        keys = [game._key(action) for _, _, action in skills]
+        key_width = max(game._keycap_width(key) for key in keys)
+        name_width, status_width = 54, 30
+        padding, gap, row_height = 6, 4, 18
+        width = padding * 2 + name_width + key_width + status_width + gap * 2
+        x, y = cx + radius - width, cy + radius + 8
+        key_x = x + padding + name_width + gap
+        status_x = key_x + key_width + gap
+        game._draw_panel(x, y, width, 8 + row_height * len(skills), r=7)
+        now = config.game_ticks()
+        for index, ((name, skill_type, _), key) in enumerate(zip(skills, keys)):
+            end, _ = self._skill_timing(game, skill_type, now)
+            seconds = math.ceil((end - now) / 1000)
+            text, color = (f'{seconds}s', (255, 220, 135)) if seconds > 0 else ('就绪', (118, 233, 193))
+            row_y = y + 4 + row_height * index
+            game._draw_text_fit(name, game.font_skill_status, (231, 243, 255),
+                                pygame.Rect(x + padding, row_y, name_width, row_height))
+            game._draw_keycap(key, (key_x + key_width // 2, row_y + row_height // 2))
+            game._draw_text_fit(text, game.font_skill_status, color,
+                                pygame.Rect(status_x, row_y, status_width, row_height), align='right')
+
     def draw(self, surface, game):
         hd = isinstance(surface, RenderSurface)
         scale = surface.scale if hd else 1
         blit = surface.blit_pixels if hd else surface.blit
 
         def blit_center(image, center):
-            blit(image, image.get_rect(center=surface.point(center) if hd else center))
+            if hd and not game.desktop_controls:
+                x, y = surface.point(center)
+                art, dx, dy = trim_transparent(image)
+                blit(art, (x + dx, y + dy))
+            else:
+                blit(image, image.get_rect(center=surface.point(center) if hd else center))
 
-        for action, center, radius, label, color in self._buttons(game):
+        buttons = self._buttons(game)
+        for action, center, radius, label, color in buttons:
             active = action in self.fingers.values()
             enabled = action in ('shop', 'pause', 'attack', 'auto_fire', 'skill1', 'laser', 'dart')
             if action == 'auto_fire':
@@ -273,8 +336,20 @@ class MobileControls:
             corner = radius if action in ('attack', 'skill1', 'skill2') else 12
             icon_size = tuple(round(value * scale) for value in icon_box) if source is not None else None
             art = _control_art(diameter, round(corner * scale), color, enabled,
-                               active, action, selected, source, icon_size)
+                               active, action, selected, source, icon_size,
+                               max(1, round(scale)) if game.desktop_controls else 1)
             blit_center(art, center)
+            if game.desktop_controls:
+                key = game.desktop_button_key(action)
+                cx, cy = center
+                offset = radius + 6 + game._keycap_width(key) // 2
+                if action.startswith('weapon:'):
+                    hint = (cx + offset, cy)
+                elif action in ('shop', 'pause'):
+                    hint = (cx, cy - radius - 11)
+                else:
+                    hint = (cx - offset, cy)
+                game._draw_keycap(key, hint)
             if source is not None:
                 continue
             font = game.font_tiny if action in ('shop', 'auto_fire') else game.font_small
@@ -290,17 +365,7 @@ class MobileControls:
                 skill_type = 'radiation_laser' if action == 'laser' else 'dart_shield'
             if skill_type:
                 now = config.game_ticks()
-                end = game.player.skill_cooldowns.get(skill_type, 0)
-                duration = game.player.skill_display_duration.get(skill_type, 0)
-                active_end = game.player.skill_active_until.get(skill_type, 0)
-                if active_end > now:
-                    end = active_end + game.player.skill_active_cd.get(skill_type, 0)
-                if action == 'laser':
-                    laser = next((item for item in game.radiation_lasers
-                                    if item.owner is game.player and not item.is_expired(now)), None)
-                    if laser:
-                        duration = laser.duration + laser.cooldown_ms
-                        end = laser.spawn_time + duration
+                end, duration = self._skill_timing(game, skill_type, now)
                 if end > now:
                     remaining = end - now
                     label = f'{math.ceil(remaining / 1000)}s'
@@ -316,9 +381,15 @@ class MobileControls:
                 center = (center[0], center[1] - 4)
             label_rect = pygame.Rect(0, 0, radius * 2 - 6, 25)
             label_rect.center = center
-            if not game.queue_ui_text(label, font, text_color, label_rect, 'center'):
+            if game.desktop_controls:
+                game._draw_text_fit(label, font, text_color, label_rect, align='center')
+            elif not game.queue_ui_text(label, font, text_color, label_rect, 'center'):
                 text = font.render(label, True, text_color)
                 surface.blit(text, text.get_rect(center=center))
+
+        if game.desktop_controls:
+            self._draw_desktop_skill_status(game, buttons[-1])
+            return
 
         short = config.SCREEN_HEIGHT < 500
         center = self.joystick_origin or ((70, config.SCREEN_HEIGHT - 70) if short else

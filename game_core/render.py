@@ -9,15 +9,24 @@ def _scaled_static_image(image, size):
     return pygame.transform.smoothscale(image, size)
 
 
+@lru_cache(maxsize=128)
+def trim_transparent(image):
+    bounds = image.get_bounding_rect()
+    return (image.subsurface(bounds), bounds.x - image.get_width() // 2,
+            bounds.y - image.get_height() // 2)
+
+
 class RenderSurface:
     TILE = 48
 
-    def __init__(self, surface, logical_size, view_size, offset, *, track_damage=False):
+    def __init__(self, surface, logical_size, view_size, offset, *, track_damage=False, desktop_ui=False):
         self.surface = surface
         self.logical_size = logical_size
         self.scale = view_size[0] / logical_size[0]
         self.offset = offset
-        self._dirty_rows = ([0] * ((surface.get_height() + self.TILE - 1) // self.TILE)
+        self.desktop_ui = desktop_ui
+        self.tile = 32 if not desktop_ui else self.TILE
+        self._dirty_rows = ([0] * ((surface.get_height() + self.tile - 1) // self.tile)
                             if track_damage else None)
         self._previous_areas = []
 
@@ -35,8 +44,8 @@ class RenderSurface:
     def rect(self, rect):
         return (*self.point(rect[:2]), *(self.length(value) for value in rect[2:]))
 
-    def blit(self, image, position, *, static=False):
-        width, height = image.get_size()
+    def blit(self, image, position, *, static=False, logical_size=None):
+        width, height = logical_size or image.get_size()
         size = self.length(width), self.length(height)
         if min(size) == 0:
             return
@@ -48,23 +57,32 @@ class RenderSurface:
     def mark(self, rect):
         rows = self._dirty_rows
         if rows is not None and rect:
-            left = rect.left // self.TILE
-            right = (rect.right - 1) // self.TILE
+            left = rect.left // self.tile
+            right = (rect.right - 1) // self.tile
             mask = ((1 << (right - left + 1)) - 1) << left
-            for row in range(rect.top // self.TILE, (rect.bottom - 1) // self.TILE + 1):
+            for row in range(rect.top // self.tile, (rect.bottom - 1) // self.tile + 1):
                 rows[row] |= mask
         return rect
 
     def blit_pixels(self, image, position):
         self.mark(self.surface.blit(image, position))
 
-    def restore_background(self, target, background):
+    def restore_background(self, target, background, margin_color='black'):
+        bounds = background.get_rect(topleft=self.offset)
+        if bounds == target.get_rect():
+            for area in self._previous_areas:
+                target.blit(background, area.topleft, area)
+            return
         for area in self._previous_areas:
-            target.blit(background, area.topleft, area)
+            if not bounds.contains(area):
+                target.fill(margin_color, area)
+            visible = area.clip(bounds)
+            if visible:
+                target.blit(background, visible.topleft, visible.move(-bounds.x, -bounds.y))
 
     def composite_onto(self, target):
         """Blend only touched tiles, then clear them for the next frame."""
-        tile = self.TILE
+        tile = self.tile
         bounds = self.surface.get_rect()
         self._previous_areas.clear()
         for row, mask in enumerate(self._dirty_rows):

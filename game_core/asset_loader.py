@@ -7,6 +7,7 @@ import pygame
 
 
 ASSET_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'assets', 'images')
+PREFERRED_ASSET_DIR = None
 _IMAGE_CACHE = {}
 _SCALED_CACHE = {}
 
@@ -28,20 +29,25 @@ def scale_surface_cached(surf, size, smooth=True):
 def image_asset(name, size=None):
     if os.environ.get('TTGAMES_DISABLE_IMAGE_ASSETS') == '1':
         return None
-    cache_key = (name, None if size is None else tuple(size))
+    source_key = (PREFERRED_ASSET_DIR, name, None)
+    cache_key = (PREFERRED_ASSET_DIR, name, None if size is None else tuple(size))
     cached = _IMAGE_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    path = os.path.join(ASSET_DIR, name)
-    if not os.path.exists(path):
-        return None
-    try:
-        surf = _IMAGE_CACHE.get((name, None))
+    surf = _IMAGE_CACHE.get(source_key)
+    if surf is None:
+        for directory in (PREFERRED_ASSET_DIR, ASSET_DIR):
+            if directory is None:
+                continue
+            path = os.path.join(directory, name)
+            try:
+                surf = pygame.image.load(path).convert_alpha()
+            except (pygame.error, FileNotFoundError):
+                continue
+            _IMAGE_CACHE[source_key] = surf
+            break
         if surf is None:
-            surf = pygame.image.load(path).convert_alpha()
-            _IMAGE_CACHE[(name, None)] = surf
-    except (pygame.error, FileNotFoundError):
-        return None
+            return None
     if size and surf.get_size() != size:
         surf = scale_surface_cached(surf, size)
     _IMAGE_CACHE[cache_key] = surf

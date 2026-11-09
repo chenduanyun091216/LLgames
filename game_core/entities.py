@@ -5,9 +5,9 @@
 import math
 import random
 import pygame
-from .render import Draw, blit_effect, effect_layer
+from .render import Draw, RenderSurface, blit_effect, effect_layer
 from . import config
-from .visuals import draw_electric_arc, draw_glow
+from .visuals import blit_label, draw_electric_arc, draw_glow
 from .boss_skills import BOSS_COLORS, SIGNATURES
 from .asset_loader import image_asset, image_asset_supersampled, scale_surface_cached
 from . import animation
@@ -473,17 +473,18 @@ class Enemy:
             _circle(surf, (160, 255, 80, 90), (int(self.x), int(self.y + self.h // 2)),
                     max(round(12 * self.size_scale), self.w // 4), max(1, round(2 * self.size_scale)))
         if self.is_zongzong and self.label_font:
-            label = self.label_font.render('粽', True, (90, 50, 20))
-            lx = int(self.x - label.get_width() // 2)
-            ly = int(self.y - label.get_height() - 18)
-            _circle(surf, (255, 236, 160, 230), (int(self.x), ly + label.get_height() // 2), 15)
-            surf.blit(label, (lx, ly))
+            height = self.label_font.size('粽')[1]
+            center = (int(self.x), int(self.y - height - 18) + height // 2)
+            _circle(surf, (255, 236, 160, 230), center, 15)
+            blit_label(surf, self.label_font, '粽', (90, 50, 20), center,
+                       max(1, round(18 * self.size_scale)), bold=True)
         if self.is_zongzong and config.game_ticks() < self.immune_text_until and self.immune_font:
-            immune = self.immune_font.render('免疫', True, (255, 245, 210))
-            tx = int(self.x - immune.get_width() // 2)
-            ty = int(self.y + self.h // 2 - immune.get_height() // 2)
-            _rect(surf, (60, 30, 10, 185), (tx - 5, ty - 2, immune.get_width() + 10, immune.get_height() + 4), border_radius=4)
-            surf.blit(immune, (tx, ty))
+            width, height = self.immune_font.size('免疫')
+            box = pygame.Rect(0, 0, width + 10, height + 4)
+            box.center = (int(self.x), int(self.y) + self.h // 2)
+            _rect(surf, (60, 30, 10, 185), box, border_radius=4)
+            blit_label(surf, self.immune_font, '免疫', (255, 245, 210), box.center,
+                       max(1, round(16 * self.size_scale)), bold=True)
         # HP条
         bar_w = self.w + (round(10 * self.size_scale) if self.is_zongzong else 0)
         bar_h = max(1, round((7 if self.is_zongzong else 4) * self.size_scale))
@@ -600,7 +601,12 @@ class Coin:
         # 金币辉光
         _circle(surf, (255, 215, 0, 40), (int(self.x), int(self.y)), self.radius + 4)
         _circle(surf, (255, 235, 80, 30), (int(self.x), int(self.y)), self.radius + 2)
-        surf.blit(self.surface, (int(self.x - self.radius), int(self.y - self.radius)))
+        position = (int(self.x - self.radius), int(self.y - self.radius))
+        if isinstance(surf, RenderSurface):
+            source = image_asset('ui/coin.png') or self.surface
+            surf.blit(source, position, logical_size=self.surface.get_size(), static=True)
+        else:
+            surf.blit(self.surface, position)
         phase = config.game_ticks() % 1400
         if phase < 240:
             glint = (self.x - 7 + phase * 14 / 240, self.y - 6)
@@ -645,8 +651,7 @@ class GiftBox:
         _rect(surf, (255, 215, 70), (x + r - 4, y, 8, r * 2), border_radius=3)
         _rect(surf, (255, 215, 70), (x, y + r - 4, r * 2, 8), border_radius=3)
         _rect(surf, (255, 245, 165, 120), (x + 4, y + 4, r * 2 - 8, r - 5), border_radius=5, width=1)
-        text = self.font.render('?', True, (255, 255, 255))
-        surf.blit(text, (int(self.x - text.get_width() // 2), int(self.y - text.get_height() // 2)))
+        blit_label(surf, self.font, '?', (255, 255, 255), (int(self.x), int(self.y)), 18, bold=True)
 
 
 class Particle:
@@ -1138,10 +1143,13 @@ class RadiationLaser:
     def is_expired(self, now):
         return now - self.spawn_time >= self.duration
 
+    def beam_width(self):
+        return int(Player.SIZE[0] * 0.50)
+
     def rect(self):
-        w = int(Player.SIZE[0] * 0.65)
+        w = self.beam_width()
         bottom = int(self.owner.y - Player.SIZE[1] // 2)
-        extra = int(abs(self.swing_power) + 18)
+        extra = int(abs(self.swing_power) + 12)
         return pygame.Rect(int(self.owner.x - w // 2 - extra), 0, w + extra * 2, max(1, bottom))
 
     def whip(self, now):
@@ -1187,15 +1195,16 @@ class RadiationLaser:
         last_outer = None
         last_inner = None
         last_core = None
+        base_width = self.beam_width()
         for y in range(0, r.h, 8):
             t = y / max(1, r.h)
             offset = math.sin(now * speed + t * 8.5) * swing * (0.2 + 0.9 * (1 - t))
-            width = int(Player.SIZE[0] * 0.65) + int(18 * (1 - t))
+            width = base_width + int(12 * (1 - t))
             outer = (cx + int(offset), y)
             inner = (cx + int(offset * 0.72), y)
             core = (cx + int(offset * 0.52), y)
             if last_outer:
-                _line(beam, (*c, 125), last_outer, outer, width + 44)
+                _line(beam, (*c, 125), last_outer, outer, width + 32)
                 _line(beam, (20, 8, 28, 218), last_inner, inner, max(8, width + 8))
                 _line(beam, (*c, 235), last_inner, inner, max(6, width // 2))
                 _line(beam, (255, 245, 230, 220), last_core, core, max(4, width // 5))
@@ -1205,8 +1214,8 @@ class RadiationLaser:
             phase = math.sin(now * 0.055 + y * 0.14)
             c2 = colors[(y // 15 + now // 45) % len(colors)]
             _line(beam, (*c2, 220),
-                  (cx + whip_offset - int(Player.SIZE[0] * 0.65) // 2 - 18, y),
-                  (cx + whip_offset + int(Player.SIZE[0] * 0.65) // 2 + 18, y + int(phase * 16)), 3)
+                  (cx + whip_offset - base_width // 2 - 12, y),
+                  (cx + whip_offset + base_width // 2 + 12, y + int(phase * 16)), 3)
             if y % 45 == 0:
                 bx = cx + int(math.sin(now * 0.03 + y) * (r.w * 0.75))
                 _circle(beam, (*c2, 180), (bx, y), 12)

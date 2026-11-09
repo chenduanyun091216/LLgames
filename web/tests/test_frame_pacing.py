@@ -6,9 +6,13 @@ from game_core.main import _browser_frame_deadline, _browser_size
 
 class BrowserFramePacingTests(unittest.TestCase):
     def test_browser_quality_changes_render_pixels(self):
-        for density, expected in ((1, (844, 390)), (1.5, (1266, 585)), (2, (1688, 780))):
+        for density, expected in ((1, (844, 390)), (1.5, (1266, 585)), (2, (2337, 1080))):
             window = SimpleNamespace(ttgamesRenderDensity=density)
             self.assertEqual(_browser_size(window, (844, 390)), expected)
+
+    def test_hd_preserves_portrait_ratio(self):
+        window = SimpleNamespace(ttgamesRenderDensity=2)
+        self.assertEqual(_browser_size(window, (390, 844)), (1080, 2337))
 
     def test_60hz_callback_jitter_does_not_drop_frames(self):
         step = 1 / 60

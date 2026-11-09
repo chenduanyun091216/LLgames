@@ -22,7 +22,7 @@ from .sprites import (
     make_weapon_icon, make_coin_surface,
 )
 from .mobile_controls import MobileControls, _CHAR_ASSETS, _WEAPON_ASSETS
-from .visuals import draw_electric_arc, draw_glow, draw_water_drift, panel_surface
+from .visuals import blit_label, draw_electric_arc, draw_glow, draw_water_drift, panel_surface, small_desktop_label
 from .sounds import play_sound, start_music
 from .entities import (
     Player, Enemy, Bullet, Coin, GiftBox, Particle, Explosion,
@@ -41,6 +41,8 @@ class GameState:
 
 
 CONTACT_DAMAGE_COOLDOWN = 1000
+TITLE_CROP_RATIO = 390 / 1057
+TITLE_MAX_SCALE = 1.30
 FISHER_GRENADE_COOLDOWN = 3000
 FISHER_GRENADE_RADIUS = 90
 FISHER_GRENADE_DAMAGE = 3.0
@@ -78,6 +80,13 @@ KEY_LABELS = {
     pygame.K_RETURN: '回车', pygame.K_ESCAPE: 'Esc',
 }
 
+DESKTOP_WEAPON_KEYS = dict(zip(_WEAPON_KEYS_ORDERED, (
+    pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4,
+)))
+DESKTOP_BATTLE_KEYS = {'shop': pygame.K_b, 'pause': pygame.K_h, 'auto_fire': pygame.K_t}
+DESKTOP_HUD_KEYS = (pygame.K_LEFTBRACKET, pygame.K_p, pygame.K_RIGHTBRACKET)
+
+
 class Game:
     def __init__(self, *, desktop_controls=False):
         self.desktop_controls = desktop_controls
@@ -88,11 +97,17 @@ class Game:
         self.font_tiny = make_font(16)
         self.font_countdown = make_font(16, bold=True)
         self._ui_labels = None
+        self._desktop_fonts = {}
         self._ui_font_styles = {
             self.font_large: (48, True), self.font_med: (28, True),
             self.font_small: (20, False), self.font_tiny: (16, False),
             self.font_countdown: (16, True),
         }
+        if self.desktop_controls:
+            self.font_keycap = make_font(11, bold=True)
+            self.font_skill_status = make_font(13)
+            self._ui_font_styles[self.font_keycap] = (11, True)
+            self._ui_font_styles[self.font_skill_status] = (13, False)
         self.title_image = image_asset('ui/title.png')
         self.custom_fields = [
             ('spawn_interval_start', '初始刷怪间隔', 200, 4000, 100),
@@ -177,6 +192,8 @@ class Game:
         self.bg_transition_until = 0
         self.bg_transition_prev = None
         self.custom_values = self._difficulty_to_values(DIFFICULTY_PRESETS['medium'])
+        self.custom_row = 0
+        self.key_settings_row = 0
         self.bg = self._load_bg()
         self.weapon_icons = {k: make_weapon_icon(k) for k in WEAPON_DEFS}
         self.coin_surface = make_coin_surface()
@@ -191,6 +208,7 @@ class Game:
         return make_background(level)
 
     def resize_view(self, previous_area=None):
+        self._desktop_fonts.clear()
         if previous_area and not self.infinite_mode:
             old_left, old_right, old_bottom = previous_area
             horizontal_scale = (config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT) / (old_right - old_left)
@@ -251,6 +269,19 @@ class Game:
     def _control_name(self, action):
         return self._key_name(self._key(action))
 
+    def _keycap_text(self, key):
+        return {pygame.K_RETURN: 'Enter', pygame.K_ESCAPE: 'Esc',
+                pygame.K_LEFT: '←', pygame.K_RIGHT: '→',
+                pygame.K_UP: '↑', pygame.K_DOWN: '↓'}.get(key, pygame.key.name(key).upper())
+
+    def desktop_button_key(self, action):
+        group, _, item = action.partition(':')
+        if group == 'weapon':
+            return DESKTOP_WEAPON_KEYS[item]
+        if group == 'character':
+            return self._key(f'p1_char_{item}')
+        return DESKTOP_BATTLE_KEYS[action]
+
     def _key_pressed(self, keys, action):
         key = self._key(action)
         return self._pressed_key(keys, key)
@@ -271,7 +302,7 @@ class Game:
                     getattr(pygame, 'WINDOWMINIMIZED', -3)):
                 self.mobile_controls.reset()
                 continue
-            if event.type == pygame.MOUSEBUTTONUP:
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 self.mobile_controls.release(-1)
             if not self.desktop_controls and event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION, pygame.FINGERUP):
                 self._last_touch_event = config.game_ticks()
@@ -286,7 +317,7 @@ class Game:
                 elif event.type == pygame.FINGERDOWN:
                     self._handle_click(self.mobile_controls.event_position(event))
                 continue
-            if not self.desktop_controls and event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
+            if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
                 if getattr(event, 'touch', False) or config.game_ticks() - self._last_touch_event < 120:
                     continue
                 if self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
@@ -303,6 +334,13 @@ class Game:
                     continue
                 if self.setting_key_action:
                     if event.key != pygame.K_ESCAPE:
+                        if self.desktop_controls and (
+                                event.key in DESKTOP_BATTLE_KEYS.values() or
+                                event.key in DESKTOP_WEAPON_KEYS.values() or
+                                event.key in DESKTOP_HUD_KEYS or
+                                any(event.key == self._key(action) for action in DEFAULT_CONTROLS
+                                    if action != self.setting_key_action)):
+                            continue
                         self.controls[self.setting_key_action] = event.key
                     self.setting_key_action = None
                     continue
@@ -416,16 +454,28 @@ class Game:
     def _handle_keydown(self, event):
         s, k = self.state, event.key
         # 作弊键：Ctrl+P 终极狂暴（射击速度与移动达到极限，持续 20s）
-        if k == pygame.K_p and pygame.key.get_mods() & pygame.KMOD_CTRL:
+        if k == DESKTOP_HUD_KEYS[1] and (event.mod | pygame.key.get_mods()) & pygame.KMOD_CTRL:
             self._activate_rage()
             return
-        if k == pygame.K_h and s in (GameState.PLAYING, GameState.BOSS_FIGHT, GameState.PAUSED):
-            if s == GameState.PAUSED:
-                self.state = self.pause_prev_state
-            else:
-                self.pause_prev_state = s
-                self.state = GameState.PAUSED
+        if k == DESKTOP_BATTLE_KEYS['pause'] and s in (GameState.PLAYING, GameState.BOSS_FIGHT, GameState.PAUSED):
+            self._handle_mobile_action('pause')
             return
+        if self.desktop_controls and s == GameState.PAUSED:
+            if k == pygame.K_RETURN: self._handle_mobile_action('pause')
+            elif k == pygame.K_n: self.reset()
+            return
+        if self.desktop_controls and s in (GameState.PLAYING, GameState.BOSS_FIGHT):
+            for index, key in enumerate(DESKTOP_HUD_KEYS):
+                if k == key:
+                    self._handle_hud_click(self._hud_controls()[index].center)
+                    return
+            if k == DESKTOP_BATTLE_KEYS['auto_fire']:
+                self._handle_mobile_action('auto_fire')
+                return
+            for weapon, key in DESKTOP_WEAPON_KEYS.items():
+                if k == key:
+                    self._handle_mobile_action(f'weapon:{weapon}')
+                    return
         if s == GameState.DIFFICULTY_SELECT:
             if k == pygame.K_1: self._start_game('easy')
             elif k == pygame.K_2: self._start_game('medium')
@@ -434,6 +484,13 @@ class Game:
             elif k == pygame.K_c: self.state = GameState.CUSTOM_DIFFICULTY
         elif s == GameState.CUSTOM_DIFFICULTY:
             if k in (pygame.K_RETURN, pygame.K_SPACE): self._start_custom_game()
+            elif self.desktop_controls:
+                if k in (pygame.K_UP, pygame.K_DOWN):
+                    self.custom_row = (self.custom_row + (1 if k == pygame.K_DOWN else -1)) % len(self.custom_fields)
+                elif k in (pygame.K_LEFT, pygame.K_RIGHT):
+                    self._change_custom_value(self.custom_fields[self.custom_row][0], -1 if k == pygame.K_LEFT else 1)
+                elif k == pygame.K_r:
+                    self.custom_values = self._difficulty_to_values(DIFFICULTY_PRESETS['medium'])
         elif s == GameState.MENU:
             if k in (pygame.K_RETURN, pygame.K_SPACE):
                 self.state = GameState.PLAYING; self.last_spawn_time = config.game_ticks()
@@ -441,6 +498,11 @@ class Game:
             elif k == pygame.K_c: self.state = GameState.KEY_SETTINGS
         elif s == GameState.KEY_SETTINGS:
             if k == pygame.K_r: self.controls = DEFAULT_CONTROLS.copy()
+            elif self.desktop_controls:
+                if k in (pygame.K_UP, pygame.K_DOWN):
+                    self.key_settings_row = (self.key_settings_row + (1 if k == pygame.K_DOWN else -1)) % len(CONTROL_DEFS)
+                elif k == pygame.K_RETURN:
+                    self.setting_key_action = CONTROL_DEFS[self.key_settings_row][0]
         elif s == GameState.GAME_OVER:
             if k in (pygame.K_RETURN, pygame.K_SPACE): self.reset()
         elif s == GameState.PAID_REVIVE:
@@ -476,6 +538,8 @@ class Game:
                 self.state = GameState.PLAYING; self.last_spawn_time = config.game_ticks()
             elif self._mobile_menu_rects()['shop'].collidepoint(mx, my):
                 self._open_shop()
+            elif self.desktop_controls and self._mobile_menu_rects()['keys'].collidepoint(mx, my):
+                self.state = GameState.KEY_SETTINGS
         elif s == GameState.PLAYING: self.cursor_pos = (mx, my)
         elif s == GameState.SHOP: self._handle_shop_click(mx, my)
         elif s == GameState.PAUSED:
@@ -660,16 +724,20 @@ class Game:
                           enemy_attack_interval_max=12000)
         return values
 
+    def _change_custom_value(self, key, delta):
+        _label, min_v, max_v, step = next(item[1:] for item in self.custom_fields if item[0] == key)
+        value = max(min_v, min(max_v, self.custom_values[key] + delta * step))
+        self.custom_values[key] = int(value) if isinstance(min_v, int) and isinstance(step, int) else value
+
     def _click_custom_difficulty(self, mx, my):
-        for key, _row, minus, plus in self._mobile_custom_rows():
-            _label, min_v, max_v, step = next(item[1:] for item in self.custom_fields if item[0] == key)
+        for index, (key, row, minus, plus) in enumerate(self._mobile_custom_rows()):
+            if row.collidepoint(mx, my):
+                self.custom_row = index
             if minus.collidepoint(mx, my):
-                self.custom_values[key] = max(min_v, self.custom_values[key] - step)
-                if isinstance(min_v, int) and isinstance(step, int): self.custom_values[key] = int(self.custom_values[key])
+                self._change_custom_value(key, -1)
                 return
             if plus.collidepoint(mx, my):
-                self.custom_values[key] = min(max_v, self.custom_values[key] + step)
-                if isinstance(min_v, int) and isinstance(step, int): self.custom_values[key] = int(self.custom_values[key])
+                self._change_custom_value(key, 1)
                 return
         actions = self._mobile_custom_action_rects()
         if actions['reset'].collidepoint(mx, my):
@@ -838,6 +906,7 @@ class Game:
         self.enemies = [e for e in self.enemies if not e.reached_bottom()]
 
     def _continue_infinite(self):
+        self.score = 0
         self.revive_count += 1
         self._resume_after_defeat()
 
@@ -1463,15 +1532,15 @@ class Game:
                 self.reset()
                 start_music()
             return
-        if self.infinite_mode or self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
-            self._expire_active_skills(now)
-            self._maybe_fire_gift_lightning(now)
         if self.state == GameState.INFINITE_COUNTDOWN:
             if pygame.time.get_ticks() >= self.infinite_countdown_end:
                 if not self.infinite_mode:
                     self.player_invincible_until = now + 2000
                 self.state = self.infinite_resume_state
             return
+        if self.infinite_mode or self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
+            self._expire_active_skills(now)
+            self._maybe_fire_gift_lightning(now)
         if self.state == GameState.LEVEL_TRANSITION:
             if now >= self.level_transition_end:
                 self._start_level(self.current_level+1)
@@ -1623,16 +1692,17 @@ class Game:
     def _move_player_from_controls(self, player, keys, now):
         if now < player.niu_freeze_until:
             return
+        dx, dy = self.mobile_controls.axis
         if self.desktop_controls:
-            dx = self._key_pressed(keys, 'p1_right') - self._key_pressed(keys, 'p1_left')
-            dy = self._key_pressed(keys, 'p1_down') - self._key_pressed(keys, 'p1_up')
-        else:
-            dx, dy = self.mobile_controls.axis
+            key_dx = self._key_pressed(keys, 'p1_right') - self._key_pressed(keys, 'p1_left')
+            key_dy = self._key_pressed(keys, 'p1_down') - self._key_pressed(keys, 'p1_up')
+            if key_dx or key_dy:
+                dx, dy = key_dx, key_dy
         speed = self._player_speed(player, now)
         player.move(dx * speed, dy * speed)
 
     def _mobile_fire_active(self):
-        return not self.desktop_controls and (self.mobile_controls.auto_fire or self.mobile_controls.is_pressed('attack'))
+        return self.mobile_controls.auto_fire or self.mobile_controls.is_pressed('attack')
 
     def _infinite_density(self, now):
         return min(14, 4 + self.infinite_boss_index // 2) if self.infinite_mode else 1
@@ -1975,8 +2045,7 @@ class Game:
         for c in self.coins[:]:
             c.update()
             if self._hit_player(c.rect()):
-                if self.infinite_mode:
-                    self.player.gold += c.value
+                self.player.gold += c.value
                 play_sound('coin'); self.coins.remove(c)
             elif c.is_offscreen(): self.coins.remove(c)
         for box in self.gift_boxes[:]:
@@ -2488,8 +2557,7 @@ class Game:
         for c in self.coins[:]:
             c.update()
             if self._hit_player(c.rect()):
-                if self.infinite_mode:
-                    self.player.gold += c.value
+                self.player.gold += c.value
                 play_sound('coin'); self.coins.remove(c)
             elif c.is_offscreen(): self.coins.remove(c)
         for box in self.gift_boxes[:]:
@@ -2703,8 +2771,6 @@ class Game:
             elif not self.infinite_mode and self.water_passive_kills in (14, 28):
                 self._heal_player(1)
         self.score += e.gold_value * (10 if self.infinite_mode else 1)
-        if not self.infinite_mode:
-            self.player.gold += e.gold_value
         if self.spawn_decrease:
             self.spawn_interval = max(self.min_spawn_interval, self.spawn_interval - self.spawn_decrease)
         play_sound('kill')
@@ -2857,7 +2923,7 @@ class Game:
             ('简单', '轻松防守', '子弹免费', (105, 235, 192)),
             ('中等', '标准挑战', '标准战役 · 子弹免费', (118, 199, 255)),
             ('困难', '高压防线', '敌人更快、血量更高', (255, 155, 122)),
-            ('无限', '生存挑战', '全角色武器 · 技能无冷却', (200, 171, 255)),
+            ('无限', '生存挑战', '全角色武器 · 技能冷却缩短', (200, 171, 255)),
         )
         silhouettes = ('enemies/enemy_starfish.png', 'enemies/enemy_seahorse.png',
                        'enemies/enemy_crab.png', 'enemies/enemy_turtle.png')
@@ -2868,17 +2934,25 @@ class Game:
             self._draw_text_fit(f'0{i}  /  {tagline}', self.font_tiny, accent,
                                 pygame.Rect(x + 16, y + 12, w - 32, 22))
             self._draw_text_fit(name, self.font_med, WHITE, pygame.Rect(x + 16, y + 37, w - 32, 34))
+            if self.desktop_controls:
+                self._draw_keycap(pygame.K_0 + i, (rect.right - 24, y + 23))
             if h >= 120:
-                icon = image_asset(silhouettes[i - 1], (42, 42))
-                if icon:
-                    config.SCR.blit(icon, (rect.right - 55, y + 42))
+                position = (rect.right - 55, y + 42)
+                if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+                    icon = image_asset(silhouettes[i - 1])
+                    if icon:
+                        config.SCR.blit(icon, position, logical_size=(42, 42), static=True)
+                else:
+                    icon = image_asset(silhouettes[i - 1], (42, 42))
+                    if icon:
+                        config.SCR.blit(icon, position)
                 for step in range(4):
                     bar = pygame.Rect(x + 16 + step * 18, y + 82, 14, 4)
                     Draw.rect(config.SCR, accent if step < i else (44, 65, 81),
                                      bar, border_radius=2)
             self._draw_text_fit(detail, self.font_tiny, (194, 222, 231),
                                 pygame.Rect(x + 16, y + h - 31, w - 32, 22))
-        self._draw_button('自定义难度', *self._mobile_custom_button(), (62, 184, 170))
+        self._draw_button('自定义难度', *self._mobile_custom_button(), (62, 184, 170), key=pygame.K_c)
 
     def _mobile_difficulty_rects(self):
         width, height = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
@@ -2933,10 +3007,15 @@ class Game:
         height = config.SCREEN_HEIGHT
         start_y = height - (112 if height < 500 else 154)
         shop_y = height - (56 if height < 500 else 82)
-        return {
+        buttons = {
             'start': pygame.Rect(config.SCREEN_WIDTH // 2 - 140, start_y, 280, 52 if height < 500 else 58),
             'shop': pygame.Rect(config.SCREEN_WIDTH // 2 - 140, shop_y, 280, 48 if height < 500 else 52),
         }
+        if self.desktop_controls:
+            shop = buttons['shop']
+            shop.w = 135
+            buttons['keys'] = shop.move(145, 0)
+        return buttons
 
     def _mobile_shop_rects(self):
         width, height = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
@@ -2962,8 +3041,13 @@ class Game:
         ov.fill((3, 12, 28, 185))
         config.SCR.blit(ov, (0, 0))
         self._draw_title_text('自定义难度', pygame.Rect(16, 18, config.SCREEN_WIDTH - 32, 48), accent=(110, 210, 255))
-        for key, row, minus, plus in self._mobile_custom_rows():
-            self._draw_panel(*row, accent=(76, 139, 160), fill=(7, 21, 34), r=7)
+        if self.desktop_controls:
+            self._draw_text_fit('↑ ↓ 选择项目', self.font_tiny, (190, 225, 245),
+                                pygame.Rect(16, 66, config.SCREEN_WIDTH - 32, 20), align='center')
+        for index, (key, row, minus, plus) in enumerate(self._mobile_custom_rows()):
+            focused = self.desktop_controls and index == self.custom_row
+            self._draw_panel(*row, accent=(130, 218, 237) if focused else (76, 139, 160),
+                             fill=(16, 47, 64) if focused else (7, 21, 34), r=7)
             label = next(item[1] for item in self.custom_fields if item[0] == key)
             value = self.custom_values[key]
             value_text = f'{value:.2f}' if isinstance(value, float) else str(value)
@@ -2971,19 +3055,19 @@ class Game:
                 self._draw_text_fit(label, self.font_tiny, (225, 240, 255), pygame.Rect(row.x + 6, row.y + 2, row.w - 12, 22))
                 value_rect = pygame.Rect(minus.right + 4, minus.y, plus.x - minus.right - 8, 28)
                 self._draw_text_fit(value_text, self.font_tiny, GOLD_COLOR, value_rect, align='center')
-                self._draw_step_button('-', minus.x, minus.y, minus.size)
-                self._draw_step_button('+', plus.x, plus.y, plus.size)
+                self._draw_step_button('←' if focused else '-', minus.x, minus.y, minus.size)
+                self._draw_step_button('→' if focused else '+', plus.x, plus.y, plus.size)
             else:
                 label_w = min(168, row.w - 160)
                 self._draw_text_fit(label, self.font_tiny, (225, 240, 255), pygame.Rect(row.x + 8, row.y + 4, label_w, row.h - 8))
                 value_rect = pygame.Rect(row.x + label_w + 10, row.y + 4, row.w - label_w - 108, row.h - 8)
                 self._draw_text_fit(value_text, self.font_tiny, GOLD_COLOR, value_rect, align='right')
-                self._draw_step_button('-', minus.x, minus.y)
-                self._draw_step_button('+', plus.x, plus.y)
+                self._draw_step_button('←' if focused else '-', minus.x, minus.y)
+                self._draw_step_button('→' if focused else '+', plus.x, plus.y)
         actions = self._mobile_custom_action_rects()
-        self._draw_button('重置', actions['reset'].x, actions['reset'].y, actions['reset'].w, actions['reset'].h, (40, 120, 60))
-        self._draw_button('返回', actions['back'].x, actions['back'].y, actions['back'].w, actions['back'].h)
-        self._draw_button('开始', actions['start'].x, actions['start'].y, actions['start'].w, actions['start'].h, (40, 120, 60))
+        self._draw_button('重置', actions['reset'].x, actions['reset'].y, actions['reset'].w, actions['reset'].h, (40, 120, 60), key=pygame.K_r)
+        self._draw_button('返回', actions['back'].x, actions['back'].y, actions['back'].w, actions['back'].h, key=pygame.K_ESCAPE)
+        self._draw_button('开始', actions['start'].x, actions['start'].y, actions['start'].w, actions['start'].h, (40, 120, 60), key=pygame.K_RETURN)
 
     def _draw_step_button(self, text, x, y, size=(34, 30)):
         w, h = size
@@ -2994,65 +3078,83 @@ class Game:
         self._draw_scrim(156)
         title_y = 10 if height < 500 else max(28, int(height * 0.08))
         title_w = min(360 if height < 500 else 460, width - 32)
-        self._draw_title_image(title_y, title_w)
+        buttons = self._mobile_menu_rects()
+        columns = 2 if width < 640 else 4
+        card_h = 62 if width < 640 else 48 if height < 500 else 58
         if height < 500:
             subtitle_y = int(height * 0.42)
             weapon_y = int(height * 0.54)
         else:
             subtitle_y = int(height * 0.28)
             weapon_y = int(height * 0.38)
+        if self.desktop_controls:
+            weapon_y = buttons['start'].top - (card_h + 8) * (4 // columns) - 4
+            subtitle_y = weapon_y - 62
+            title_space = subtitle_y - title_y - 8
+            title_ratio = (self.title_image.get_height() / self.title_image.get_width()
+                           if self.title_image else TITLE_CROP_RATIO)
+            title_w = max(1, min(title_w, int(title_space / (title_ratio * TITLE_MAX_SCALE))))
+        self._draw_title_image(title_y, title_w)
         self._draw_text_fit('消灭入侵的海洋生物！', self.font_med, (200, 230, 255),
                             pygame.Rect(10, subtitle_y, width - 20, 34), align='center')
         if self.difficulty:
             self._draw_text_fit(f'当前难度: {self.difficulty.name}', self.font_tiny, GOLD_COLOR,
                                 pygame.Rect(10, subtitle_y + 32, width - 20, 22), align='center')
-        columns = 2 if width < 640 else 4
         margin, gap = 14, 10
         card_w = (width - margin * 2 - gap * (columns - 1)) // columns
-        card_h = 62 if width < 640 else 48 if height < 500 else 58
         for index, (key, wdef) in enumerate(WEAPON_DEFS.items()):
             x = margin + (index % columns) * (card_w + gap)
             y = weapon_y + (index // columns) * (card_h + 8)
             self._draw_panel(x, y, card_w, card_h, accent=(85, 185, 245), fill=(12, 36, 68), r=10, alpha=205)
             icon = self.weapon_icons[key]
-            config.SCR.blit(icon, icon.get_rect(center=(x + 34, y + card_h // 2)))
+            position = icon.get_rect(center=(x + 34, y + card_h // 2))
+            if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+                source = image_asset(_WEAPON_ASSETS[key]) or icon
+                config.SCR.blit(source, position, logical_size=icon.get_size(), static=True)
+            else:
+                config.SCR.blit(icon, position)
             self._draw_text_fit(wdef.name, self.font_small, WHITE, pygame.Rect(x + 64, y + 7, card_w - 72, 22))
             cost = self._weapon_cost(key)
             self._draw_text_fit('免费' if cost == 0 else f'{cost}金币', self.font_tiny, GOLD_COLOR,
                                 pygame.Rect(x + 64, y + card_h - 21, card_w - 72, 18))
-        buttons = self._mobile_menu_rects()
         self._draw_button('开 始 游 戏', buttons['start'].x, buttons['start'].y,
-                          buttons['start'].w, buttons['start'].h)
+                          buttons['start'].w, buttons['start'].h, key=pygame.K_RETURN)
         self._draw_button('商    店', buttons['shop'].x, buttons['shop'].y,
-                          buttons['shop'].w, buttons['shop'].h, (40, 120, 60))
+                          buttons['shop'].w, buttons['shop'].h, (40, 120, 60), key=pygame.K_b)
+        if self.desktop_controls:
+            self._draw_button('按键设置', *buttons['keys'], key=pygame.K_c)
 
     def _draw_key_settings(self):
         self._draw_scrim(212)
         width = config.SCREEN_WIDTH
         self._draw_title_text('按键设置', pygame.Rect(16, 16, width - 32, 46), font=self.font_med)
-        self._draw_text_fit('点击一项后按新键，Esc 取消或返回', self.font_tiny, (190, 225, 245),
+        hint = '点击一项后按新键，Esc 取消或返回'
+        if self.desktop_controls:
+            hint = ('按未占用的新键 · Esc 取消' if self.setting_key_action else
+                    '↑ ↓ 选择 · Enter 修改 · Esc 返回')
+        self._draw_text_fit(hint, self.font_tiny, (190, 225, 245),
                             pygame.Rect(16, 60, width - 32, 20), align='center')
-        for action, label, rect in self._key_settings_rects():
+        for index, (action, label, rect) in enumerate(self._key_settings_rects()):
             x, y, w, h = rect
             active = action == self.setting_key_action
             fill = (41, 67, 47) if active else (9, 24, 44)
-            accent = (255, 230, 120) if active else (70, 155, 210)
+            focused = self.desktop_controls and index == self.key_settings_row
+            accent = (255, 230, 120) if active or focused else (70, 155, 210)
             self._draw_panel(*rect, accent=accent, fill=fill, r=7, alpha=220)
             self._draw_text_fit(label.removeprefix('P1 '), self.font_tiny, (225, 240, 255),
                                 pygame.Rect(x + 10, y, w // 2, h))
             self._draw_text_fit('按新键…' if active else self._control_name(action), self.font_tiny, accent,
                                 pygame.Rect(x + w // 2 + 10, y, w // 2 - 20, h), align='right')
         reset, back = self._key_settings_buttons()
-        self._draw_button('恢复默认', *reset, (40, 120, 60))
-        self._draw_button('返回', *back)
+        self._draw_button('恢复默认', *reset, (40, 120, 60), key=pygame.K_r)
+        self._draw_button('返回', *back, key=pygame.K_ESCAPE)
 
     def _draw_game(self):
         ui_labels = self._ui_labels
         active = self.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
         if not active:
             self._ui_labels = None  # Keep all labels behind the modal, like the scene itself.
-        draw_water_drift(config.SCR, config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT,
-                         config.GAME_AREA_BOTTOM, config.game_ticks())
+        draw_water_drift(config.SCR, config.game_ticks())
         if self.boss and self.boss.signature:
             self.boss.signature.draw(config.SCR, self.boss, config.game_ticks())
         for e in self.enemies:
@@ -3138,8 +3240,12 @@ class Game:
         self._draw_level_title()
         self._draw_gift_lightning_icon()
         self._draw_rage_banner()
-        if active and not self.desktop_controls:
+        if active:
             self.mobile_controls.draw(config.SCR, self)
+            if self.desktop_controls:
+                fps = round(self.clock.get_fps())
+                self._draw_text_fit(f'FPS {fps or "--"}', self.font_tiny, (180, 220, 232),
+                                    self.hud_fps_rect, align='right')
         if self.boss:
             self._draw_boss_hud()
         self._ui_labels = ui_labels
@@ -3189,6 +3295,17 @@ class Game:
         rem = self.rage_banner_until - now
         alpha = min(235, int(rem / 3000 * 235))
         pulse = 1 + 0.06 * math.sin(now * 0.012)
+        if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+            text = '终极狂暴！'
+            center = (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
+            panel = pygame.Rect(0, 0, *self.font_large.size(text)).inflate(60, 28)
+            panel.center = center
+            Draw.rect(config.SCR, (70, 10, 12, min(210, alpha)), panel, border_radius=14)
+            Draw.rect(config.SCR, (255, 180, 40, min(220, alpha)), panel.inflate(-6, -6), 4, 12)
+            blit_label(config.SCR, self.font_large, text, (255, 60, 40), center,
+                       round(48 * pulse), bold=True, alpha=max(0, alpha - 60))
+            blit_label(config.SCR, self.font_large, text, (255, 220, 80), center, 48, bold=True, alpha=alpha)
+            return
         surf = self.font_large.render('终极狂暴！', True, (255, 60, 40))
         surf2 = self.font_large.render('终极狂暴！', True, (255, 220, 80))
         pad_x, pad_y = 30, 14
@@ -3251,6 +3368,15 @@ class Game:
             t = (now - start) / life
             alpha = max(0, min(230, int(230 * (1.0 - max(0, t - 0.55) / 0.45))))
             y = 118 - int(18 * t)
+            if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+                tw, th = self.font_large.size(text)
+                center = (config.SCREEN_WIDTH // 2, y + th // 2)
+                panel = pygame.Rect(0, 0, tw + 52, th + 24)
+                panel.center = center
+                Draw.rect(config.SCR, (10, 20, 35, min(205, alpha)), panel, border_radius=10)
+                Draw.rect(config.SCR, (*color[:3], min(200, alpha)), panel.inflate(-4, -4), 3, 9)
+                blit_label(config.SCR, self.font_large, text, tuple(color[:3]), center, 48, bold=True, alpha=alpha)
+                continue
             surf = self.font_large.render(text, True, color)
             pad_x, pad_y = 26, 12
             x = config.SCREEN_WIDTH // 2 - surf.get_width() // 2
@@ -3426,9 +3552,40 @@ class Game:
             _circle(config.SCR, (120, 255, 220, 50), (cx, cy), int(46 * pulse), 2)
             self._draw_water_status_badge(cx, label_y, f'水急速 {haste_rem/1000:.1f}s', (10, 50, 60), (90, 230, 255), (220, 245, 255))
 
+    @property
+    def hud_fps_rect(self):
+        return pygame.Rect(111, 88 if self.infinite_mode else 66, 49, 21)
+
+    @property
+    def hud_diagnostics_y(self):
+        return 119 if self.infinite_mode else 97
+
+    def _draw_gift_hud(self, now):
+        effects = (
+            ('火弹', self.gift_fire_until, (255, 153, 92)),
+            ('冰弹', self.gift_ice_until, (122, 198, 255)),
+            ('极速', max(p.gift_speed_until for p in self.players), (134, 244, 181)),
+            ('闪电', self.gift_lightning_icon_until, (255, 219, 116)),
+        )
+        x = config.SCREEN_WIDTH - (232 if config.MOBILE_LANDSCAPE_VIEW else 104)
+        y = 80
+        for name, end, color in effects:
+            if end <= now:
+                continue
+            self._draw_panel(x, y, 96, 22, accent=color, fill=(6, 23, 37), r=6, alpha=219)
+            seconds = (end - now + 999) // 1000
+            self._draw_text_fit(f'{name} {seconds}s', self.font_tiny, color,
+                                pygame.Rect(x + 6, y + 1, 84, 20), align='center')
+            y += 25
+
     def _draw_hud(self):
-        self._draw_panel(8, 8, 162, 88, accent=(89, 188, 206), fill=(6, 23, 37), r=10, alpha=219)
-        config.SCR.blit(self.coin_surface, (16, 13))
+        now = config.game_ticks()
+        self._draw_panel(8, 8, 162, self.hud_diagnostics_y - 9, accent=(89, 188, 206), fill=(6, 23, 37), r=10, alpha=219)
+        if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+            source = image_asset('ui/coin.png') or self.coin_surface
+            config.SCR.blit(source, (16, 13), logical_size=self.coin_surface.get_size(), static=True)
+        else:
+            config.SCR.blit(self.coin_surface, (16, 13))
         self._draw_text_fit(str(self.player.gold), self.font_small, GOLD_COLOR, pygame.Rect(42, 10, 46, 26))
         if self.player.current_weapon:
             self._draw_text_fit(WEAPON_DEFS[self.player.current_weapon].name, self.font_tiny,
@@ -3437,13 +3594,21 @@ class Game:
         self._draw_text_fit(f'第 {self.chapter} 章  ·  击杀 {self.kill_count}', self.font_tiny, WHITE,
                             pygame.Rect(17, 43, 143, 21))
         stage = f'无限  ·  积分 {self.score}' if self.infinite_mode else f'第 {self.current_level} 关  ·  生命 {self.lives}'
-        self._draw_text_fit(stage, self.font_tiny, (180, 220, 232), pygame.Rect(17, 66, 143, 21))
+        self._draw_text_fit(stage, self.font_tiny, (180, 220, 232), pygame.Rect(17, 66, 143 if self.infinite_mode else 90, 21))
+        if self.infinite_mode:
+            minutes, seconds = divmod((now - self.infinite_start_time) // 1000, 60)
+            self._draw_text_fit(f'用时 {minutes:02d}:{seconds:02d}', self.font_tiny,
+                                (180, 220, 232), pygame.Rect(17, 88, 90, 21))
+        self._draw_gift_hud(now)
         left, health, right = self._hud_controls()
         labels = self._ui_labels
         # Keep the bottom controls and their text behind the player on every frame.
         self._ui_labels = None
-        self._draw_button('−', *left, (50, 105, 125))
+        self._draw_button('-', *left, (50, 105, 125))
         self._draw_button('+', *right, (50, 105, 125))
+        if self.desktop_controls:
+            for rect, key in zip((left, health, right), DESKTOP_HUD_KEYS):
+                self._draw_keycap(key, (rect.centerx, rect.top - 11))
         width = health.w - 12
         x, y = health.x + 6, health.y + 2
         self._draw_panel(*health, accent=(89, 188, 206), fill=(6, 23, 37), r=8, alpha=225)
@@ -3472,40 +3637,49 @@ class Game:
         self._draw_title_text('商店', pygame.Rect(60, top, width - 120, 42), font=self.font_med)
         self._draw_text_fit(f'金币: {self.player.gold}', self.font_small, GOLD_COLOR,
                             pygame.Rect(16, top + 42, width - 32, 26), align='center')
-        self._draw_button('×', *close, (110, 55, 65))
+        self._draw_button('×', *close, (110, 55, 65), key=pygame.K_b)
         weapon_y = min(rect.y for key, rect in rects.items() if key.startswith('weapon:'))
         character_y = min(rect.y for key, rect in rects.items() if key.startswith('character:'))
         self._draw_text_fit('武器', self.font_small, WHITE,
                             pygame.Rect(12, weapon_y - 24, config.SCREEN_WIDTH - 24, 22), align='center')
-        for key in _WEAPON_KEYS_ORDERED:
+        for index, key in enumerate(_WEAPON_KEYS_ORDERED):
             rect = rects[f'weapon:{key}']
             wdef = WEAPON_DEFS[key]
             owned = key in self.player.owned_weapons
             active = key == self.player.current_weapon
             icon = image_asset(_WEAPON_ASSETS[key]) or self.weapon_icons[key]
-            self._draw_shop_card(rect, wdef.name, self._weapon_cost(key), owned, active, icon, (90, 180, 225))
+            self._draw_shop_card(rect, wdef.name, self._weapon_cost(key), owned, active, icon, (90, 180, 225), pygame.K_1 + index)
         self._draw_text_fit('角色', self.font_small, WHITE,
                             pygame.Rect(12, character_y - 24, config.SCREEN_WIDTH - 24, 22), align='center')
-        for key in _CHAR_KEYS_ORDERED:
+        for index, key in enumerate(_CHAR_KEYS_ORDERED):
             rect = rects[f'character:{key}']
             cdef = CHARACTER_DEFS[key]
             owned = key in self.player.owned_characters
             active = key == self.player.character
             icon = image_asset(_CHAR_ASSETS[key])
-            self._draw_shop_card(rect, cdef.name, self._character_cost(cdef), owned, active, icon, cdef.color)
+            self._draw_shop_card(rect, cdef.name, self._character_cost(cdef), owned, active, icon, cdef.color, pygame.K_5 + index)
 
-    def _draw_shop_card(self, rect, name, cost, owned, active, icon, accent):
+    def _draw_shop_card(self, rect, name, cost, owned, active, icon, accent, key):
         affordable = self.player.gold >= cost
         border = GOLD_COLOR if active else accent
         fill = (28, 61, 62) if active else (12, 35, 52)
         self._draw_panel(*rect, accent=border, fill=fill, r=9, alpha=235)
         if icon:
             factor = min(42 / icon.get_width(), (rect.h - 14) / icon.get_height())
-            preview = scale_surface_cached(icon, (round(icon.get_width() * factor), round(icon.get_height() * factor)))
-            config.SCR.blit(preview, preview.get_rect(center=(rect.x + 31, rect.centery)))
+            size = (round(icon.get_width() * factor), round(icon.get_height() * factor))
+            position = pygame.Rect(0, 0, *size)
+            position.center = (rect.x + 31, rect.centery)
+            if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+                config.SCR.blit(icon, position, logical_size=size, static=True)
+            else:
+                config.SCR.blit(scale_surface_cached(icon, size), position)
         text_x = rect.x + 59
+        name_width = rect.right - text_x - 7
+        if self.desktop_controls:
+            self._draw_keycap(key, (rect.right - 16, rect.y + 18))
+            name_width -= 23
         self._draw_text_fit(name, self.font_small, WHITE,
-                            pygame.Rect(text_x, rect.y + 7, rect.right - text_x - 7, 22))
+                            pygame.Rect(text_x, rect.y + 7, name_width, 22))
         if owned:
             status = '已装备' if active else '已购买'
             color = (141, 237, 184)
@@ -3547,8 +3721,8 @@ class Game:
         title = f'花 {self._revive_cost()} 金币复活？' if paid else '暂停'
         self._draw_title_text(title, pygame.Rect(px+20, py+26, pw-40, 58), accent=(115, 205, 255))
         left, right = self._choice_rects()
-        self._draw_button('复活' if paid else '继续游戏', *left)
-        self._draw_button('结束游戏' if paid else '退出本局', *right, (180, 60, 60))
+        self._draw_button('复活' if paid else '继续游戏', *left, key=pygame.K_y if paid else pygame.K_RETURN)
+        self._draw_button('结束游戏' if paid else '退出本局', *right, (180, 60, 60), key=pygame.K_n)
 
     def _draw_game_over(self):
         # 暗色渐变叠加
@@ -3569,7 +3743,7 @@ class Game:
         self._draw_text_fit(f'击杀数: {self.kill_count}', self.font_med, WHITE, pygame.Rect(px+80, py+152, pw-160, 30), align='center')
         self._draw_text_fit(f'金币: {self.player.gold}', self.font_med, GOLD_COLOR, pygame.Rect(px+80, py+192, pw-160, 30), align='center')
         # 重新开始按钮
-        self._draw_button('重新开始', config.SCREEN_WIDTH//2 - 80, py + ph - 40, 160, 44, (200, 60, 60))
+        self._draw_button('重新开始', config.SCREEN_WIDTH//2 - 80, py + ph - 40, 160, 44, (200, 60, 60), key=pygame.K_RETURN)
 
     def _draw_infinite_continue(self):
         ov = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -3581,8 +3755,8 @@ class Game:
         self._draw_title_text('继续无限模式?', pygame.Rect(px+40, py+30, pw-80, 54), accent=(175, 105, 255))
         self._draw_text_fit(self.game_over_reason, self.font_small, (255, 170, 170), pygame.Rect(px+40, py+92, pw-80, 28), align='center')
         self._draw_text_fit(f'当前积分: {self.score}', self.font_med, GOLD_COLOR, pygame.Rect(px+50, py+130, pw-100, 34), align='center')
-        self._draw_button('Y - 继续', config.SCREEN_WIDTH//2-170, config.SCREEN_HEIGHT//2+70, 150, 46, (45, 150, 70))
-        self._draw_button('N - 结束', config.SCREEN_WIDTH//2+20, config.SCREEN_HEIGHT//2+70, 150, 46, (180, 60, 60))
+        self._draw_button('继续' if self.desktop_controls else 'Y - 继续', config.SCREEN_WIDTH//2-170, config.SCREEN_HEIGHT//2+70, 150, 46, (45, 150, 70), key=pygame.K_y)
+        self._draw_button('结束' if self.desktop_controls else 'N - 结束', config.SCREEN_WIDTH//2+20, config.SCREEN_HEIGHT//2+70, 150, 46, (180, 60, 60), key=pygame.K_n)
 
     def _draw_infinite_countdown(self):
         now = config.game_ticks()
@@ -3628,10 +3802,37 @@ class Game:
     def _draw_text_fit(self, text, font, color, rect, align='left'):
         if not text or self.queue_ui_text(text, font, color, rect, align):
             return
-        s = font.render(str(text), True, color)
-        shadow = font.render(str(text), True, (0, 8, 20))
+        target = config.SCR
+        native = self.desktop_controls and isinstance(target, RenderSurface)
+        blit = target.blit
+        shadow_offset = 2
+        text = str(text)
+        if native:
+            rect = pygame.Rect(target.rect(rect))
+            blit = target.blit_pixels
+            shadow_offset = 1
+            logical_size, bold = self._ui_font_styles[font]
+            size = target.length(logical_size)
+            font = self._desktop_font(size, bold)
+            text_w, text_h = font.size(text)
+            fit = min(1, max(1, rect.w) / max(1, text_w), max(1, rect.h) / max(1, text_h))
+            if fit < 1:
+                size = max(1, int(size * fit))
+                font = self._desktop_font(size, bold)
+            while size > 1 and (font.size(text)[0] > rect.w or font.get_height() > rect.h):
+                size -= 1
+                font = self._desktop_font(size, bold)
+        small_native = native and size <= 18
+        if small_native:
+            glyph_size = font.size(text)
+            large_font = self._desktop_font(size * 2, bold)
+            s = small_desktop_label(large_font, text, tuple(color[:3]), glyph_size)
+            shadow = small_desktop_label(large_font, text, (0, 8, 20), glyph_size, alpha=100)
+        else:
+            s = font.render(text, True, color)
+            shadow = font.render(text, True, (0, 8, 20))
         max_w, max_h = max(1, rect.w), max(1, rect.h)
-        if s.get_width() > max_w or s.get_height() > max_h + 2:
+        if not native and (s.get_width() > max_w or s.get_height() > max_h + 2):
             scale = min(max_w / max(1, s.get_width()), max_h / max(1, s.get_height()))
             nw = max(1, int(s.get_width() * scale))
             nh = max(1, int(s.get_height() * scale))
@@ -3643,12 +3844,21 @@ class Game:
             pos = s.get_rect(midright=(rect.right, rect.centery))
         else:
             pos = s.get_rect(midleft=(rect.left, rect.centery))
-        config.SCR.blit(shadow, pos.move(2, 2))
-        config.SCR.blit(s, pos)
+        blit(shadow, pos.move(shadow_offset, shadow_offset))
+        blit(s, pos)
+
+    def _desktop_font(self, size, bold):
+        key = size, bold
+        if key not in self._desktop_fonts:
+            self._desktop_fonts[key] = make_font(size, bold=bold)
+        return self._desktop_fonts[key]
 
     def _draw_title_text(self, text, rect, color=WHITE, accent=(90, 220, 255), font=None):
         font = font or self.font_large
         if self.queue_ui_text(text, font, color, rect, 'center'):
+            return
+        if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+            self._draw_text_fit(text, font, color, rect, align='center')
             return
         for dx, dy, alpha in ((0, 4, 120), (0, -2, 80), (3, 0, 80), (-3, 0, 80)):
             s = font.render(str(text), True, (*accent[:3], alpha))
@@ -3659,18 +3869,23 @@ class Game:
         # 呼吸动画：2s 一个周期，从 100% 平滑放大到 130% 再缩小回 100%
         now = config.game_ticks()
         t = (now % 2000) / 2000.0
-        scale = 1.0 + 0.30 * (1.0 - math.cos(2 * math.pi * t)) / 2.0
+        scale = 1.0 + (TITLE_MAX_SCALE - 1) * (1.0 - math.cos(2 * math.pi * t)) / 2.0
         target_w = max(1, int(width * scale))
         if not self.title_image:
             self._draw_breathing_title_text(y, target_w)
             return
         src_w, src_h = self.title_image.get_size()
-        src_h = min(src_h, 390)
-        source = self.title_image.subsurface(pygame.Rect(0, 0, src_w, src_h))
+        source = self.title_image
+        if not self.desktop_controls:
+            src_h = min(src_h, round(src_w * TITLE_CROP_RATIO))
+            source = source.subsurface(pygame.Rect(0, 0, src_w, src_h))
         h = max(1, int(target_w * src_h / max(1, src_w)))
-        # 直接从高清源图平滑缩放，放大后依旧清晰不发糊
-        img = pygame.transform.smoothscale(source, (target_w, h))
-        config.SCR.blit(img, img.get_rect(midtop=(config.SCREEN_WIDTH // 2, y)))
+        position = (config.SCREEN_WIDTH // 2 - target_w // 2, y)
+        if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+            config.SCR.blit(source, position, logical_size=(target_w, h))
+        else:
+            img = pygame.transform.smoothscale(source, (target_w, h))
+            config.SCR.blit(img, position)
 
     def _draw_breathing_title_text(self, y, width):
         """无标题图片素材时的兜底：用 2 倍字号超采样渲染文字，缩放不模糊。"""
@@ -3702,17 +3917,46 @@ class Game:
         target = config.SCR
         if isinstance(target, RenderSurface):
             panel = panel_surface(target.length(w), target.length(h), tuple(accent[:3]),
-                                  tuple(fill[:3]), target.length(r), alpha)
+                                  tuple(fill[:3]), target.length(r), alpha,
+                                  target.length(1) if self.desktop_controls else 1)
             target.blit_pixels(panel, target.point((x, y)))
         else:
             panel = panel_surface(w, h, tuple(accent[:3]), tuple(fill[:3]), r, alpha)
             target.blit(panel, (x, y))
 
-    def _draw_button(self, text, x, y, w, h, color=(40, 130, 210)):
+    def _keycap_width(self, key):
+        return min(48, max(16, self.font_keycap.size(self._keycap_text(key))[0] + 8))
+
+    def _draw_keycap(self, key, center):
+        rect = pygame.Rect(0, 0, self._keycap_width(key), 16)
+        rect.center = center
+        self._draw_panel(*rect, accent=(109, 167, 190), fill=(8, 23, 36), r=4, alpha=248)
+        self._draw_text_fit(self._keycap_text(key), self.font_keycap, (221, 240, 250),
+                            rect.inflate(-6, -2), align='center')
+
+    def _draw_button(self, text, x, y, w, h, color=(40, 130, 210), *, key=None):
         btn = pygame.Rect(x, y, w, h)
         hovered = self._hit(*self.cursor_pos, x, y, w, h)
         fill = tuple((26 if hovered else 10) + c // 4 for c in color)
         border = tuple(min(255, (96 if hovered else 62) + c * 3 // 4) for c in color)
         Draw.rect(config.SCR, (3, 13, 22), btn.move(0, 2), border_radius=9)
         self._draw_panel(*btn, accent=border, fill=fill, r=9, alpha=251)
-        self._draw_text_fit(text, self.font_med, WHITE, btn.inflate(-12, -6), align='center')
+        label_rect = btn.inflate(-12, -6)
+        if self.desktop_controls and key is not None:
+            cap_width = self._keycap_width(key)
+            if w >= 80:
+                self._draw_keycap(key, (btn.right - 7 - cap_width // 2, btn.centery))
+                label_rect.w -= cap_width + 5
+            else:
+                self._draw_keycap(key, (btn.centerx, btn.bottom + 10))
+        if self.desktop_controls and isinstance(config.SCR, RenderSurface) and text in ('-', '+', '×'):
+            cx, cy = btn.center
+            if text == '×':
+                Draw.line(config.SCR, WHITE, (cx - 6, cy - 6), (cx + 6, cy + 6), 2)
+                Draw.line(config.SCR, WHITE, (cx - 6, cy + 6), (cx + 6, cy - 6), 2)
+            else:
+                Draw.line(config.SCR, WHITE, (cx - 7, cy), (cx + 7, cy), 2)
+                if text == '+':
+                    Draw.line(config.SCR, WHITE, (cx, cy - 7), (cx, cy + 7), 2)
+            return
+        self._draw_text_fit(text, self.font_med, WHITE, label_rect, align='center')

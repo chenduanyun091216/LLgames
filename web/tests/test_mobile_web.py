@@ -13,7 +13,7 @@ import pygame
 from game_core import config
 from game_core.game import Game, GameState
 from game_core.entities import Bullet, Enemy, GiftBox, SkillProjectile
-from game_core.entities import MagneticStorm, SpinningDarts
+from game_core.entities import MagneticStorm, RadiationLaser, SpinningDarts
 from game_core import sounds
 
 
@@ -41,6 +41,55 @@ class MobileWebTests(unittest.TestCase):
                     self.assertGreater((x - nearest_x) ** 2 + (y - nearest_y) ** 2,
                                        radius ** 2, (size, action, rect))
 
+    def test_radiation_laser_has_a_narrower_hitbox(self):
+        laser = RadiationLaser(self.game.player)
+        original_width = int(self.game.player.SIZE[0] * 0.65) + 36
+        self.assertLess(laser.rect().width, original_width)
+        self.assertAlmostEqual(laser.rect().centerx, self.game.player.x, delta=1)
+
+    def test_gift_hud_shows_active_effects_and_hides_expired_ones(self):
+        game = self.game
+        with patch.object(config, 'campaign_time_ms', 1000):
+            game._begin_infinite_run()
+            for kind in ('fire', 'ice', 'haste', 'lightning', 'heal'):
+                box = GiftBox(240)
+                box.kind = kind
+                game._open_gift_box(box, 1000)
+                if kind == 'fire':
+                    labels = []
+                    game.draw(labels)
+                    self.assertIn('火弹 10s', {label[0] for label in labels})
+            with patch.object(game, '_draw_text_fit', wraps=game._draw_text_fit) as draw_text:
+                game.draw()
+        labels = {call.args[0] for call in draw_text.call_args_list}
+        self.assertTrue({'冰弹 10s', '极速 10s', '闪电 6s'} <= labels)
+        self.assertNotIn('火弹 10s', labels)
+
+        with patch.object(config, 'campaign_time_ms', 11000):
+            with patch.object(game, '_draw_text_fit', wraps=game._draw_text_fit) as draw_text:
+                game.draw()
+        self.assertFalse(any(call.args[0].startswith(('冰弹 ', '极速 ', '闪电 '))
+                             for call in draw_text.call_args_list))
+
+    def test_infinite_continue_clears_score_and_keeps_elapsed_time(self):
+        game = self.game
+        with patch.object(config, 'campaign_time_ms', 1000):
+            game._begin_infinite_run()
+        with patch.object(config, 'campaign_time_ms', 66000):
+            game.score = 320
+            game._player_defeated('测试')
+            self.assertEqual(game.score, 320)
+            game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_y, mod=0)])
+            self.assertEqual(game.state, GameState.INFINITE_COUNTDOWN)
+            self.assertEqual(game.score, 0)
+            with patch.object(game, '_draw_text_fit', wraps=game._draw_text_fit) as draw_text:
+                game.draw()
+            self.assertIn('用时 01:05', {call.args[0] for call in draw_text.call_args_list})
+            with patch.object(pygame.time, 'get_ticks', return_value=game.infinite_countdown_end):
+                game.update()
+            self.assertEqual(game.state, GameState.PLAYING)
+            self.assertEqual(game.score, 0)
+
     def test_hud_level_buttons_switch_infinite_chapter(self):
         game = self.game
         game._start_infinite_game()
@@ -59,6 +108,46 @@ class MobileWebTests(unittest.TestCase):
         game._begin_infinite_run(8)
         game._handle_hud_click(right.center)
         self.assertEqual((game.chapter, game.infinite_background_level, game.infinite_boss_index), (9, 1, 8))
+
+    def test_campaign_enemy_gold_requires_coin_pickup(self):
+        game = self.game
+        with patch.object(config, 'campaign_time_ms', 1000):
+            for boss_fight in (False, True):
+                with self.subTest(boss_fight=boss_fight):
+                    game._start_game('medium')
+                    if boss_fight:
+                        game._trigger_boss()
+                    starting_gold = game.player.gold
+                    enemy = Enemy(config.ENEMY_DEFS[0])
+                    enemy.x, enemy.y = game.player.x, 100
+                    game.enemies.append(enemy)
+                    game._kill_enemy(enemy)
+
+                    self.assertEqual(game.player.gold, starting_gold)
+                    self.assertEqual(sum(coin.value for coin in game.coins), enemy.gold_value)
+                    game.update()
+                    self.assertEqual(game.player.gold, starting_gold)
+
+                    for coin in game.coins:
+                        coin.x, coin.y = game.player.rect().center
+                    game.update()
+                    self.assertEqual(game.player.gold, starting_gold + enemy.gold_value)
+                    self.assertFalse(game.coins)
+
+    def test_campaign_boss_credits_gold_directly_and_advances_level(self):
+        game = self.game
+        with patch.object(config, 'campaign_time_ms', 1000):
+            game._start_game('medium')
+            game._trigger_boss()
+            starting_gold = game.player.gold
+            game.boss.hp = 0
+            self.assertTrue(game._settle_boss_if_killed())
+            self.assertEqual(game.player.gold, starting_gold + config.CAMPAIGN_REWARDS[0])
+            self.assertFalse(game.coins)
+            self.assertEqual(game.state, GameState.LEVEL_TRANSITION)
+        with patch.object(config, 'campaign_time_ms', game.level_transition_end):
+            game.update()
+        self.assertEqual(game.current_level, 2)
 
     def test_hud_level_buttons_switch_campaign_level(self):
         game = self.game

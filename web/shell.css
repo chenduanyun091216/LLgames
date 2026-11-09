@@ -147,9 +147,11 @@ html, body {
 }
 
 #ttgames-quality {
+    --quality-menu-width: 216px;
+    --quality-safe-right: env(safe-area-inset-right, 0px);
     position: fixed;
     z-index: 21;
-    top: calc(50% - 61px);
+    top: var(--quality-top, calc(50% - 61px));
     left: calc(50% + 100px);
     font: 14px/1.4 system-ui, sans-serif;
     color: #e6fcff;
@@ -164,21 +166,36 @@ html, body {
 }
 #ttgames-quality > summary::-webkit-details-marker { display: none; }
 #ttgames-quality > fieldset {
-    position: absolute;
-    right: 0;
-    width: 132px;
-    margin: 6px 0 0;
-    padding: 6px 10px 8px;
+    --menu-top: calc(var(--pause-bottom) + 10px);
+    position: fixed;
+    top: var(--menu-top);
+    left: 50%;
+    transform: translateX(-50%);
+    box-sizing: border-box;
+    width: min(var(--quality-menu-width), calc(100vw - 20px));
+    min-inline-size: 0;
+    max-height: calc(100dvh - var(--menu-top) - max(10px, env(safe-area-inset-bottom)));
+    overflow: auto;
+    touch-action: pan-y;
+    overscroll-behavior: contain;
+    margin: 0;
+    padding: 6px 12px 4px;
     border: 1px solid #619caf;
     border-radius: 9px;
     background: #102739;
 }
+#ttgames-quality[data-side] > fieldset {
+    --menu-top: var(--quality-top);
+    left: calc(var(--pause-right) + 10px);
+    transform: none;
+}
 #ttgames-quality label {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 8px;
     min-height: 34px;
     cursor: pointer;
+    white-space: nowrap;
 }
 #ttgames-quality label span { margin-left: auto; color: #a9dce9; }
 #ttgames-quality input { accent-color: #85dfd2; }
