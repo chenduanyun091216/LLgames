@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>首次使用 · 海洋生物入侵</title>
+    <style>
+        :root { color-scheme: dark; font: 16px/1.65 system-ui, sans-serif; }
+        body { margin: 0; background: #071b2b; color: #e6f7ff; }
+        main { max-width: 32rem; margin: 0 auto; padding: clamp(24px, 6vw, 48px) 20px; }
+        header p { margin: 0; color: #91d9df; }
+        h1 { margin: 0 0 20px; font-size: clamp(28px, 7vw, 36px); }
+        section { padding: 18px; margin-bottom: 12px; border: 1px solid #376779; border-radius: 12px; background: #102739; }
+        h2 { margin: 0; font-size: 18px; }
+        p { margin: 8px 0 12px; overflow-wrap: anywhere; }
+        .note { color: #b6cedc; font-size: 14px; }
+        .action { display: block; padding: 10px 14px; border-radius: 8px; background: #a3eee3; color: #102739; text-align: center; font-weight: 700; text-decoration: none; }
+        .action:focus-visible { outline: 2px solid white; outline-offset: 4px; }
+        .secondary { background: #1c4559; color: #e6f7ff; }
+    </style>
+</head>
+<body>
+    <main>
+        <header><p>首次使用</p><h1>海洋生物入侵</h1></header>
+        <section>
+            <h2>1. 下载并信任证书</h2>
+            <p class="note">只在你信任的局域网使用这个入口，并向游戏分享者确认地址。</p>
+            <a class="action secondary" href="/rootCA.cer">下载证书</a>
+            <p><strong>iPhone：</strong>用 Safari 下载。在设置中打开「已下载描述文件」并安装，再到「通用 → 关于本机 → 证书信任设置」开启完全信任。</p>
+            <p><strong>Android：</strong>在系统设置中搜索「安装 CA 证书」，选择下载的 <code>rootCA.cer</code>。</p>
+        </section>
+        <section>
+            <h2>2. 进入游戏</h2>
+            <p>证书只需安装一次。打开游戏后，等页面显示「离线资源已保存」，以后就能用同一浏览器断网打开游戏地址。</p>
+            <a class="action" id="open-game" href="#">进入 HTTPS 游戏</a>
+        </section>
+    </main>
+    <script>
+        const game = new URL(location.href);
+        game.protocol = 'https:';
+        game.port = '__GAME_PORT__';
+        game.pathname = '/';
+        game.search = game.hash = '';
+        document.getElementById('open-game').href = game.href;
+    </script>
+</body>
+</html>

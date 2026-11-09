@@ -1,2 +1,54 @@
-# LLgames
-糖糖设计的海洋生物入侵小游戏
+# 海洋生物入侵 · TTgames
+
+PC 端支持键鼠和本地双人，Web 端支持单人、横竖屏触控和离线游玩。两端分别维护游戏逻辑，共用 `assets/images/` 中的原始素材。
+
+## 安装
+
+在项目根目录操作。PC 端运行、Web 构建和本地服务共用 Python 3.12 的 `.venv`，依赖统一从 `requirements.txt` 安装。已有其他 Python 版本的 `.venv` 时，先备份旧目录，再创建新环境。
+
+**macOS / Linux**
+
+```sh
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
+
+**Windows PowerShell**
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+## 启动
+
+激活 `.venv` 后，从项目根目录运行对应脚本。
+
+| 用途 | 命令 |
+| --- | --- |
+| 启动 PC 版 | `python run_pc.py` |
+| 在本机浏览器游玩 | `python run_web.py --http --host 127.0.0.1` |
+| 通过 HTTPS 提供局域网访问 | `python run_web.py --cert /path/to/cert.pem --key /path/to/key.pem` |
+| 只构建 Web 版 | `python run_web.py --build-only` |
+
+本机浏览器可打开 `http://localhost:8001/`。首次 Web 构建需要联网获取运行时和字体，产物位于 `build/web-offline/`。
+
+Web 游戏由浏览器中的 Python 3.12（WASM）执行。通过 HTTPS 或本机 `localhost` 打开，等页面显示「离线资源已保存」后，可以在同一浏览器离线重开原地址。手机访问、证书和部署细节见 [Web 使用说明](docs/WEB.md)。
+
+## 项目目录
+
+| 路径 | 内容 |
+| --- | --- |
+| `pc/` | PC 游戏和测试 |
+| `web/` | Web 游戏、网页界面、构建与服务代码、测试 |
+| `assets/` | 两端共用的原始素材和素材工具 |
+| `docs/` | Web 部署说明和玩法数值文档 |
+
+## 测试
+
+```sh
+python -m unittest discover
+node --test web/tests/test_loading_progress.js
+```

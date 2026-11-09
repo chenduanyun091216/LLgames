@@ -1,0 +1,7 @@
+# PC runtime and local tests
+pygame==2.6.1
+
+# Web build tools
+pygbag==0.9.3
+Pillow>=11,<13
+fonttools>=4.55,<5

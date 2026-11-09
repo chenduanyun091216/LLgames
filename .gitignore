@@ -1,0 +1,15 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Generated builds and local Web build files
+/build/
+/dist/
+/.web-build/
+
+# IDE and operating system files
+/.idea/
+.DS_Store
+Thumbs.db

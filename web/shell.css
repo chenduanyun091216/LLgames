@@ -1,0 +1,184 @@
+html, body {
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    margin: 0;
+    overflow: hidden;
+    touch-action: none;
+    background: radial-gradient(ellipse at 50% 0%, #134c66, #071b2b 62%, #031018);
+    color: #ecfaff;
+    color-scheme: dark;
+}
+#canvas, #ttgames-ui {
+    position: fixed;
+    inset: 0;
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0;
+    touch-action: none;
+}
+#ttgames-ui { z-index: 6; pointer-events: none; }
+#infobox {
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%);
+    width: min(76vw, 320px);
+    box-sizing: border-box;
+    padding: 28px 18px 24px;
+    border: 1px solid #468ba0;
+    border-radius: 18px;
+    background: linear-gradient(160deg, #184359, #091d2d 72%);
+    color: #bdeef1;
+    box-shadow: inset 0 1px #c2f6ff3b, 0 18px 60px #0009;
+    font: 600 15px/1.6 system-ui, sans-serif;
+    text-align: center;
+}
+#infobox::before {
+    content: '海洋生物入侵';
+    display: block;
+    margin-bottom: 10px;
+    color: #f0ffff;
+    font-size: 26px;
+    letter-spacing: .1em;
+}
+#infobox[data-ready] { border-color: #89ebdc; cursor: pointer; }
+#infobox[data-ready]:hover { background: linear-gradient(160deg, #20556a, #0b2437 72%); }
+#infobox[data-ready]:active { border-color: #d6fffa; }
+#infobox:focus-visible { outline: 2px solid white; outline-offset: 4px; }
+#transfer {
+    position: fixed;
+    top: calc(50% + 78px);
+    left: 50%;
+    z-index: 8;
+    transform: translateX(-50%);
+    color: #bdeef1;
+    font: 12px system-ui, sans-serif;
+    pointer-events: none;
+}
+#transfer { visibility: hidden; }
+#ttgames-loading {
+    position: fixed;
+    top: calc(50% + 73px);
+    left: 50%;
+    z-index: 9;
+    transform: translateX(-50%);
+    width: min(70vw, 290px);
+    color: #c1edf2;
+    text-align: center;
+    font: 600 13px/1.6 system-ui, sans-serif;
+}
+#ttgames-loading progress {
+    display: block;
+    width: 100%;
+    height: 8px;
+    margin-bottom: 8px;
+    appearance: none;
+    -webkit-appearance: none;
+    overflow: hidden;
+    border: 0;
+    border-radius: 8px;
+    background: #102b40;
+    box-shadow: 0 0 0 1px #619caf;
+}
+#ttgames-loading progress::-webkit-progress-bar { background: #102b40; }
+#ttgames-loading progress::-webkit-progress-value {
+    border-radius: 8px;
+    background: linear-gradient(90deg, #469ed5, #8af5d7);
+}
+#ttgames-loading progress::-moz-progress-bar {
+    border-radius: 8px;
+    background: linear-gradient(90deg, #469ed5, #8af5d7);
+}
+#ttgames-loading .loading-details {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+}
+#infobox[data-ready] + #ttgames-loading .loading-status { visibility: hidden; }
+#ttgames-loading .loading-percent { font-variant-numeric: tabular-nums; }
+#ttgames-offline:not(:empty) {
+    position: fixed;
+    z-index: 22;
+    top: calc(env(safe-area-inset-top) + 10px);
+    left: 50%;
+    transform: translateX(-50%);
+    box-sizing: border-box;
+    width: max-content;
+    max-width: min(68vw, 360px);
+    padding: 6px 12px;
+    border: 1px solid #468ba0;
+    border-radius: 10px;
+    background: #102739;
+    color: #c1edf2;
+    font: 600 12px/1.5 system-ui, sans-serif;
+    text-align: center;
+    pointer-events: none;
+}
+#ttgames-fullscreen, #ttgames-quality > summary {
+    position: fixed;
+    z-index: 20;
+    top: calc(env(safe-area-inset-top) + 62px);
+    right: calc(env(safe-area-inset-right) + 12px);
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 1px solid #80b7c7;
+    border-radius: 9px;
+    background: linear-gradient(#285166, #102739);
+    box-shadow: inset 0 1px #bcefff36, 0 3px 9px #00111a88;
+    color: #e6fcff;
+    cursor: pointer;
+    font: 23px/1 system-ui, sans-serif;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+#ttgames-fullscreen:hover { background: linear-gradient(#32677b, #163a50); }
+#ttgames-fullscreen:active { background: #0a2335; border-color: #d0fff5; }
+#ttgames-fullscreen:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+@media (orientation: landscape) {
+    #ttgames-fullscreen { top: calc(env(safe-area-inset-top) + 8px); left: 23%; right: auto; transform: translateX(-50%); width: 32px; height: 32px; }
+}
+
+#ttgames-fullscreen[data-menu] {
+    top: calc(env(safe-area-inset-top) + 8px);
+    left: calc(env(safe-area-inset-left) + 12px);
+    right: auto;
+    transform: none;
+}
+
+#ttgames-quality {
+    position: fixed;
+    z-index: 21;
+    top: calc(50% - 61px);
+    left: calc(50% + 100px);
+    font: 14px/1.4 system-ui, sans-serif;
+    color: #e6fcff;
+}
+#ttgames-quality > summary {
+    position: static;
+    display: grid;
+    place-items: center;
+    box-sizing: border-box;
+    list-style: none;
+    font-size: 19px;
+}
+#ttgames-quality > summary::-webkit-details-marker { display: none; }
+#ttgames-quality > fieldset {
+    position: absolute;
+    right: 0;
+    width: 132px;
+    margin: 6px 0 0;
+    padding: 6px 10px 8px;
+    border: 1px solid #619caf;
+    border-radius: 9px;
+    background: #102739;
+}
+#ttgames-quality label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 34px;
+    cursor: pointer;
+}
+#ttgames-quality label span { margin-left: auto; color: #a9dce9; }
+#ttgames-quality input { accent-color: #85dfd2; }
