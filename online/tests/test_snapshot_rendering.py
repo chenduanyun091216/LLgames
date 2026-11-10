@@ -153,7 +153,7 @@ class SnapshotTests(unittest.TestCase):
 
     def test_all_campaign_bosses_signatures_and_lasers(self):
         p=Presentation(pygame.Surface((960,720)))
-        for level in range(1,10):
+        for level in range(1,len(config.LEVEL_CONFIGS)+1):
             g=self.campaign_boss(level)
             for now in (100,450,1300):
                 config.campaign_time_ms=now
@@ -226,7 +226,7 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(p.view.boss.body_hp[0],hp)
 
     def test_orochi_every_skill_clone_head_regrowth_and_death(self):
-        g=self.campaign_boss(9);p=Presentation(pygame.Surface((960,720)))
+        g=self.campaign_boss(11);p=Presentation(pygame.Surface((960,720)))
         boss=g.boss
         for skill in (*boss.SKILLS,'storm'):
             boss._start_skill(skill,100)

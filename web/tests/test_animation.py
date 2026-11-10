@@ -191,7 +191,7 @@ class AnimationTests(unittest.TestCase):
         clock = (config, 'game_ticks')
         canvas = pygame.Surface((1200, 1000), pygame.SRCALPHA)
         for definition in config.BOSS_DEFS:
-            if definition['key'] in ('boss_niu', 'boss_orochi'):
+            if definition['key'] in ('boss_niu', 'boss_orochi', 'boss_mecha_lizard', 'boss_ancient_whale'):
                 continue
             with self.subTest(boss=definition['key']):
                 cls = special_bosses.ZongBoss if definition['key'] == 'boss_zongzong' else entities.Boss

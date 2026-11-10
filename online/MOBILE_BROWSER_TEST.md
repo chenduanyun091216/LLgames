@@ -41,7 +41,7 @@ python -m online.tools.test_mobile_runtime --channel chrome
 - 实际 Pygbag/WASM/Pygame 引擎加载。只在真实页面提示时触摸一次，只读检查实际渲染器就绪标记，不伪造或调用 `readyRenderer()`；加入后另行检查准备按钮。
 - 两个隔离会话加入同一房间、准备、开始，实际服务器发出游戏状态。
 - 两端分别同时触摸摇杆与射击；检查发出的输入、服务器角色移动与射击，并检查松手后输入归零。
-- 截取真实画布并检查非空、960×720 逻辑分辨率、4:3 缩放。
+- 截取真实画布并检查非空、所选方向的逻辑分辨率（横屏960×720、竖屏480×720）及等比缩放。
 - 商店让双方暂停，关闭一人的商店仍暂停，双方关闭后继续。
 - P2 页面真实重载时 P1 暂停；原标签页重新加载并使用自己的临时凭证加入，仍为 P2 且保留对局。
 - 390×844 与 844×390 竖横屏互换。
@@ -62,3 +62,5 @@ python -m online.tools.test_mobile_runtime --channel chrome
 ## 仍需真实设备验收
 
 Chromium 模拟不能证明 iOS Safari、Android 机型、音频效果、后台/锁屏行为、弱 Wi-Fi 或完整 Boss 通关表现。正式接受前仍须同一 Wi-Fi 下用两台真实设备完成至少一轮：同时移动射击、技能、购买与装备互斥、死亡复活、后台暂停/恢复、断线重连、旋转。首关 Boss、后续关卡切换及全战役 Boss 通关需另行验收，不能由本脚本的 PASS 推断。
+
+方向参数：默认双方横屏；另运行 `python -m online.tools.test_mobile_runtime --orientation portrait --output online/.test-mobile-portrait` 验证双方竖屏。脚本检查任一端旋转时权威 tick 停止、控制禁用，转回后恢复。真实 iOS/Android 旋转、软键盘、后台/商店组合仍需真机验收。

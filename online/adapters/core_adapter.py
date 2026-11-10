@@ -1,4 +1,4 @@
-"""Nine-level two-player campaign adaptation of the original authoritative Game loop.
+"""Eleven-level two-player campaign adaptation of the original authoritative Game loop.
 
 The battle loop, enemy spawning, shots, character skills and all boss AI remain
 in game_core.Game. Overrides here are confined to multiplayer seams. This class
@@ -21,18 +21,14 @@ from game_core.game import Game, GameState, CONTACT_DAMAGE_COOLDOWN
 from game_core.entities import Player
 from game_core.boss_skills import BossSignature
 from game_core.sprites import make_player_surface
+from online.shared.world import configure_world
 
-WORLD_SIZE = (960, 720)
 REVIVE_COSTS = {'easy': 50, 'medium': 75, 'hard': 100}
 
 
-def fixed_world():
-    """Never call update_mobile_view: clients cannot change world geometry."""
-    config.SCREEN_WIDTH, config.SCREEN_HEIGHT = WORLD_SIZE
-    config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT = 0, WORLD_SIZE[0]
-    config.GAME_AREA_BOTTOM = WORLD_SIZE[1] - 60
-    config.MOBILE_LANDSCAPE_VIEW = False
-    config.VIEW_SCALE, config.VIEW_OFFSET, config.VIEW_SIZE = 1, (0, 0), WORLD_SIZE
+def fixed_world(orientation='landscape'):
+    """Only the room's fixed orientation can select logical geometry."""
+    return configure_world(orientation)
 
 
 class SharedPlayer(Player):
@@ -64,7 +60,7 @@ class SharedReturningAxe(core_game.ReturningAxe):
 
 
 class OnlineGame(Game):
-    def __init__(self, difficulty='medium'):
+    def __init__(self, difficulty='medium', orientation='landscape'):
         if difficulty not in REVIVE_COSTS:
             raise ValueError('Unsupported difficulty')
         pygame.font.init()
@@ -72,8 +68,9 @@ class OnlineGame(Game):
             pygame.display.init()
         if pygame.display.get_surface() is None:
             pygame.display.set_mode((1, 1))
-        fixed_world()
-        config.SCR = pygame.Surface(WORLD_SIZE)
+        self.orientation = orientation
+        self.world_size = fixed_world(orientation)
+        config.SCR = pygame.Surface(self.world_size)
         config.campaign_time_ms = 0
         self.tick = 0
         self.phase = 'playing'
@@ -112,7 +109,7 @@ class OnlineGame(Game):
             player.campaign = True
             player.hazard_slow = (0.85, 0.80, 0.75)[self._campaign_tier()]
             player.owned_weapons, player.owned_characters = weapons, characters
-            player.x, player.y = 390 + (slot - 1) * 180, config.GAME_AREA_BOTTOM - 14
+            player.x, player.y = self.world_size[0] / 2 + (slot - 1.5) * 180, config.GAME_AREA_BOTTOM - 14
         self._legacy_sync()
 
     @contextmanager
@@ -187,7 +184,7 @@ class OnlineGame(Game):
         if self.phase != 'playing' or self.paused:
             self.clear_inputs()
             return
-        fixed_world()
+        fixed_world(self.orientation)
         self.tick += 1
         config.campaign_time_ms = round(self.tick * 1000 / 60)
         now = config.game_ticks()
@@ -228,7 +225,7 @@ class OnlineGame(Game):
 
     def _start_level(self, n, *, checkpoint=True):
         if not 1 <= n <= len(core_game.LEVEL_CONFIGS):
-            raise ValueError('Only the nine ordinary campaign levels are supported')
+            raise ValueError('Only the configured ordinary campaign levels are supported')
         self._area_hits.clear()
         self._contact_hits.clear()
         # Single-player retry checkpoints are not used by confirmed co-op revival.
@@ -245,6 +242,18 @@ class OnlineGame(Game):
     def _hit_player(self, rect):
         hits = [p for p in self.players if rect.colliderect(p.rect())]
         # An invincible teammate must not shield a vulnerable overlapping player.
+        p = next((p for p in hits if config.game_ticks() >= p.invincible_until), hits[0] if hits else None)
+        self._damage_target = p
+        return p
+
+    def _hit_by_projectile(self, projectile):
+        # Geometry and telegraph timing belong to the shared projectile; this
+        # seam only chooses a living multiplayer victim and records that target.
+        hits_rect = getattr(projectile, 'hits_rect', None)
+        if hits_rect is None:
+            return self._hit_player(projectile.rect())
+        hit_players = getattr(projectile, '_hit_players', ())
+        hits = [p for p in self.players if p not in hit_players and hits_rect(p.rect())]
         p = next((p for p in hits if config.game_ticks() >= p.invincible_until), hits[0] if hits else None)
         self._damage_target = p
         return p
@@ -538,7 +547,7 @@ class OnlineGame(Game):
             else:
                 return '复活资源不足，请等待队友收集金币'
             p.alive, p.hp = True, p.max_hp
-            p.x, p.y = 390 + (slot - 1) * 180, config.GAME_AREA_BOTTOM - 14
+            p.x, p.y = self.world_size[0] / 2 + (slot - 1.5) * 180, config.GAME_AREA_BOTTOM - 14
             p.invincible_until = config.game_ticks() + 2000
             p.temp_hp_until = 0
             self._inputs[slot] = (0., 0., False)
@@ -604,7 +613,8 @@ class OnlineGame(Game):
         characters += [{'key': k, 'name': d.name, 'price': self._character_cost(d), 'owned': k in self.player.owned_characters} for k, d in config.CHARACTER_DEFS.items()]
         stage = {GameState.LEVEL_TRANSITION: 'transition', GameState.BOSS_FIGHT: 'boss'}.get(self.state, self.phase)
         return {'tick': self.tick, 'phase': self.phase, 'paused': self.paused,
-                'current_level': self.current_level, 'stage': stage,
+                'orientation': self.orientation, 'world_size': list(self.world_size),
+                'current_level': self.current_level, 'total_levels': len(core_game.LEVEL_CONFIGS), 'stage': stage,
                 'level_title': core_game.LEVEL_CONFIGS[self.current_level - 1]['title'],
                 'transition_remaining_ms': max(0, self.level_transition_end - config.game_ticks()) if stage == 'transition' else 0,
                 'pause_reason': self.pause_reason, 'players': players, 'gold': self.gold,

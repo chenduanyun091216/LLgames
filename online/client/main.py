@@ -19,6 +19,12 @@ async def main():
         payload = str(bridge.takeState())
         if payload:
             snapshot = json.loads(payload)
+            size = snapshot.get("world_size")
+            if size and tuple(size) != screen.get_size():
+                if tuple(size) not in ((960, 720), (480, 720)):
+                    raise ValueError("Invalid shared world size")
+                screen = pygame.display.set_mode(tuple(size))
+                renderer = Presentation(screen)
             if snapshot.get("world"):
                 renderer.apply(snapshot, int(bridge.slot))
         renderer.draw()

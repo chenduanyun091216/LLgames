@@ -10,6 +10,7 @@ from game_core.asset_loader import scale_surface_cached
 from game_core.boss_skills import BossSignature
 from game_core.sprites import (make_player_surface, make_fire_player_surface,
     make_ice_player_surface, make_water_player_surface, make_radiation_player_surface)
+from online.shared.world import WORLD_SIZES, configure_world
 from .snapshot import SCHEMA, CLASSES, COLLECTIONS, GAME_FIELDS, DATA_KEYS, DEFINITION_KEYS
 
 @lru_cache(maxsize=2)
@@ -37,11 +38,11 @@ class _View(Game):
 
 class Presentation:
     def __init__(self, surface):
-        if surface.get_size() != (960,720): raise ValueError('Expected 960x720 logical surface')
-        config.SCREEN_WIDTH, config.SCREEN_HEIGHT = 960,720
-        config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT, config.GAME_AREA_BOTTOM = 0,960,660
-        config.MOBILE_LANDSCAPE_VIEW = False
-        config.MOBILE_PORTRAIT_ENTITY_SCALE = 0.8
+        self.orientation = next((key for key, size in WORLD_SIZES.items()
+                                 if size == surface.get_size()), None)
+        if self.orientation is None:
+            raise ValueError('Expected an authoritative room-sized logical surface')
+        configure_world(self.orientation)
         config.SCR = surface
         self.surface = surface
         self.view = _View()
@@ -59,7 +60,7 @@ class Presentation:
         if name not in CLASSES: raise ValueError('Unknown visual type')
         if name == 'Player': return E.Player()
         if name == 'Enemy': return E.Enemy(record['edef'])
-        if name in ('Boss', 'NiuBoss', 'ZongBoss', 'OrochiBoss'):
+        if name in ('Boss', 'NiuBoss', 'ZongBoss', 'OrochiBoss', 'MechaLizardBoss', 'AncientWhaleBoss'):
             boss = CLASSES[name](record['bdef'], self.view.difficulty)
             boss.intro_until = 0
             return boss
@@ -75,6 +76,7 @@ class Presentation:
         if name == 'SkillProjectile': return E.SkillProjectile(0,0,0,0,f['ptype'])
         if name == 'Lightning': return E.Lightning(0,0,[],0)
         if name in ('RadiationLaser','SpinningDarts'): return CLASSES[name](self.view.player)
+        if name == 'AbyssProjectile': return CLASSES[name].__new__(CLASSES[name])
         if name == 'BossProjectile': return E.BossProjectile(0,0,0,0)
         if name == 'DragonFireball': return E.DragonFireball(0,0,0)
         if name == 'ReturningAxe':
@@ -89,6 +91,21 @@ class Presentation:
 
     def apply(self, full_snapshot, local_slot=1):
         snap = full_snapshot.get('world',full_snapshot)
+        orientation = full_snapshot.get('orientation', self.orientation)
+        if orientation not in WORLD_SIZES:
+            raise ValueError('Unknown room orientation')
+        if tuple(full_snapshot.get('world_size', WORLD_SIZES[orientation])) != WORLD_SIZES[orientation]:
+            raise ValueError('Room geometry does not match orientation')
+        size = configure_world(orientation)
+        if self.surface.get_size() != size:
+            # The client may replace this with its SDL display surface before
+            # apply; headless consumers still get a correctly sized renderer.
+            self.surface = pygame.Surface(size)
+            self.objects.clear()
+            self._background_level = None
+            self.view.bg_transition_prev = None
+        self.orientation = orientation
+        config.SCR = self.surface
         match_id = full_snapshot.get('match_id')
         if match_id != self.match_id:
             self.objects.clear()
@@ -186,6 +203,7 @@ class Presentation:
                 play_sound(event['key'])
 
     def draw(self):
+        configure_world(self.orientation)
         config.SCR = self.surface
         config.campaign_time_ms = self.time_ms
         self.view.draw()

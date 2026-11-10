@@ -23,7 +23,7 @@ class OrochiTests(unittest.TestCase):
         self.addCleanup(clock.stop)
         game = Game()
         game.difficulty = config.DIFFICULTY_PRESETS['medium']
-        game._start_level(9)
+        game._start_level(11)
         self.assertEqual(game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(game.boss, OrochiBoss)
         self.game = game
@@ -191,32 +191,32 @@ class OrochiTests(unittest.TestCase):
         self.boss.hit_by('pistol')
         self.assertEqual(self.boss.hp, self.boss.max_hp * .74 - 1)
 
-    def test_level_eight_transitions_directly_to_orochi(self):
-        self.game._start_level(8)
+    def test_level_ten_transitions_directly_to_orochi(self):
+        self.game._start_level(10)
         self.game._trigger_boss()
         self.game.boss.hp = 0
         self.game.update()
         self.assertEqual(self.game.state, GameState.LEVEL_TRANSITION)
         config.campaign_time_ms = self.game.level_transition_end
         self.game.update()
-        self.assertEqual(self.game.current_level, 9)
+        self.assertEqual(self.game.current_level, 11)
         self.assertEqual(self.game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(self.game.boss, OrochiBoss)
         self.assertFalse(self.game.enemies)
 
-    def test_shift_nine_opens_orochi_from_campaign(self):
-        self.game._start_level(8)
-        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_9, mod=pygame.KMOD_SHIFT)
+    def test_shift_minus_opens_orochi_from_campaign(self):
+        self.game._start_level(10)
+        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_MINUS, mod=pygame.KMOD_SHIFT)
         self.game.handle_events([event])
-        self.assertEqual(self.game.current_level, 9)
+        self.assertEqual(self.game.current_level, 11)
         self.assertEqual(self.game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(self.game.boss, OrochiBoss)
 
-    def test_hud_next_opens_orochi_from_level_eight(self):
-        self.game._start_level(8)
+    def test_hud_next_opens_orochi_from_level_ten(self):
+        self.game._start_level(10)
         _, _, next_level = self.game._hud_controls()
         self.game._handle_hud_click(next_level.center)
-        self.assertEqual(self.game.current_level, 9)
+        self.assertEqual(self.game.current_level, 11)
         self.assertEqual(self.game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(self.game.boss, OrochiBoss)
 
@@ -292,14 +292,14 @@ class OrochiTests(unittest.TestCase):
         self.boss.draw(surface)
         self.boss.draw(scaled)
 
-    def test_infinite_level_eight_advances_to_orochi_before_wrapping(self):
+    def test_infinite_level_ten_advances_to_orochi_before_wrapping(self):
         game = self.game
-        game._begin_infinite_run(8)
+        game._begin_infinite_run(10)
         game._trigger_infinite_boss()
         game.boss.hp = 0
         game.update()
-        self.assertEqual(game.chapter, 9)
-        self.assertEqual(game.infinite_background_level, 9)
+        self.assertEqual(game.chapter, 11)
+        self.assertEqual(game.infinite_background_level, 11)
         self.assertTrue(game.level_enemy_defs)
         self.assertEqual(game.state, GameState.PLAYING)
         self.assertEqual(game.next_infinite_boss_time, 26000)
@@ -307,23 +307,23 @@ class OrochiTests(unittest.TestCase):
         config.campaign_time_ms = game.next_infinite_boss_time
         game.update()
         self.assertIsInstance(game.boss, OrochiBoss)
-        self.assertEqual(game.boss.bdef['campaign_level'], 9)
+        self.assertEqual(game.boss.bdef['campaign_level'], 11)
         game.boss._start_death(config.game_ticks())
         config.campaign_time_ms += game.boss.DEATH_DURATION
         game.update()
-        self.assertEqual(game.chapter, 10)
+        self.assertEqual(game.chapter, 12)
         self.assertEqual(game.infinite_background_level, 1)
         game._trigger_infinite_boss()
         self.assertEqual(game.boss.bdef['key'], 'boss_lobster')
 
-    def test_infinite_shift_nine_selects_orochi_chapter(self):
+    def test_infinite_shift_minus_selects_orochi_chapter(self):
         game = self.game
         game._start_infinite_game()
-        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_9, mod=pygame.KMOD_SHIFT)
+        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_MINUS, mod=pygame.KMOD_SHIFT)
         game.handle_events([event])
         self.assertTrue(game.infinite_mode)
-        self.assertEqual(game.chapter, 9)
-        self.assertEqual(game.infinite_background_level, 9)
+        self.assertEqual(game.chapter, 11)
+        self.assertEqual(game.infinite_background_level, 11)
         game._trigger_infinite_boss()
         self.assertIsInstance(game.boss, OrochiBoss)
 

@@ -211,20 +211,20 @@ class CoOpRulesTests(unittest.TestCase):
         self.assertEqual(self.g.boss.bdef['key'],'boss_lobster')
 
     def test_campaign_transitions_and_final_victory_rewards_once(self):
-        for level in range(1, 10):
+        for level in range(1, len(config.LEVEL_CONFIGS) + 1):
             self.assertEqual(self.g.current_level, level)
             self.g._level_complete(); gold = self.g.gold
             self.g._level_complete()
             self.assertEqual(self.g.gold, gold)
-            if level < 9:
+            if level < len(config.LEVEL_CONFIGS):
                 self.assertEqual(self.g.state, GameState.LEVEL_TRANSITION)
                 for _ in range(120):
                     self.g.step()
             else:
                 self.g.step()
                 self.assertEqual(self.g.phase, 'won')
-                self.assertEqual(self.g.current_level, 9)
-        self.assertRaises(ValueError, self.g._start_level, 10)
+                self.assertEqual(self.g.current_level, 11)
+        self.assertRaises(ValueError, self.g._start_level, 12)
 
     def test_headless_visual_records_expire_without_rendering(self):
         self.g.muzzle_flashes = [(self.p1, 0, 'pistol'), (self.p2, 911, 'rifle')]

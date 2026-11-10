@@ -108,8 +108,9 @@ async def screenshot(client, output, name):
 async def check_canvas(client):
     canvas = client.page.locator('#canvas')
     box = await canvas.bounding_box()
-    assert box and abs(box['width'] / box['height'] - 4 / 3) < .015, box
-    assert await canvas.get_attribute('width') == '960'
+    width,height=client.state['world_size']
+    assert box and abs(box['width'] / box['height'] - width/height) < .015, box
+    assert await canvas.get_attribute('width') == str(width)
     assert await canvas.get_attribute('height') == '720'
     # Screenshot pixels, not a fabricated canvas or a readiness-only claim.
     pixels = Image.open(io.BytesIO(await canvas.screenshot())).convert('RGB')
@@ -176,7 +177,8 @@ async def run(args, report):
         browser = await playwright.chromium.launch(**options)
         report['browser_version'] = browser.version
         contexts = []
-        for slot, viewport in enumerate(({'width': 390, 'height': 844}, {'width': 844, 'height': 390}), 1):
+        viewport = {'width':844,'height':390} if args.orientation=='landscape' else {'width':390,'height':844}
+        for slot in (1,2):
             context = await browser.new_context(viewport=viewport, is_mobile=True,
                                                 has_touch=True, device_scale_factor=1)
             contexts.append(context)
@@ -240,13 +242,19 @@ async def run(args, report):
         await screenshot(p2, args.output, 'p2-reconnected')
         report['checks'].append('Real reload pauses match; original P2 reconnects and preserves match')
 
-        for slot, (client, viewport) in enumerate(zip(clients, ({'width': 844, 'height': 390},
-                                                              {'width': 390, 'height': 844})), 1):
-            await client.page.set_viewport_size(viewport)
+        rotated={'width':viewport['height'],'height':viewport['width']}
+        for slot,client in enumerate(clients,1):
+            await client.page.set_viewport_size(rotated)
+            await until(lambda: room.pause_reason()=='orientation_mismatch','rotation pauses authority')
+            tick=room.game.tick
             await asyncio.sleep(.2)
-            report['canvases'][f'p{slot}-rotated'] = await check_canvas(client)
-            await screenshot(client, args.output, f'p{slot}-rotated')
-        report['checks'].append('Portrait/landscape resize preserves 960×720 canvas and 4:3 display')
+            assert room.game.tick==tick
+            assert await client.page.locator('#controls').is_hidden()
+            report['canvases'][f'p{slot}-rotated']=await check_canvas(client)
+            await screenshot(client,args.output,f'p{slot}-rotated')
+            await client.page.set_viewport_size(viewport)
+            await until(lambda: not room.pause_reason() and room.game.tick>tick,'matching orientation resumes')
+        report['checks'].append(f'Both clients use {args.orientation}; either rotation pauses authority, geometry stays fixed, matching restores play')
         for client in clients:
             assert not client.errors, f'{client.label} JavaScript errors: {client.errors}'
             assert not client.external, f'{client.label} external runtime requests: {sorted(client.external)}'
@@ -277,6 +285,7 @@ async def run(args, report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--orientation',choices=('landscape','portrait'),default='landscape')
     parser.add_argument('--output', type=Path, default=Path('online/.test-mobile-runtime'))
     parser.add_argument('--timeout', type=int, default=180, help='Real renderer startup limit in seconds')
     browser = parser.add_mutually_exclusive_group()

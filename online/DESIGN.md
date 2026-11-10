@@ -1,6 +1,6 @@
 # 隔离边界与复用审计
 
-基线：`d89f8657062ac2bd3f5675a20e661d52acbba7b6`。所有受跟踪的原文件保持逐字节一致。
+联机基线：`5f7dd20`。本次十一关扩展明确允许共享核心、战役测试与指定新素材变更；`check_scope` 用显式白名单保护其余文件，不再声称核心逐字节不变。
 
 | 文件 | 职责 |
 |---|---|
@@ -16,7 +16,7 @@
 
 ## 原核心保留内容
 
-`game_core/config.py` 的武器/角色/敌人/关卡/难度定义，`Game._update_playing`、`_update_boss_fight` 的完整战斗流程，所有实体/技能行为、动画、素材加载、BossSignature、声音与音乐生成器均保持原文件不动。服务器复用原核心全部九个普通关卡及过渡，结束于原普通战役终点；不接入无限模式。原 PC/Web 入口不导入 online，因此其功能和依赖不因本次增加而改变。
+`game_core/config.py` 的武器/角色/敌人/关卡/难度定义，`Game._update_playing`、`_update_boss_fight` 的完整战斗流程，所有实体/技能行为、动画、素材加载、BossSignature、声音与音乐生成器由三个客户端入口共同复用，新增关卡只在共享核心实现。服务器复用原核心全部十一个普通关卡及过渡，结束于原普通战役终点；不接入无限模式。原 PC/Web 入口不导入 online；新增战役通过共享核心同时生效，不引入联机依赖。
 
 适配方法：输入由网络注入，原单机轮询接口在子类禁用；健康、命中、生命、装备、购物、结束规则用局部覆写；不复制两段完整战斗循环。原单人引用中的共享金币通过共享钱包适配，健康技能用受控玩家上下文。六类原 Boss 签名技能的世界效果仍只更新一次，但命中记录按玩家分开；牛、宗宗、八岐等特殊攻击分别处理两名活着的目标。回旋斧用在线专用子类保存每名玩家的命中冷却，不修改原实体。被动治疗与明确技能施法者上下文分开，避免默认 P1 引用吞掉 P2 的治疗。
 
@@ -37,6 +37,15 @@
 
 性能采样包含 JSON序列化但不代表手机帧率或真实网络延迟。当前采取完整快照、20Hz视觉状态、60Hz绘制，无预测/插值。客户端/真机验证是后续验收关卡，不能靠 Python 模拟或构建成功替代。
 
-## 九关特殊视觉
+## 十一关特殊视觉
 
 快照明确列出六类签名技能、牛 Boss 护盾/冲撞/雷电与回旋斧、宗宗融合/分身/复活/雪、八岐蛇头/分身/吐息/激光/风暴/死亡特效字段。客户端按原类型重建视觉实体、保留资源缓存，使用原实体绘制函数。测试把服务端原对象绘制与 JSON 往返后的客户端绘制进行逐像素比较。不同关卡背景、过渡淡入淡出及普通/Boss音乐跟随权威状态。
+
+## 新战役一致性
+
+机械蜥蜴与远古鲸王的四技能由共享核心产生。联机只把共享碰撞函数应用到仍存活的两名玩家，并选择实际受击者；没有第二套技能伤害或弹速公式。快照保留 PNG 特效的种类、时间和几何字段，展示端调用同一实体绘制函数，绝不运行 AI 或伤害计算。
+
+## Shared orientation
+P1 selects `room_orientation` (`landscape` or `portrait`) before starting; selection resets both ready flags. Each browser independently reports its actual viewport aspect using `orientation` (including after reconnect). Room snapshots carry top-level `orientation` and `world_size`, and each player's actual `orientation`. Landscape uses 960×720 and portrait uses 480×720 for both authoritative simulation and presentation. The server rejects start/restart while either reported direction mismatches or is unknown. Midgame mismatch clears inputs and stops authoritative ticks. Hidden, disconnected, shop, and server-error pause states remain independent. Room geometry cannot change during play. Client reports are necessarily self-reported, not hardware attestation; slot/geometry/pause spoof fields are rejected. No Screen Orientation lock API is required.
+
+共享方向布局直接调用单机 `update_mobile_view`：横屏960×720的战斗区域为x=240..720，竖屏480×720为x=0..480，两者战斗底边y=591。实体与Boss缩放、弹速和碰撞也沿用同一方向下的单机规则；不会把横屏中心战场扩成全屏。两名玩家使用相同权威方向。

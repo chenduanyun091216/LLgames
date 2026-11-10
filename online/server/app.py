@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
+from online.shared.world import WORLD_SIZES
 from online.shared.protocol import decode, ProtocolError, MAX_MESSAGE, VERSION
 
 STATIC_ROOT = Path(__file__).resolve().parents[1] / 'build' / 'web'
@@ -22,6 +23,7 @@ class Peer:
     slot: int
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     ws: object = None
+    orientation: str = None
     ready: bool = False
     suspended: bool = False
     seq: int = -1
@@ -37,6 +39,7 @@ class Room:
         self.game = None
         self.match_id = secrets.token_hex(16)
         self.task = None
+        self.orientation = None
         self.difficulty = 'medium'
         self.failed = False
         self.last_state = None
@@ -60,6 +63,8 @@ class Room:
             return 'disconnected'
         if any(p.suspended for p in self.players):
             return 'suspended'
+        if self.orientation not in WORLD_SIZES or any(p.orientation != self.orientation for p in self.players):
+            return 'orientation_mismatch'
         return None
 
     def start(self, difficulty):
@@ -68,7 +73,7 @@ class Room:
             factory = OnlineGame
         else:
             factory = self.factory
-        self.game = factory(difficulty=difficulty)
+        self.game = factory(difficulty=difficulty, orientation=self.orientation)
         self.failed = False
         self.last_state = None
         self.difficulty = difficulty
@@ -91,9 +96,9 @@ class Room:
                 state = deepcopy(self.last_state or empty)
         state = dict(state)
         game_players = {p['slot']:p for p in state.get('players', [])}
-        state['players'] = [dict(game_players.get(p.slot, {'slot':p.slot,'alive':True,'hp':0,'max_hp':0,'shop_open':False}), connected=p.ws is not None, ready=p.ready) for p in self.players]
+        state['players'] = [dict(game_players.get(p.slot, {'slot':p.slot,'alive':True,'hp':0,'max_hp':0,'shop_open':False}), connected=p.ws is not None, ready=p.ready, orientation=p.orientation) for p in self.players]
         reason = self.pause_reason() or state.get('pause_reason')
-        state.update(type='state', version=VERSION, match_id=self.match_id, difficulty=self.difficulty, paused=bool(reason or state.get('paused')), pause_reason=reason)
+        state.update(orientation=self.orientation, world_size=list(WORLD_SIZES[self.orientation]) if self.orientation else None, type='state', version=VERSION, match_id=self.match_id, difficulty=self.difficulty, paused=bool(reason or state.get('paused')), pause_reason=reason)
         return state
 
     def broadcast(self):
@@ -129,6 +134,21 @@ class Room:
 
     def handle(self, peer, msg):
         kind = msg['type']
+        if kind == 'orientation':
+            peer.orientation = msg['orientation']
+            self.clear_input()
+            return None
+        if kind == 'room_orientation':
+            if peer.slot != 1:
+                return 'host_only'
+            if self.game and self.game.snapshot()['phase'] == 'playing':
+                return 'match_in_progress'
+            if self.orientation != msg['orientation']:
+                self.orientation = msg['orientation']
+                for p in self.players:
+                    p.ready = False
+                self.clear_input()
+            return None
         if kind == 'ready':
             if self.game and self.game.snapshot()['phase'] == 'playing':
                 return 'match_in_progress'
@@ -141,6 +161,8 @@ class Room:
                 return 'match_in_progress'
             if len(self.players) != 2 or any(p.ws is None or not p.ready for p in self.players):
                 return 'players_not_ready'
+            if self.pause_reason():
+                return self.pause_reason()
             self.start(msg['difficulty'])
             return None
         if kind not in ('input', 'action'):
@@ -160,6 +182,10 @@ class Room:
             if peer.slot != 1:
                 return 'host_only'
             if len(self.players) != 2 or any(p.ws is None or not p.ready for p in self.players):
+                return 'players_not_ready'
+            if self.pause_reason() not in (None, 'server_error'):
+                return self.pause_reason()
+            if any(p.orientation != self.orientation or p.suspended for p in self.players):
                 return 'players_not_ready'
             self.start(self.difficulty)
             return None
@@ -239,6 +265,7 @@ async def websocket(request):
             peer = Peer(len(room.players) + 1)
             room.players.append(peer)
         peer.ws, peer.seq, peer.suspended = ws, -1, False
+        peer.orientation = None
         peer.last_input = 0
         peer.queue = asyncio.Queue(maxsize=1)
         await ws.send_json({'type':'welcome','version':VERSION,'slot':peer.slot,'token':peer.token,'match_id':room.match_id})

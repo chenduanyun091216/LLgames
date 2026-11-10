@@ -8,6 +8,7 @@ class Bridge {
     this.storage = options.storage || root.sessionStorage;
     this.onState = options.onState || (() => {});
     this.onStatus = options.onStatus || (() => {});
+    this.getOrientation = options.getOrientation || (() => (root.innerWidth >= root.innerHeight ? 'landscape' : 'portrait'));
     this.isHidden = options.isHidden || (() => root.document?.hidden === true);
     this.retryCount = 0; this.lastError = '';
     this.slot = 0; this.match = null; this.seq = 0; this.latest = '';
@@ -35,6 +36,7 @@ class Bridge {
       if (data.type === 'welcome') {
         this.slot = data.slot; this.match = data.match_id; this.welcomed = true; this.retryCount = 0; this.lastError = '';
         try { this.storage.setItem('llonline:' + this.code, data.token); } catch (_) {}
+        this.reportOrientation();
         if (this.isHidden()) this.action('suspend');
         this.onStatus('connected');
       } else if (data.type === 'state' && data.version === 1) {
@@ -64,6 +66,7 @@ class Bridge {
   send(data) { if (!this.socket || this.socket.readyState !== 1) return false; this.socket.send(JSON.stringify(data)); return true; }
   input(dx, dy, shoot) { if (!this.welcomed) return false; return this.send({type:'input', seq:++this.seq, match_id:this.match, dx,dy,shoot}); }
   action(action,key) { if (!this.welcomed) return false; return this.send({type:'action',seq:++this.seq,match_id:this.match,action,...(key !== undefined ? {key} : {})}); }
+  reportOrientation() { if (!this.welcomed) return false; return this.send({type:'orientation',orientation:this.getOrientation()}); }
   takeState() { const result = this.latest; this.latest = ''; return result; }
 }
 root.LLBridge = Bridge;

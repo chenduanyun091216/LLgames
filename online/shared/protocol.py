@@ -26,12 +26,14 @@ def decode(raw):
     if not isinstance(msg, dict):
         raise ProtocolError('expected_object')
     kind = msg.get('type')
-    specs = {'hello': ({'type','version','code'}, {'token'}), 'ready': ({'type','ready'}, set()), 'start': ({'type','difficulty'}, set()), 'input': ({'type','seq','match_id','dx','dy','shoot'}, set()), 'action': ({'type','seq','match_id','action'}, {'key'})}
+    specs = {'orientation': ({'type','orientation'}, set()), 'room_orientation': ({'type','orientation'}, set()), 'hello': ({'type','version','code'}, {'token'}), 'ready': ({'type','ready'}, set()), 'start': ({'type','difficulty'}, set()), 'input': ({'type','seq','match_id','dx','dy','shoot'}, set()), 'action': ({'type','seq','match_id','action'}, {'key'})}
     if not isinstance(kind, str) or kind not in specs:
         raise ProtocolError('unknown_type')
     required, optional = specs[kind]
     if not required <= msg.keys() or msg.keys() - required - optional:
         raise ProtocolError('invalid_fields')
+    if kind in ('orientation', 'room_orientation') and msg['orientation'] not in ('landscape', 'portrait'):
+        raise ProtocolError('invalid_orientation')
     if kind == 'hello':
         if type(msg['version']) is not int or msg['version'] != VERSION:
             raise ProtocolError('unsupported_version')

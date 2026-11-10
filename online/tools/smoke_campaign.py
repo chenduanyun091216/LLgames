@@ -1,4 +1,4 @@
-"""Nine-boss server/snapshot/render stress with explicit survival fixtures.
+"""Eleven-boss server/snapshot/render stress with explicit survival fixtures.
 
 This deliberately sets high test HP/lives and enters each boss directly. It tests
 AI, transport serialization and original rendering together, NOT a normal
@@ -13,11 +13,11 @@ from online.adapters.core_adapter import OnlineGame
 from online.adapters.presentation import Presentation
 
 
-def run():
+def run(orientation='landscape'):
     random.seed(91)
     reports = []
-    for level in range(1, 10):
-        game = OnlineGame('medium')
+    for level in range(1, len(config.LEVEL_CONFIGS) + 1):
+        game = OnlineGame('medium', orientation=orientation)
         game._start_level(level)
         if not game.boss:
             game._trigger_boss()
@@ -26,7 +26,7 @@ def run():
         game.lives = 99
         for player in game.all_players:
             player.hp = player.max_hp = 10000
-        view = Presentation(pygame.Surface((960, 720)))
+        view = Presentation(pygame.Surface(game.world_size))
         largest, frames, samples = 0, 0, 0
         started = time.perf_counter()
         for frame in range(1800):
@@ -38,7 +38,10 @@ def run():
             assert game.current_level == level, (level, game.current_level)
             if level == 7 and frame == 400:
                 boss.hit_by('pistol', boss.max_hp * .4)
-            if level == 9 and frame in (0, 360, 720, 1080, 1440):
+            if level in (9, 10) and frame in (0, 450, 900, 1350):
+                boss.skill_index = frame // 450
+                game._add_boss_projectiles(boss.attack(config.game_ticks(), game.player.x, game.player.y))
+            if level == 11 and frame in (0, 360, 720, 1080, 1440):
                 boss._start_skill(('volley', 'slam', 'split', 'laser', 'storm')[frame // 360], config.game_ticks())
             if frame % 30 == 0:
                 snapshot = game.snapshot()
@@ -49,7 +52,7 @@ def run():
                 view.draw()
                 samples += 1
             frames += 1
-        reports.append({'level': level, 'boss': boss.bdef['key'], 'ticks': frames,
+        reports.append({'orientation': orientation, 'level': level, 'boss': boss.bdef['key'], 'ticks': frames,
                         'rendered_snapshots': samples, 'max_snapshot_bytes': largest,
                         'wall_seconds': round(time.perf_counter() - started, 3)})
     return reports
@@ -57,4 +60,4 @@ def run():
 
 if __name__ == '__main__':
     print(json.dumps({'scope': 'Controlled setup-state AI/snapshot/render stress, not normal playthrough',
-                      'results': run()}, indent=2))
+                      'results': run('landscape') + run('portrait')}, indent=2))

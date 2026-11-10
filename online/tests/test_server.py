@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestServer, TestClient
 from online.server.app import create_app, ROOM_KEY
 
 class FakeGame:
-    def __init__(self,difficulty='medium'):
+    def __init__(self,difficulty='medium',orientation='landscape'):
         self.tick=0
         self.inputs={}
         self.actions=[]
@@ -44,7 +44,12 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         if token:
             msg['token']=token
         await ws.send_json(msg)
-        return ws, await ws.receive_json(timeout=2)
+        welcome = await ws.receive_json(timeout=2)
+        if welcome['type'] == 'welcome':
+            await ws.send_json(dict(type='orientation',orientation='landscape'))
+            if welcome['slot'] == 1:
+                await ws.send_json(dict(type='room_orientation',orientation='landscape'))
+        return ws, welcome
     async def start(self):
         a,wa=await self.join()
         b,wb=await self.join()
@@ -55,6 +60,29 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.04)
         self.assertIsNotNone(self.room.game)
         return a,b,wa,wb
+    async def test_rotation_stops_ticks_and_reconnect_needs_fresh_orientation(self):
+        a,b,wa,wb=await self.start()
+        await b.send_json(dict(type='orientation',orientation='portrait'))
+        await asyncio.sleep(.03)
+        tick=self.room.game.tick
+        await asyncio.sleep(.06)
+        self.assertEqual(tick,self.room.game.tick)
+        self.assertEqual(self.room.pause_reason(),'orientation_mismatch')
+        await b.send_json(dict(type='orientation',orientation='landscape'))
+        await asyncio.sleep(.04)
+        self.assertGreater(self.room.game.tick,tick)
+        await b.close();await asyncio.sleep(.03)
+        ws=await self.client.ws_connect('/ws',origin=self.origin);self.sockets.append(ws)
+        await ws.send_json(dict(type='hello',version=1,code='ABC123',token=wb['token']))
+        self.assertEqual((await ws.receive_json(timeout=2))['type'],'welcome')
+        tick=self.room.game.tick
+        await asyncio.sleep(.06)
+        self.assertEqual(self.room.game.tick,tick)
+        self.assertEqual(self.room.pause_reason(),'orientation_mismatch')
+        await ws.send_json(dict(type='orientation',orientation='landscape'))
+        await asyncio.sleep(.04)
+        self.assertGreater(self.room.game.tick,tick)
+
     async def test_origin_static_and_host(self):
         for headers in [{'Origin':'https://evil.example'}, {'Origin':self.origin,'Host':'evil.example'}, {}]:
             response=await self.client.get('/ws',headers=headers)
