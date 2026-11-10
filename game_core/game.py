@@ -180,6 +180,7 @@ class Game:
         self.shop_prev_state = GameState.PLAYING
         self.cursor_pos = (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
         self.player_hp = 5; self.max_player_hp = 5
+        self.player_hit_impact = None
         self.water_temp_hp_until = 0; self.water_passive_kills = 0
         self.leak_count = 0
         self.last_attack_gift = None
@@ -631,6 +632,7 @@ class Game:
         self._begin_run(level)
 
     def _begin_run(self, start_level=1):
+        self.player_hit_impact = None
         self.selecting_infinite_mode = False
         self.player.x = config.SCREEN_WIDTH // 2
         self.player.y = config.GAME_AREA_BOTTOM - 14
@@ -655,6 +657,7 @@ class Game:
         self._apply_difficulty(start_level)
     
     def _begin_infinite_run(self, start_chapter=1):
+        self.player_hit_impact = None
         self.selecting_infinite_mode = False
         self.infinite_mode = True
         self.player.campaign = False
@@ -1336,8 +1339,8 @@ class Game:
                 break
         if hit_player and not self._player_is_invincible(now):
             self._apply_niu_ice_axe_effect(p, hit_player, now)
-            play_sound('hit')
-            return self._damage_player(now, getattr(p, 'damage', 1), getattr(p, 'blast_reason', '被小粽粽炸弹击败！'))
+            return self._damage_player(now, getattr(p, 'damage', 1),
+                                       getattr(p, 'blast_reason', '被小粽粽炸弹击败！'), hit_feedback=True)
         return False
 
     def _apply_niu_ice_axe_effect(self, projectile, player, now):
@@ -1648,10 +1651,13 @@ class Game:
     def _player_is_invincible(self, now):
         return now < self.player_invincible_until
 
-    def _damage_player(self, now, amount, reason):
+    def _damage_player(self, now, amount, reason, *, hit_feedback=False):
         if self._player_is_invincible(now):
             return False
         self.player_hp -= amount
+        if hit_feedback and amount > 0:
+            self.player_hit_impact = (pygame.time.get_ticks(), self.player.rect().center)
+            play_sound('player_hit')
         if not self.infinite_mode:
             self.player_invincible_until = now + (850, 650, 550)[self._campaign_tier()]
         if self.player_hp <= 0:
@@ -1691,12 +1697,10 @@ class Game:
                 and any(self._hit_player(br) for br in self.boss.hitboxes())
                 and not self._player_is_invincible(now)):
             if self.infinite_mode:
-                self.player_hp = 0
-                self._player_defeated(f'被{self.boss.name}撞击击败！')
-                return True
+                return self._damage_player(now, self.player_hp, f'被{self.boss.name}撞击击败！', hit_feedback=True)
             contact = next(rect for rect in self.boss.hitboxes() if self._hit_player(rect))
             self.player.move(0, contact.bottom - self.player.rect().top + 2)
-            return self._damage_player(now, 2, f'被{self.boss.name}撞击击败！')
+            return self._damage_player(now, 2, f'被{self.boss.name}撞击击败！', hit_feedback=True)
         return False
 
     def _skill_projectile_damage(self, projectile, target, now):
@@ -2016,7 +2020,7 @@ class Game:
                 if self._explode_enemy_bomb(ep, now): return
             elif self._hit_player(ep.rect()):
                 self.enemy_projectiles.remove(ep)
-                if self._damage_player(now, 1, '被怪物子弹击败！'): return
+                if self._damage_player(now, 1, '被怪物子弹击败！', hit_feedback=True): return
         for b in self.bullets[:]:
             br = b.rect()
             if self._handle_bullet_gift_hit(b, now):
@@ -2170,7 +2174,7 @@ class Game:
                 if (boss.hazard_hit != hit and not self._player_is_invincible(now)
                         and any(boss.hazard_hits(player.rect(), age) for player in self.players)):
                     boss.hazard_hit = hit
-                    return self._damage_player(now, 2, f'被{boss.name}击败！')
+                    return self._damage_player(now, 2, f'被{boss.name}击败！', hit_feedback=True)
             return False
         if not isinstance(boss, NiuBoss):
             return False
@@ -2178,13 +2182,13 @@ class Game:
         strike = (now - boss.axe_slam_start) // boss.AXE_SLAM_CYCLE_MS if slam is not None else -1
         if slam is not None and strike != boss.axe_slam_hit and self._hit_player(slam) and not self._player_is_invincible(now):
             boss.axe_slam_hit = strike
-            if self._damage_player(now, 1, '被牛魔王的巨斧击败！'):
+            if self._damage_player(now, 1, '被牛魔王的巨斧击败！', hit_feedback=True):
                 return True
         if now >= boss.lightning_warning_until and now >= boss.lightning_next_tick and boss.lightning_rects(now):
             boss.lightning_next_tick = now + 650
             if any(self._hit_player(rect) for rect in boss.lightning_rects(now)):
                 if self._damage_player(now, min(2, boss.bdef.get('damage_cap', 2)),
-                                       '被牛魔王的雷电击败！'):
+                                       '被牛魔王的雷电击败！', hit_feedback=True):
                     return True
         return False
 
@@ -2312,10 +2316,9 @@ class Game:
             ])
         signature.move(boss, now, self.player)
         if not self._player_is_invincible(now) and signature.hit(boss, self.player.rect(), now):
-            play_sound('hit')
             damage = (self.player_hp if signature.key == 'boss' else
                       min(signature.damage, boss.bdef.get('damage_cap', 2)))
-            return self._damage_player(now, damage, f'被{signature.name}击败！')
+            return self._damage_player(now, damage, f'被{signature.name}击败！', hit_feedback=True)
         return False
 
     def _release_crab_bubble(self, index, now):
@@ -2411,7 +2414,7 @@ class Game:
                          if isinstance(self.boss, NiuBoss) else any(self._hit_player(rect) for rect in death_lasers))
             if laser_hit and not self._player_is_invincible(now):
                 self.boss.last_laser_hit_until = self.boss.laser_active_until
-                if self._damage_player(now, 1, f'被{self.boss.name}毁灭激光击败！'): return
+                if self._damage_player(now, 1, f'被{self.boss.name}毁灭激光击败！', hit_feedback=True): return
         boss_spawn_interval = 1600 if self.infinite_mode else self._campaign_value(config.CAMPAIGN_REINFORCEMENT_MS)
         if boss_spawn_interval and now - self.last_spawn_time >= boss_spawn_interval:
             if self.infinite_mode:
@@ -2459,7 +2462,7 @@ class Game:
                 if self._explode_enemy_bomb(ep, now): return
             elif self._hit_player(ep.rect()):
                 self.enemy_projectiles.remove(ep)
-                if self._damage_player(now, 1, '被怪物子弹击败！'): return
+                if self._damage_player(now, 1, '被怪物子弹击败！', hit_feedback=True): return
         if self.boss.entered and now - self.boss.fight_start_time >= 5000:
             self._try_boss_signature(now, opening=self.boss.signature_opening_pending)
         if self.warned_boss_shots:
@@ -2532,7 +2535,7 @@ class Game:
                     bp.last_player_hit = now
                     if isinstance(bp, ReturningAxe) and not bp.red:
                         self._apply_niu_ice_axe_effect(bp, hit_player, now)
-                    if self._damage_player(now, bp.damage, f'被{self.boss.name}击败！'): return
+                    if self._damage_player(now, bp.damage, f'被{self.boss.name}击败！', hit_feedback=True): return
         if (self._mobile_fire_active() or self._key_pressed(keys, 'p1_shoot')) and self.player.can_shoot(now):
             self._shoot(now, self.player)
         for b in self.bullets[:]:
@@ -3087,7 +3090,34 @@ class Game:
         elif s == GameState.VICTORY: self._draw_game(); self._draw_victory()
         elif s == GameState.PAUSED: self._draw_game(); self._draw_pause_overlay()
         elif s == GameState.PAID_REVIVE: self._draw_game(); self._draw_pause_overlay()
+        if self.player_hit_impact is not None:
+            self._draw_player_hit_impact()
         self._ui_labels = None
+
+    def _draw_player_hit_impact(self):
+        started, (x, y) = self.player_hit_impact
+        progress = (pygame.time.get_ticks() - started) / 380
+        if progress >= 1:
+            self.player_hit_impact = None
+            return
+
+        fade = 1 - progress
+        radius = round(25 + 68 * progress)
+        extent = radius + 24
+        impact = pygame.Surface((2 * extent + 1, 2 * extent + 1), pygame.SRCALPHA)
+        center = (extent, extent)
+        if progress < 0.25:
+            _circle(impact, (255, 240, 210, round(170 * (1 - 4 * progress))), center, 27)
+        _circle(impact, (255, 65, 35, round(240 * fade)), center, radius, max(1, round(7 * fade)))
+        for index in range(8):
+            angle = (index + 0.5) * math.tau / 8
+            dx, dy = math.cos(angle), math.sin(angle)
+            inner = radius * 0.75
+            outer = radius + 22 * fade
+            _line(impact, (255, 205, 130, round(255 * fade)),
+                  (extent + dx * inner, extent + dy * inner),
+                  (extent + dx * outer, extent + dy * outer), 3)
+        config.SCR.blit(impact, (x - extent, y - extent))
 
     def _draw_difficulty_select(self):
         width, height = config.SCREEN_WIDTH, config.SCREEN_HEIGHT

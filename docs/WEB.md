@@ -2,6 +2,8 @@
 
 先按 [项目 README](../README.md) 安装依赖并激活共用的 `.venv`。以下命令均从项目根目录执行。
 
+Windows 用户请参阅 [Windows Web HTTPS 证书配置](WEB-Windows.md)。
+
 ## 局域网 HTTPS
 
 内置服务默认使用 HTTPS，监听 `0.0.0.0:8001`。如果已有手机信任的 PEM 证书和私钥，可以直接启动：

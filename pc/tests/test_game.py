@@ -1,4 +1,5 @@
 import os
+import math
 import unittest
 from unittest.mock import patch
 
@@ -8,13 +9,93 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 
 from game_core import config
-from game_core.entities import Bullet, Enemy
+from game_core.entities import BossProjectile, Bullet, Enemy
 from game_core.game import Game, GameState
 from game_core.render import RenderSurface
 from run_pc import main
 
 
 class DesktopGameTests(unittest.TestCase):
+    def test_enemy_entry_reaches_top_margin_with_linear_deceleration(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((1, 1))
+        for key, speed in (('goldfish', 0.25), ('shark', 1.0)):
+            with self.subTest(enemy=key):
+                enemy = Enemy(next(e for e in config.ENEMY_DEFS if e['key'] == key))
+                enemy.speed = speed
+                steps = []
+                for _ in range(math.ceil(Enemy.ENTRY_DURATION_SECONDS * config.FPS)):
+                    self.assertLess(enemy.y, 10)
+                    previous_y = enemy.y
+                    enemy.update()
+                    steps.append(enemy.y - previous_y)
+                self.assertEqual(enemy.y, 10)
+                self.assertAlmostEqual(steps[-1], speed)
+                self.assertGreater(steps[0], steps[-1])
+                self.assertAlmostEqual(steps[0] - steps[1], steps[-2] - steps[-1])
+                enemy.update()
+                self.assertAlmostEqual(enemy.y, 10 + speed)
+
+    def test_enemy_projectile_hit_feedback_in_play_and_boss_fight(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 540))
+        config.update_mobile_view((960, 540))
+        game = Game(desktop_controls=True)
+
+        for level in (1, 6):
+            with self.subTest(level=level):
+                game._start_game('medium')
+                game._start_level(level)
+                update = game._update_boss_fight if game.boss else game._update_playing
+                hp = game.player_hp
+                now = game.last_spawn_time = config.game_ticks()
+                game.player_invincible_until = now + 1
+                x, y = game.player.rect().center
+                with patch('game_core.game.play_sound') as sound:
+                    game.enemy_projectiles = [BossProjectile(x, y, 0, 0)]
+                    update(now)
+                    self.assertEqual(game.player_hp, hp)
+                    sound.assert_not_called()
+
+                    game.enemy_projectiles = [BossProjectile(x, y, 0, 0)]
+                    update(now + 1)
+                    self.assertEqual(game.player_hp, hp - 1)
+                    sound.assert_called_once_with('player_hit')
+                    self.assertEqual(game.player_hit_impact[1], (x, y))
+
+    def test_boss_hit_feedback_requires_damage_and_survives_defeat(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 540))
+        config.update_mobile_view((960, 540))
+        game = Game(desktop_controls=True)
+        game._start_game('medium')
+        game.player_invincible_until = 1500
+
+        with patch('game_core.game.play_sound') as sound, patch.object(pygame.time, 'get_ticks', return_value=100):
+            game._damage_player(1400, 1, 'blocked', hit_feedback=True)
+            self.assertIsNone(game.player_hit_impact)
+            game._damage_player(1500, 1, 'ordinary enemy')
+            self.assertIsNone(game.player_hit_impact)
+            sound.assert_not_called()
+
+            now = game.player_invincible_until
+            center = game.player.rect().center
+            self.assertTrue(game._damage_player(now, game.player_hp, 'boss', hit_feedback=True))
+            self.assertEqual(game.player_hit_impact, (100, center))
+            sound.assert_any_call('player_hit')
+
+            surface = pygame.Surface((200, 200), pygame.SRCALPHA)
+            with patch.object(config, 'SCR', RenderSurface(surface, (200, 200), (200, 200), (0, 0))):
+                game.player_hit_impact = (100, (100, 100))
+                game._draw_player_hit_impact()
+                self.assertGreater(surface.get_at((100, 100)).a, 0)
+                with patch.object(pygame.time, 'get_ticks', return_value=480):
+                    game._draw_player_hit_impact()
+                self.assertIsNone(game.player_hit_impact)
+
     def test_enemy_entry_halves_direct_and_burn_damage(self):
         pygame.init()
         self.addCleanup(pygame.quit)

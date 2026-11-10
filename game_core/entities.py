@@ -209,6 +209,8 @@ class Player:
 class Enemy:
     ENTRY_DAMAGE_Y = 8
     ENTRY_END_Y = 10
+    ENTRY_DURATION_SECONDS = 0.5
+
     def __init__(self, edef):
         self.edef = edef
         self.is_large = edef['is_large']
@@ -232,6 +234,7 @@ class Enemy:
         max_x = min(config.SCREEN_WIDTH - 50, config.GAME_AREA_RIGHT - (self.w + 1) // 2)
         self.x = random.uniform(min_x, max_x)
         self.y = -self.h
+        self.entry_steps_left = self.entry_steps = max(1, math.ceil(self.ENTRY_DURATION_SECONDS * config.FPS))
         self.hits = {}
         self.max_hp = None
         self.damage_taken = 0.0
@@ -319,9 +322,19 @@ class Enemy:
             self.slow_mult = 1.0
         if self.chase_color is None:
             step = self.speed * move_mult
-            if self.y < self.ENTRY_END_Y:
-                step *= 1 + 4 * min(1, (self.ENTRY_END_Y - self.y) / (self.h + self.ENTRY_END_Y))
-            self.y += step
+            if self.entry_steps_left and self.y < self.ENTRY_END_Y:
+                distance = self.ENTRY_END_Y - self.y
+                if self.entry_steps_left == 1:
+                    self.y = self.ENTRY_END_Y
+                else:
+                    # The average of the first and last steps covers the remaining distance.
+                    average = distance / self.entry_steps_left
+                    end_step = min(step, 0.9 * (self.h + self.ENTRY_END_Y) / self.entry_steps, average)
+                    self.y += 2 * average - end_step
+                self.entry_steps_left -= 1
+            else:
+                self.entry_steps_left = 0
+                self.y += step
         elif target is not None:
             left = config.GAME_AREA_LEFT + self.w / 2
             right = config.GAME_AREA_RIGHT - self.w / 2

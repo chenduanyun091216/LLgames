@@ -151,6 +151,12 @@ def _snd_hit():
         (_gen_fnoise(0.02, 0.07, lp=0.35, decay=60), 0.0, 1.0),
     ])
 
+def _snd_player_hit():
+    return _mix_layers([
+        (_gen_fnoise(0.09, 0.38, lp=0.55, decay=32), 0.0, 1.0),
+        (_gen_tone(185, 58, 0.24, 'triangle', 0.58, attack=0.001, decay=15), 0.0, 1.0),
+    ])
+
 def _gen_kill_wav(duration=0.32, vol=0.34):
     """击败音效：低频下坠'砰'体感 + 柔和碎裂噪声 + 中频泛音尾韵。"""
     n_samples = int(SAMPLE_RATE * duration)
@@ -313,6 +319,7 @@ _SOUND_BUILDERS = {
     'shoot_shotgun': _snd_shoot_shotgun,
     'shoot_sniper': _snd_shoot_sniper,
     'hit': _snd_hit,
+    'player_hit': _snd_player_hit,
     'coin': _snd_coin,
     'buy': _snd_buy,
     'error': _snd_error,

@@ -269,27 +269,13 @@ class MobileWebTests(unittest.TestCase):
 
     def test_enemy_can_take_damage_as_soon_as_it_is_visible(self):
         enemy = Enemy(config.ENEMY_DEFS[0])
-        enemy.speed = 2
         enemy.hit_by('pistol')
         self.assertFalse(enemy.hits)
-        start_y = enemy.y
         enemy.update()
-        self.assertEqual(enemy.y - start_y, enemy.speed * 5)
         self.assertLess(enemy.y, 0)
         self.assertFalse(self.game._show_immune(enemy))
         enemy.hit_by('pistol')
         self.assertEqual(enemy.hits['pistol'], 0.5)
-        steps = [enemy.y - start_y]
-        while enemy.y < 10:
-            previous_y = enemy.y
-            enemy.update()
-            steps.append(enemy.y - previous_y)
-        self.assertTrue(all(first > second for first, second in zip(steps, steps[1:])))
-        self.assertGreaterEqual(steps[-1], enemy.speed)
-        self.assertLess(steps[-1], enemy.speed * 1.5)
-        previous_y = enemy.y
-        enemy.update()
-        self.assertAlmostEqual(enemy.y - previous_y, enemy.speed)
 
     def test_boss_laser_leaves_room_at_both_edges(self):
         for size in ((844, 390), (390, 844)):
@@ -539,7 +525,12 @@ class MobileWebTests(unittest.TestCase):
                 with patch('game_core.game.play_sound') as sound:
                     game._explode_enemy_bomb(bomb, 1500)
                 self.assertEqual(game.player_hp, hp - int(hit))
-                self.assertEqual(sound.called, hit)
+                if hit:
+                    sound.assert_called_once_with('player_hit')
+                    self.assertEqual(game.player_hit_impact[1], game.player.rect().center)
+                else:
+                    sound.assert_not_called()
+                    self.assertIsNone(game.player_hit_impact)
 
     def test_infinite_boss_growth_and_death_progress(self):
         game = self.game
@@ -1679,7 +1670,7 @@ class MobileWebTests(unittest.TestCase):
             for now in range(2000, 3400, 17):
                 if game._update_boss_signature(now):
                     break
-            damage.assert_called_once_with(now, game.player_hp, '被深渊封潮击败！')
+            damage.assert_called_once_with(now, game.player_hp, '被深渊封潮击败！', hit_feedback=True)
         self.assertGreater(boss.y, original[1])
         game._update_boss_signature(attack.end_at)
         self.assertEqual((boss.x, boss.y), original)
