@@ -310,7 +310,7 @@ LEVEL_CONFIGS = [
      'enemy_pool': ['crab', 'octopus', 'shark'] + NEW_ENEMY_KEYS + SPECIAL_ENEMY_KEYS},
     {'level': 8, 'title': '粽子星球', 'kills_needed': 42, 'boss_idx': 7, 'gold_reward': 110,
      'enemy_pool': ['lobster', 'goldfish', 'octopus', 'shark'] + NEW_ENEMY_KEYS + SPECIAL_ENEMY_KEYS},
-    {'level': 9, 'title': '废弃工厂', 'kills_needed': 32, 'boss_idx': 8, 'gold_reward': 34,
+    {'level': 9, 'title': '机房重地 之 废弃工厂', 'kills_needed': 32, 'boss_idx': 8, 'gold_reward': 34,
      'enemy_pool': FACTORY_ENEMY_KEYS},
     {'level': 10, 'title': '远古神庙', 'kills_needed': 34, 'boss_idx': 9, 'gold_reward': 38,
      'enemy_pool': TEMPLE_ENEMY_KEYS},

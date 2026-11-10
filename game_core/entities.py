@@ -222,8 +222,8 @@ class Enemy:
         self.gold_value = edef['gold']
         self.speed = edef['base_speed'] + random.uniform(-0.15, 0.15)
         size = 110 if self.is_large else 74 if self.is_zongzong else 64
-        self.unscaled_base_w = size
-        self.unscaled_base_h = size - 14 if self.is_large else size - 8
+        self.unscaled_base_w, self.unscaled_base_h = edef.get(
+            'size', (size, size - (14 if self.is_large else 8)))
         self.size_scale = _mobile_entity_scale()
         self.base_w = round(self.unscaled_base_w * self.size_scale)
         self.base_h = round(self.unscaled_base_h * self.size_scale)
@@ -238,6 +238,8 @@ class Enemy:
         self.hits = {}
         self.max_hp = None
         self.damage_taken = 0.0
+        self.factory_kind = ''
+        self.factory_link_until = 0
         self.burning = False
         self.burn_start = 0
         self.burn_duration = 3000
@@ -262,10 +264,12 @@ class Enemy:
         self.attack_interval_max = 7000
         self.attack_interval = random.randint(self.attack_interval_min, self.attack_interval_max)
         self.breath_start_time = config.game_ticks()
-        self.base_surface = make_enemy_surface(edef['key'])
+        self.sprite_asset = edef.get('sprite_asset') or (
+            'bosses/zongzong.png' if self.is_zongzong else f'enemies/enemy_{edef["key"]}.png')
+        custom_sprite = image_asset(self.sprite_asset, (self.unscaled_base_w, self.unscaled_base_h)) if edef.get('sprite_asset') else None
+        self.base_surface = custom_sprite if custom_sprite is not None else make_enemy_surface(edef['key'])
         self.base_surface_size = self.base_surface.get_size()
         self.surface = self.base_surface
-        self.sprite_asset = 'bosses/zongzong.png' if self.is_zongzong else f'enemies/enemy_{edef["key"]}.png'
         if self.is_zongzong:
             self._update_zongzong_size()
         elif self.size_scale != 1.0:
@@ -316,11 +320,20 @@ class Enemy:
                 self.burn_damage = False
             elif self.burn_damage and self.y + self.h > 0 and now - self.last_burn_tick >= 500:
                 self.burn_hits += 0.5 if self.y < self.ENTRY_END_Y else 1
+                self._clamp_factory_health()
                 self.last_burn_tick = now
         move_mult = self.slow_mult if now < self.slowed_until else 1.0
         if move_mult == 1.0:
             self.slow_mult = 1.0
-        if self.chase_color is None:
+        if self.factory_kind == 'mini_boss':
+            left = config.GAME_AREA_LEFT + self.w / 2
+            right = config.GAME_AREA_RIGHT - self.w / 2
+            self.x += self.factory_patrol_direction * self.speed * move_mult
+            if self.x >= right:
+                self.x, self.factory_patrol_direction = right, -1
+            elif self.x <= left:
+                self.x, self.factory_patrol_direction = left, 1
+        elif self.chase_color is None:
             step = self.speed * move_mult
             if self.entry_steps_left and self.y < self.ENTRY_END_Y:
                 distance = self.ENTRY_END_Y - self.y
@@ -335,6 +348,8 @@ class Enemy:
             else:
                 self.entry_steps_left = 0
                 self.y += step
+                if self.factory_link_until:
+                    self.y = min(self.y, config.GAME_AREA_BOTTOM - self.h)
         elif target is not None:
             left = config.GAME_AREA_LEFT + self.w / 2
             right = config.GAME_AREA_RIGHT - self.w / 2
@@ -363,6 +378,7 @@ class Enemy:
             self.hits[weapon_name] = self.hits.get(weapon_name, 0) + amount * getattr(self, 'damage_mult', 1.0)
         else:
             self.damage_taken += amount
+            self._clamp_factory_health()
         if self.is_zongzong:
             self.zong_hits += 1
             target = 0 if self.zong_hits == 1 else max(1, min(3, int(self._damage_progress() * 4)))
@@ -374,6 +390,12 @@ class Enemy:
 
     def show_immune(self, now=None):
         self.immune_text_until = (config.game_ticks() if now is None else now) + 650
+
+    def _clamp_factory_health(self):
+        if self.factory_link_until:
+            limit = self.max_hp * .99
+            self.burn_hits = min(self.burn_hits, limit)
+            self.damage_taken = min(self.damage_taken, limit - self.burn_hits)
 
     def _damage_progress(self):
         if self.max_hp is not None:
@@ -446,6 +468,8 @@ class Enemy:
         return projectiles
 
     def is_killed(self, weapon_name):
+        if self.factory_link_until:
+            return False
         if self.max_hp is not None:
             return self.damage_taken + self.burn_hits >= self.max_hp
         w = WEAPON_DEFS[weapon_name]
@@ -454,7 +478,7 @@ class Enemy:
         return (self.hits.get(weapon_name, 0) + self.burn_hits) >= needed
 
     def reached_bottom(self):
-        return self.chase_color is None and self.y > config.GAME_AREA_BOTTOM + 20
+        return not self.factory_link_until and self.chase_color is None and self.y > config.GAME_AREA_BOTTOM + 20
 
     def draw(self, surf):
         # 阴影
@@ -477,9 +501,16 @@ class Enemy:
                 _line(surf, (120, 255, 170, 118), (x1, y1), (x2, y2), 3)
                 _circle(surf, (255, 245, 150, 155), (x2, y2), 3)
         # 精灵（非 zongzong：从 1.3x 高分辨率基准缩小采样，消除呼吸放大模糊）
+        factory_sprite = None
+        if getattr(self, 'factory_kind', '') == 'mini_boss':
+            factory_sprite = animation.frame('boss_mecha_lizard', 2 + int(self.x / 20) % 2)
         if self.chase_color is not None:
             draw_bubble_crab(surf, self.x, self.y + self.h * .5, self.w,
                              self.chase_color, now)
+        elif factory_sprite is not None:
+            image = scale_surface_cached(factory_sprite, (self.w, self.h))
+            blit_lit_sprite(surf, image, self.rect().topleft,
+                            (255, 163, 108), 105, source=factory_sprite)
         elif self.is_zongzong:
             sw, sh = self.surface.get_size()
             image = self.surface
@@ -495,6 +526,8 @@ class Enemy:
         else:
             if self.breath_base is None or self._breath_src is not self.surface:
                 sw, sh = self.surface.get_size()
+                if getattr(self, 'factory_kind', '') == 'fragment':
+                    sw, sh = self.w, self.h
                 hi = image_asset_supersampled(self.sprite_asset, (sw, sh), 1.5)
                 self.breath_base = hi if hi is not None else scale_surface_cached(
                     self.surface, (int(sw * 1.3), int(sh * 1.3)))

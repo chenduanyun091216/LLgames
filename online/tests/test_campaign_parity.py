@@ -84,6 +84,34 @@ class CampaignParityTests(unittest.TestCase):
                     view.apply(json.loads(raw), slot)
                     view.draw()
 
+    def test_factory_link_and_merged_boss_are_visible_to_both_clients(self):
+        game = OnlineGame()
+        game._start_level(9)
+        for index in range(3):
+            game._spawn_campaign_enemy()
+            game.enemies[-1].x, game.enemies[-1].y = 300 + index * 140, 120
+        with patch('game_core.game.random.random', return_value=.25):
+            game._start_factory_link(1000)
+        views = [Presentation(pygame.Surface((960, 720))) for _ in range(2)]
+        linked_snapshot = json.loads(json.dumps(game.snapshot()))
+        for slot, view in enumerate(views, 1):
+            view.apply(linked_snapshot, slot)
+            self.assertEqual([e.factory_link_until for e in view.view.enemies], [3000] * 3)
+            view.draw()
+
+        game._settle_factory_link(3000)
+        mini, = game.enemies
+        game.enemy_projectiles.extend(game._enemy_shots(mini, 4000))
+        merged_snapshot = json.loads(json.dumps(game.snapshot()))
+        for slot, view in enumerate(views, 1):
+            view.apply(merged_snapshot, slot)
+            restored, = view.view.enemies
+            self.assertEqual(restored.factory_kind, 'mini_boss')
+            self.assertEqual(restored.sprite_asset, 'bosses/boss_mecha_lizard.png')
+            self.assertEqual(restored.max_hp, mini.max_hp)
+            self.assertEqual([p.missile_pass for p in view.view.enemy_projectiles], [2] * 3)
+            view.draw()
+
     def test_each_new_skill_matches_shared_attack_and_json_render(self):
         from game_core.abyss_bosses import AbyssProjectile
         for orientation, size in WORLD_SIZES.items():
@@ -113,7 +141,8 @@ class CampaignParityTests(unittest.TestCase):
                             self.assertIs(type(a), AbyssProjectile)
                             self.assertEqual(a.__dict__, b.__dict__)
                         game.boss_projectiles = shots
-                        for elapsed in (0, 1300, 2300):
+                        times = (0, 1300, 3600, 4200, 5100) if skill == 'emp_ring' else (0, 1300, 2300)
+                        for elapsed in times:
                             config.campaign_time_ms = 10000 + skill_index * 10000 + elapsed
                             for shot in shots:
                                 shot.update(480, 600)
@@ -134,7 +163,7 @@ class CampaignParityTests(unittest.TestCase):
                                 view.draw()
 
     def test_new_projectile_damage_matches_single_and_hits_each_player_once(self):
-        from game_core.abyss_bosses import AbyssProjectile, EFFECT_ASSETS, RINGS, LANES
+        from game_core.abyss_bosses import AbyssProjectile, EFFECT_ASSETS, RAIL_EXTEND_MS, RINGS, LANES
         for difficulty in ('easy', 'medium', 'hard'):
             for skill in EFFECT_ASSETS:
                 with self.subTest(difficulty=difficulty, skill=skill):
@@ -153,8 +182,17 @@ class CampaignParityTests(unittest.TestCase):
                         shot.height = 110
                     for p in game.all_players:
                         p.x, p.y = 480, 575 if skill in RINGS else 550
+                    if skill == 'plasma_rail':
+                        shot.spawn_time -= RAIL_EXTEND_MS
+                        game.boss.sync_weapon_mount(shot, config.game_ticks())
+                        for p in game.all_players:
+                            p.x, p.y = shot.x, shot.y + 75
                     if skill == 'sonar_ring':
                         shot.gap_angle = 180  # keep both bodies outside safe sector
+                    if skill == 'emp_ring':
+                        shot.spawn_time -= 400
+                        for p in game.all_players:
+                            p.x, p.y = shot.x, shot.y
                     game._add_boss_projectiles([shot])
                     initial = game.player.hp
                     game.step()
@@ -177,7 +215,7 @@ class CampaignParityTests(unittest.TestCase):
                                      (850, 650, 550)[game._campaign_tier()])
 
     def test_precise_projectile_selection_excludes_dead_hit_and_invincible_teammate(self):
-        from game_core.abyss_bosses import AbyssProjectile
+        from game_core.abyss_bosses import AbyssProjectile, RAIL_EXTEND_MS
         game = OnlineGame()
         config.campaign_time_ms = 1000
         p1, p2 = game.all_players
@@ -185,6 +223,8 @@ class CampaignParityTests(unittest.TestCase):
         p1.y = p2.y = 550
         shot = AbyssProjectile('plasma_rail', 480, 500, warning_ms=0)
         shot.height = 160
+        config.campaign_time_ms = 1000 + RAIL_EXTEND_MS
+        shot.update()
         p1.invincible_until = 2000
         self.assertIs(game._hit_by_projectile(shot), p2)
         shot._hit_players.add(p2)

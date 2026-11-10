@@ -11,19 +11,20 @@ BASE = '5f7dd20b25d0cd43eca2423ce4b1f34338b7d31d'
 CAMPAIGN_FILES = {
     'README.md', 'docs/NEW_CAMPAIGN.md', 'docs/NEW_CAMPAIGN_TEST_REPORT.md',
     'assets/images/ART_FACTORY_TEMPLE.md', 'game_core/config.py', 'game_core/game.py',
-    'game_core/abyss_bosses.py', 'game_core/sprites.py', 'game_core/background.py',
-    'pc/tests/test_new_campaign.py', 'pc/tests/test_abyss_bosses.py',
+    'game_core/abyss_bosses.py', 'game_core/sprites.py', 'game_core/background.py', 'game_core/entities.py',
+    'pc/tests/test_new_campaign.py', 'pc/tests/test_abyss_bosses.py', 'pc/tests/test_factory_enemies.py',
     'web/tests/test_orochi.py', 'web/tests/test_mobile_web.py', 'web/tests/test_animation.py',
     'assets/images/backgrounds/bg9.png', 'assets/images/backgrounds/bg10.png',
     'assets/images/backgrounds/bg11.png',
     'assets/images/bosses/boss_mecha_lizard.png',
+    'assets/images/animations/anim_boss_mecha_lizard.png',
     'assets/images/bosses/boss_ancient_whale.png',
 }
 CAMPAIGN_FILES.update('assets/images/enemies/enemy_' + key + '.png' for key in (
     'mecha_crab', 'mecha_ray', 'mecha_jelly',
     'ancient_nautilus', 'ancient_trilobite', 'ancient_ray'))
 CAMPAIGN_FILES.update('assets/images/effects/' + key + '.png' for key in (
-    'mecha_plasma_rail', 'mecha_guided_missile', 'mecha_emp_ring', 'mecha_molten_burst',
+    'mecha_plasma_rail', 'mecha_guided_missile', 'mecha_emp_ring', 'mecha_emp_iron_ball', 'mecha_molten_burst',
     'whale_sonar_ring', 'whale_tidal_crescent', 'whale_rune_geyser', 'whale_ancient_pearl'))
 
 

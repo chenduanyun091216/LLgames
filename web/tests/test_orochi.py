@@ -316,16 +316,20 @@ class OrochiTests(unittest.TestCase):
         game._trigger_infinite_boss()
         self.assertEqual(game.boss.bdef['key'], 'boss_lobster')
 
-    def test_infinite_shift_minus_selects_orochi_chapter(self):
+    def test_infinite_shift_shortcuts_select_chapters_nine_to_eleven(self):
         game = self.game
         game._start_infinite_game()
-        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_MINUS, mod=pygame.KMOD_SHIFT)
-        game.handle_events([event])
-        self.assertTrue(game.infinite_mode)
-        self.assertEqual(game.chapter, 11)
-        self.assertEqual(game.infinite_background_level, 11)
-        game._trigger_infinite_boss()
-        self.assertIsInstance(game.boss, OrochiBoss)
+        for key, chapter, boss in ((pygame.K_0, 11, 'boss_orochi'),
+                                   (pygame.K_9, 9, 'boss_mecha_lizard'),
+                                   (pygame.K_MINUS, 10, 'boss_ancient_whale')):
+            with self.subTest(chapter=chapter):
+                event = pygame.event.Event(pygame.KEYDOWN, key=key, mod=pygame.KMOD_SHIFT)
+                game.handle_events([event])
+                self.assertTrue(game.infinite_mode)
+                self.assertEqual(game.chapter, chapter)
+                self.assertEqual(game.infinite_background_level, chapter)
+                game._trigger_infinite_boss()
+                self.assertEqual(game.boss.bdef['key'], boss)
 
     def test_idle_heads_animate_and_the_loop_returns_to_its_first_pose(self):
         first = self.boss._idle_frame(1000)

@@ -347,10 +347,11 @@ class Game:
                     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
                         continue
             if event.type == pygame.KEYDOWN:
+                infinite = self.infinite_mode or self.selecting_infinite_mode
                 level = (event.key - pygame.K_0 if pygame.K_1 <= event.key <= pygame.K_9
-                         else {pygame.K_0: 10, pygame.K_MINUS: 11}.get(event.key, 0))
-                jump_limit = (len(config.INFINITE_BOSS_HP) if self.infinite_mode or self.selecting_infinite_mode
-                              else len(LEVEL_CONFIGS))
+                         else {pygame.K_0: 11 if infinite else 10,
+                               pygame.K_MINUS: 10 if infinite else 11}.get(event.key, 0))
+                jump_limit = len(config.INFINITE_BOSS_HP) if infinite else len(LEVEL_CONFIGS)
                 if 1 <= level <= jump_limit and event.mod & pygame.KMOD_SHIFT:
                     self._jump_to_level(level)
                     continue
@@ -704,6 +705,7 @@ class Game:
         self.spawn_interval = 1300; self.min_spawn_interval = 800; self.spawn_decrease = 0
         self.boss = None; self.boss_projectiles.clear(); self.enemy_projectiles.clear()
         self.enemies.clear(); self.bullets.clear(); self.coins.clear(); self.gift_boxes.clear(); self.gift_messages.clear(); self.explosions.clear()
+        self.factory_link_attempts = set()
         self.fire_walls.clear(); self.ice_floors.clear(); self.skill_projectiles.clear()
         self.magnetic_storms.clear(); self.radiation_lasers.clear(); self.lightnings.clear()
         self.dart_shields.clear(); self.laser_impacts.clear()
@@ -718,7 +720,7 @@ class Game:
         self.player_invincible_until = 0
         self.next_infinite_boss_time = now + 25000
         self.infinite_boss_index = start_chapter - 1
-        # 无限模式沿用原第 8 关的小怪池，不改变既有无限模式刷怪组成。
+        # 第 9、10 轮使用各自的小怪池，其余轮次沿用原刷怪组成。
         self.level_enemy_defs = get_level_enemy_defs(LEVEL_CONFIGS[7])
         self.level_title_until = 0
         self.bg_transition_until = 0
@@ -823,6 +825,7 @@ class Game:
         self.dart_shields.clear(); self.laser_impacts.clear()
         self.enemies.clear(); self.bullets.clear(); self.gift_boxes.clear(); self.gift_messages.clear(); self.explosions.clear(); self.muzzle_flashes.clear()
         self.enemy_projectiles.clear()
+        self.factory_link_attempts = set()
         self.skill_flash = None
         self.level_enemy_defs = get_level_enemy_defs(LEVEL_CONFIGS[n-1])
         self.gift_fire_until = 0; self.gift_ice_until = 0; self.gift_lightning_remaining = 0; self.gift_lightning_next = 0; self.gift_lightning_icon_until = 0
@@ -907,12 +910,11 @@ class Game:
         lcfg = LEVEL_CONFIGS[self.current_level-1]; bdef = BOSS_DEFS[lcfg['boss_idx']]
         tier = self._campaign_tier()
         custom = self.difficulty.name == '自定义'
-        hp_mult = self.difficulty.boss_hp_mult if custom else 1
         attack_mult = self.difficulty.boss_attack_mult if custom else 1
         homing_mult = self.difficulty.boss_homing_mult if custom else 1
         bdef = {
             **bdef,
-            'fixed_hp': math.ceil(self._campaign_value(config.CAMPAIGN_BOSS_HP) * hp_mult),
+            'fixed_hp': self._campaign_boss_hp(),
             'attack_interval': round(self._campaign_value(config.CAMPAIGN_BOSS_ATTACK_MS) * attack_mult),
             'campaign_tier': tier,
             'campaign_level': self.current_level,
@@ -932,14 +934,21 @@ class Game:
         start_music(self.current_level, boss=True)
         play_sound('boss_appear'); self.state = GameState.BOSS_FIGHT
 
+    def _campaign_boss_hp(self):
+        multiplier = self.difficulty.boss_hp_mult if self.difficulty.name == '自定义' else 1
+        return math.ceil(self._campaign_value(config.CAMPAIGN_BOSS_HP) * multiplier)
+
+    def _infinite_boss_hp(self, index, cycle):
+        health_percent = 100 + 20 * min(cycle, 6)
+        return (config.INFINITE_BOSS_HP[index] * health_percent + 99) // 100
+
     def _trigger_infinite_boss(self):
         boss_number = self.infinite_boss_index
         cycle, index = divmod(boss_number, len(config.INFINITE_BOSS_HP))
         bdef = BOSS_DEFS[index]
-        health_percent = 100 + 20 * min(cycle, 6)
         interval_percent = max(70, 100 - 5 * cycle)
         bdef = {**bdef,
-                'fixed_hp': (config.INFINITE_BOSS_HP[index] * health_percent + 99) // 100,
+                'fixed_hp': self._infinite_boss_hp(index, cycle),
                 'attack_interval': round(config.INFINITE_BOSS_ATTACK_MS[index] * interval_percent / 100),
                 'campaign_tier': 1, 'campaign_level': index + 1, 'damage_cap': 2}
         if bdef['key'] == 'boss_niu':
@@ -2009,6 +2018,10 @@ class Game:
                 self.spawn_enemy()
                 self.last_spawn_time = now
         self._maybe_spawn_gift(now)
+        factory = self._is_factory_stage()
+        if factory:
+            self._settle_factory_link(now)
+            self._start_factory_link(now)
         fire_wall_rects = [fw.rect() for fw in self.fire_walls]
         for b in self.bullets[:]:
             b.update()
@@ -2020,7 +2033,7 @@ class Game:
                 e.update(self._nearest_player(e.x, e.y))
             self._block_enemy_with_fire_walls(e, fire_wall_rects)
             if self._enemy_can_attack(e, now):
-                self.enemy_projectiles.extend(e.attack(now, self._nearest_player(e.x, e.y).x))
+                self.enemy_projectiles.extend(self._enemy_shots(e, now))
             if e.reached_bottom() and self._resolve_leak(e, now):
                 return
         if self._damage_player_on_contacts(now):
@@ -2033,11 +2046,11 @@ class Game:
                 if getattr(ep, 'bomb', False) and self._explode_enemy_bomb(ep, now):
                     return
                 self.enemy_projectiles.remove(ep)
-            elif self._blocked_by_fire_wall(ep.rect(), fire_wall_rects):
+            elif not getattr(ep, 'unblockable', False) and self._blocked_by_fire_wall(ep.rect(), fire_wall_rects):
                 self.enemy_projectiles.remove(ep)
-            elif self._blocked_by_ice_floor(ep):
+            elif not getattr(ep, 'unblockable', False) and self._blocked_by_ice_floor(ep):
                 self.enemy_projectiles.remove(ep)
-            elif self._blocked_by_dart_shield(ep.block_rect(), now):
+            elif not getattr(ep, 'unblockable', False) and self._blocked_by_dart_shield(ep.block_rect(), now):
                 self._spawn_hit_effect(ep.x, ep.y, (140, 255, 150), False)
                 self.enemy_projectiles.remove(ep)
             elif getattr(ep, 'bomb', False) and self._hit_player(ep.rect()):
@@ -2165,6 +2178,11 @@ class Game:
         for e in self.enemies[:]:
             w = self.player.current_weapon
             if w and e.is_killed(w): self._kill_enemy(e)
+        if factory:
+            self._settle_factory_link(now)
+            if (not self.infinite_mode and self.level_kills >= self._campaign_value(config.CAMPAIGN_KILLS)
+                    and not any(e.factory_link_until or e.factory_kind == 'mini_boss' for e in self.enemies)):
+                self._trigger_boss()
         for c in self.coins[:]:
             c.update()
             if self._hit_player(c.rect()):
@@ -2451,6 +2469,10 @@ class Game:
                 self.spawn_enemy()
                 self.last_spawn_time = now
         self._maybe_spawn_gift(now)
+        factory = self._is_factory_stage()
+        if factory:
+            self._settle_factory_link(now)
+            self._start_factory_link(now)
         fire_wall_rects = [fw.rect() for fw in self.fire_walls]
         for e in self.enemies[:]:
             if e.chase_color is None:
@@ -2459,7 +2481,7 @@ class Game:
                 e.update(self._nearest_player(e.x, e.y))
             self._block_enemy_with_fire_walls(e, fire_wall_rects)
             if self._enemy_can_attack(e, now):
-                self.enemy_projectiles.extend(e.attack(now, self._nearest_player(e.x, e.y).x))
+                self.enemy_projectiles.extend(self._enemy_shots(e, now))
             if e.reached_bottom() and self._resolve_leak(e, now):
                 return
         if self._update_boss_signature(now) or self._update_special_boss_hazards(now):
@@ -2475,11 +2497,11 @@ class Game:
                 if getattr(ep, 'bomb', False) and self._explode_enemy_bomb(ep, now):
                     return
                 self.enemy_projectiles.remove(ep)
-            elif self._blocked_by_fire_wall(ep.rect(), fire_wall_rects):
+            elif not getattr(ep, 'unblockable', False) and self._blocked_by_fire_wall(ep.rect(), fire_wall_rects):
                 self.enemy_projectiles.remove(ep)
-            elif self._blocked_by_ice_floor(ep):
+            elif not getattr(ep, 'unblockable', False) and self._blocked_by_ice_floor(ep):
                 self.enemy_projectiles.remove(ep)
-            elif self._blocked_by_dart_shield(ep.block_rect(), now):
+            elif not getattr(ep, 'unblockable', False) and self._blocked_by_dart_shield(ep.block_rect(), now):
                 self._spawn_hit_effect(ep.x, ep.y, (140, 255, 150), False)
                 self.enemy_projectiles.remove(ep)
             elif getattr(ep, 'bomb', False) and self._hit_player(ep.rect()):
@@ -2519,6 +2541,8 @@ class Game:
             self._queue_boss_shots(shots, now)
         self._pull_projectiles_to_storms(self.boss_projectiles)
         for bp in self.boss_projectiles[:]:
+            if isinstance(self.boss, MechaLizardBoss) and isinstance(bp, AbyssProjectile):
+                self.boss.sync_weapon_mount(bp, now)
             target = self._nearest_player(bp.x, bp.y)
             was_armed = getattr(bp, 'detonate_at', 0)
             target_x, target_y = target.rect().center if isinstance(bp, ZongBomb) else (target.x, target.y)
@@ -2753,6 +2777,8 @@ class Game:
         for e in self.enemies[:]:
             w = self.player.current_weapon
             if w and e.is_killed(w): self._kill_enemy(e)
+        if factory:
+            self._settle_factory_link(now)
         for c in self.coins[:]:
             c.update()
             if self._hit_player(c.rect()):
@@ -2890,6 +2916,8 @@ class Game:
             definition = random.choice(ordinary)
 
         enemy = Enemy(definition)
+        if level == 9 and definition['key'] in config.FACTORY_ENEMY_KEYS:
+            enemy.factory_kind = 'original'
         self.last_spawn_was_elite = enemy.is_large or enemy.is_zongzong
         self.level_spawn_count += 1
         enemy.max_hp = definition.get('campaign_hp', 9 if enemy.is_large else 8 if enemy.is_zongzong else 3)
@@ -2916,6 +2944,101 @@ class Game:
         enemy.last_attack_time = config.game_ticks()
         self.enemies.append(enemy)
 
+    def _is_factory_stage(self):
+        return (self.infinite_background_level if self.infinite_mode else self.current_level) == 9
+
+    def _start_factory_link(self, now):
+        if any(e.factory_link_until or e.factory_kind == 'mini_boss' for e in self.enemies):
+            return
+        candidates = [e for e in self.enemies if e.factory_kind == 'original'
+                      and e.y + e.h > 0 and e.y < config.GAME_AREA_BOTTOM]
+        visible = set(candidates)
+        self.factory_link_attempts = {trio for trio in self.factory_link_attempts if trio <= visible}
+        if len(candidates) < 3:
+            return
+        trio = frozenset(candidates[-3:])
+        if trio in self.factory_link_attempts:
+            return
+        self.factory_link_attempts.add(trio)
+        if random.random() < .5:
+            for enemy in trio:
+                enemy.factory_link_until = now + 2000
+                enemy._clamp_factory_health()
+
+    def _settle_factory_link(self, now):
+        linked = [e for e in self.enemies if e.factory_link_until]
+        if not linked:
+            return
+        if all(e._damage_progress() >= .99 - 1e-9 for e in linked):
+            for enemy in linked:
+                self._kill_enemy(enemy, linked=True)
+        elif now >= linked[0].factory_link_until:
+            x = sum(e.x for e in linked) / len(linked)
+            y = sum(e.rect().centery for e in linked) / len(linked)
+            for enemy in linked:
+                self.enemies.remove(enemy)
+            definition = dict(key='mecha_crab', name='机械蜥蜴·熔芯（小型）', is_large=True,
+                              base_speed=1.6, size=(86, 75), gold=sum(e.gold_value for e in linked),
+                              sprite_asset='bosses/boss_mecha_lizard.png')
+            mini = Enemy(definition)
+            mini.factory_kind = 'mini_boss'
+            if self.infinite_mode:
+                cycle, index = divmod(self.infinite_boss_index, len(config.INFINITE_BOSS_HP))
+                mini.max_hp = self._infinite_boss_hp(index, cycle) * .33
+            else:
+                mini.max_hp = self._campaign_boss_hp() * .33
+            mini.factory_patrol_direction = 1
+            mini.x = max(config.GAME_AREA_LEFT + mini.w / 2,
+                         min(config.GAME_AREA_RIGHT - mini.w / 2, x))
+            mini.y = max(Enemy.ENTRY_END_Y, min(config.GAME_AREA_BOTTOM * .46, y - mini.h / 2))
+            mini.last_attack_time, mini.attack_interval = now, 1000
+            self.enemies.append(mini)
+            self._spawn_hit_effect(mini.x, mini.rect().centery, (120, 220, 255), True)
+
+    def _split_factory_enemy(self, parent, now):
+        count = random.randint(1, 3)
+        for index in range(count):
+            child = Enemy(parent.edef)
+            child.factory_kind = 'fragment'
+            child.unscaled_base_w = round(parent.unscaled_base_w * .74)
+            child.unscaled_base_h = round(parent.unscaled_base_h * .74)
+            child.base_w = child.w = round(child.unscaled_base_w * child.size_scale)
+            child.base_h = child.h = round(child.unscaled_base_h * child.size_scale)
+            child.max_hp = parent.max_hp * .25
+            child.gold_value = 0
+            child.speed = parent.speed
+            left = config.GAME_AREA_LEFT + child.w / 2
+            right = config.GAME_AREA_RIGHT - child.w / 2
+            step = min(child.w * 1.65, (right - left) / max(1, count - 1))
+            half_spread = step * (count - 1) / 2
+            center = max(left + half_spread, min(right - half_spread, parent.x))
+            offset = index - (count - 1) / 2
+            child.x = center + offset * step
+            lift = max(0, 1 - abs(offset)) * child.h / 2
+            child.y = max(0, min(config.GAME_AREA_BOTTOM - child.h, parent.y - lift))
+            child.last_attack_time, child.attack_interval = now, parent.attack_interval
+            self.enemies.append(child)
+
+    def _enemy_shots(self, enemy, now):
+        if not enemy.factory_kind:
+            target = self._nearest_player(enemy.x, enemy.y)
+            return enemy.attack(now, target.x)
+        mini = enemy.factory_kind == 'mini_boss'
+        enemy.last_attack_time = now
+        enemy.attack_interval = 3000 if mini else random.randint(enemy.attack_interval_min, enemy.attack_interval_max)
+        shots = []
+        for angle in (-24, 0, 24) if mini else (0,):
+            missile = AbyssProjectile('guided_missile', enemy.x + angle * enemy.size_scale,
+                                      enemy.y + enemy.h, angle=angle, speed=3.6 if mini else 3,
+                                      warning_ms=180, active_ms=9000,
+                                      scale=enemy.size_scale * (.68 if mini else .46))
+            missile.missile_pass = 2
+            missile.missile_turn_rate = 125 if mini else 42
+            missile.unblockable = mini
+            missile.persistent = False
+            shots.append(missile)
+        return shots
+
     def _enemy_can_attack(self, enemy, now):
         if enemy.chase_color is not None or not enemy.should_attack(now):
             return False
@@ -2933,15 +3056,17 @@ class Game:
         if not self.infinite_mode:
             self._spawn_campaign_enemy()
             return
-        large_pool = [e for e in self.level_enemy_defs if e['is_large']]
-        zong_pool = [e for e in self.level_enemy_defs if e['key'] == 'zongzong']
-        normal_pool = [e for e in self.level_enemy_defs if not e['is_large'] and e['key'] != 'zongzong']
+        level = self.infinite_background_level
+        pool = get_level_enemy_defs(LEVEL_CONFIGS[level - 1]) if level in (9, 10) else self.level_enemy_defs
+        large_pool = [e for e in pool if e['is_large']]
+        zong_pool = [e for e in pool if e['key'] == 'zongzong']
+        normal_pool = [e for e in pool if not e['is_large'] and e['key'] != 'zongzong']
         zong_chance = ZONGZONG_SPAWN_CHANCE * (2 if self.infinite_background_level == 8 else 1)
         if zong_pool and random.random() < zong_chance:
             edef = random.choice(zong_pool)
         elif large_pool and random.random() < INFINITE_LARGE_ENEMY_CHANCE:
             edef = random.choice(large_pool)
-        else: edef = random.choice(normal_pool or self.level_enemy_defs)
+        else: edef = random.choice(normal_pool or pool)
         e = Enemy(edef)
         if self.difficulty:
             e.speed *= self.difficulty.enemy_speed_mult
@@ -2952,6 +3077,10 @@ class Game:
             e.attack_interval = random.randint(e.attack_interval_min, e.attack_interval_max)
         now = config.game_ticks()
         e.health_mult *= self._infinite_health_mult(now)
+        if level in (9, 10):
+            e.max_hp = edef['campaign_hp'] * e.health_mult
+            if level == 9:
+                e.factory_kind = 'original'
         e.speed *= 0.82
         e.damage_mult = self._infinite_damage_mult()
         if not e.is_large and random.random() < FAST_ENEMY_CHANCE:
@@ -2962,13 +3091,14 @@ class Game:
         e.attack_interval = random.randint(e.attack_interval_min, e.attack_interval_max)
         self.enemies.append(e)
 
-    def _kill_enemy(self, e):
-        if e not in self.enemies: return
+    def _kill_enemy(self, e, *, linked=False):
+        if e not in self.enemies or (e.factory_link_until and not linked): return
         if e.chase_partner:
             e.chase_partner.chase_partner = None
             e.chase_partner = None
-        self.enemies.remove(e); self.kill_count += 1; self.level_kills += 1
-        if any(player.character == 'water' for player in self.players):
+        credit = 0 if e.factory_kind == 'fragment' else 3 if e.factory_kind == 'mini_boss' else 1
+        self.enemies.remove(e); self.kill_count += credit; self.level_kills += credit
+        if credit and any(player.character == 'water' for player in self.players):
             self.water_passive_kills += 1
             if self.infinite_mode and self.water_passive_kills % 10 == 0:
                 self._heal_player(1, increase_max=True)
@@ -3021,7 +3151,9 @@ class Game:
                     self._spawn_hit_effect(other.x, other.y+other.h//2, (120, 255, 80), other.is_large)
                     if other.is_killed(blast_weapon):
                         self._kill_enemy(other)
-        if (not self.infinite_mode and self.state == GameState.PLAYING and
+        if e.factory_kind == 'original' and not linked:
+            self._split_factory_enemy(e, config.game_ticks())
+        if (not self.infinite_mode and self.current_level != 9 and self.state == GameState.PLAYING and
                 self.level_kills >= self._campaign_value(config.CAMPAIGN_KILLS)):
             self._trigger_boss()
 
@@ -3395,13 +3527,19 @@ class Game:
         draw_water_drift(config.SCR, config.game_ticks())
         if self.boss and self.boss.signature:
             self.boss.signature.draw(config.SCR, self.boss, config.game_ticks())
+        linked = [e.rect().center for e in self.enemies if getattr(e, 'factory_link_until', 0)]
+        for index, start in enumerate(linked):
+            for end in linked[index + 1:]:
+                draw_electric_arc(config.SCR, start, end, (110, 230, 255), 235, config.game_ticks(), index)
         for e in self.enemies:
             e.draw(config.SCR)
             if not self.infinite_mode:
                 if self.boss and self.boss.absorb_target is e:
                     Draw.rect(config.SCR, (190, 85, 255), e.rect().inflate(12, 12), 2)
                 warning_seconds = (1.4, 1.2, 1.0)[self._campaign_tier()]
-                if config.GAME_AREA_BOTTOM + 20 - e.y <= e.speed * 60 * warning_seconds:
+                if (not getattr(e, 'factory_link_until', 0)
+                        and getattr(e, 'factory_kind', '') != 'mini_boss'
+                        and config.GAME_AREA_BOTTOM + 20 - e.y <= e.speed * 60 * warning_seconds):
                     Draw.line(config.SCR, (255, 100, 80), (e.rect().left, config.GAME_AREA_BOTTOM - 3),
                                      (e.rect().right, config.GAME_AREA_BOTTOM - 3), 3)
         for c in self.coins: c.draw(config.SCR)
@@ -3670,6 +3808,8 @@ class Game:
             return
         lcfg = LEVEL_CONFIGS[self.current_level-1]
         width = 200 if config.MOBILE_LANDSCAPE_VIEW else 166
+        if self.current_level == 9:
+            width = 270
         plaque = pygame.Rect(0, 102, width, 64)
         plaque.centerx = config.SCREEN_WIDTH // 2
         self._draw_panel(*plaque, accent=(106, 214, 218), fill=(5, 29, 45), r=10, alpha=220)

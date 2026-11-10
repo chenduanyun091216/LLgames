@@ -10,7 +10,8 @@ import pygame
 
 from game_core import config
 from game_core.abyss_bosses import (AbyssProjectile, AncientWhaleBoss,
-                                    MechaLizardBoss, ABYSS_PROJECTILE_FIELDS)
+                                    MechaLizardBoss, ABYSS_PROJECTILE_FIELDS,
+                                    RAIL_EXTEND_MS, RAIL_GAP_MS, RAIL_LASH_MS)
 from game_core.render import RenderSurface
 
 
@@ -30,7 +31,7 @@ class AbyssBossTests(unittest.TestCase):
         boss.entered, boss.y = True, 60
         return boss
 
-    def test_all_eight_skills_warn_before_damage_and_expire(self):
+    def test_all_eight_skills_start_and_expire(self):
         for cls in (MechaLizardBoss, AncientWhaleBoss):
             boss = self.boss(cls)
             seen = []
@@ -41,9 +42,10 @@ class AbyssBossTests(unittest.TestCase):
                     seen.append(boss.current_skill)
                     self.assertTrue(shots)
                     for shot in shots:
-                        self.assertEqual(shot.rect().size, (0, 0))
-                        self.assertFalse(shot.hits_rect(pygame.Rect(0, 0, 3000, 3000)))
-                        self.assertEqual(shot.block_rect().size, (0, 0))
+                        if shot.warning_ms:
+                            self.assertEqual(shot.rect().size, (0, 0))
+                            self.assertFalse(shot.hits_rect(pygame.Rect(0, 0, 3000, 3000)))
+                            self.assertEqual(shot.block_rect().size, (0, 0))
                 for shot in shots:
                     with patch.object(config, 'game_ticks', return_value=now + shot.warning_ms):
                         shot.update(config.SCREEN_WIDTH * .6, config.GAME_AREA_BOTTOM)
@@ -70,31 +72,180 @@ class AbyssBossTests(unittest.TestCase):
             self.assertTrue(shot.persistent)
             self.assertTrue(shot.unblockable)
 
-    def test_lane_warning_does_not_retarget(self):
+    def test_whip_is_held_by_the_moving_boss(self):
         boss = self.boss(MechaLizardBoss)
         with patch.object(config, 'game_ticks', return_value=1000):
             rail = boss.attack(1000, 300)[0]
-        with patch.object(config, 'game_ticks', return_value=2600):
+        start = rail.x, rail.y
+        boss.x += 80
+        now = 1000 + rail.warning_ms + RAIL_EXTEND_MS
+        with patch.object(config, 'game_ticks', return_value=now):
+            boss.sync_weapon_mount(rail, now)
             rail.update(700, 600)
-            self.assertEqual(rail.x, 300)
-            self.assertTrue(rail.hits_rect(pygame.Rect(295, 400, 10, 10)))
-            self.assertFalse(rail.hits_rect(pygame.Rect(600, 400, 10, 10)))
+            self.assertEqual(rail._rail_points()[0], (start[0] + 80, start[1]))
+            self.assertTrue(rail.hits_rect(pygame.Rect(round(rail.x) - 5, 400, 10, 10)))
+            self.assertFalse(rail.hits_rect(pygame.Rect(300, 400, 10, 10)))
             self.assertEqual(rail.damage, 2)
 
-    def test_missile_turn_is_limited_and_stops(self):
+    def test_boss_missiles_launch_one_at_a_time(self):
+        boss = self.boss(MechaLizardBoss)
         with patch.object(config, 'game_ticks', return_value=1000):
-            shot = AbyssProjectile('guided_missile', 400, 150, speed=3, warning_ms=1000)
-        for now in range(2000, 2701, 20):
-            previous = shot.angle
+            shots = boss._skill_shots('guided_missile', 480, 600)
+        for index, shot in enumerate(shots):
+            now = shot.spawn_time + shot.warning_ms
+            self.assertEqual(sum(m.is_active(now) for m in shots), index + 1)
+            if index:
+                self.assertGreaterEqual(shot.warning_ms - shots[index - 1].warning_ms, 650)
+        first, second, _ = shots
+        now = first.spawn_time + first.warning_ms + 20
+        with patch.object(config, 'game_ticks', return_value=now):
+            first.update(480, 600)
+        first_x, second_x = first.x, second.x
+        boss.x += 70
+        for shot in shots:
+            boss.sync_weapon_mount(shot, now)
+        self.assertEqual(first.x, first_x)
+        self.assertAlmostEqual(second.x, second_x + 70)
+
+    def test_factory_charge_does_not_draw_position_guides(self):
+        surface = pygame.Surface((960, 720), pygame.SRCALPHA)
+        boss = self.boss(MechaLizardBoss)
+        with patch.object(config, 'game_ticks', return_value=1000), \
+                patch('game_core.abyss_bosses.Draw.line') as line, \
+                patch('game_core.abyss_bosses.Draw.lines') as lines, \
+                patch('game_core.abyss_bosses.Draw.rect') as rect:
+            for skill in boss.SKILLS:
+                for shot in boss._skill_shots(skill, 480, 600):
+                    shot.draw(surface)
+            line.assert_not_called()
+            lines.assert_not_called()
+            rect.assert_not_called()
+
+    def test_missile_tracks_on_both_descents_and_returns_from_below(self):
+        with patch.object(config, 'game_ticks', return_value=1000):
+            shot = AbyssProjectile('guided_missile', 400, 150, speed=4,
+                                   warning_ms=1000, active_ms=16000)
+        self.assertTrue(shot.unblockable)
+        first_angles, second_angles = [], []
+        lowest = 0
+        returned_y = config.SCREEN_HEIGHT
+        for now in range(2000, 17000, 20):
             with patch.object(config, 'game_ticks', return_value=now):
-                shot.update(800, 600)
-            self.assertLessEqual(abs(shot.angle - previous), .761)
-        angle = shot.angle
-        with patch.object(config, 'game_ticks', return_value=2800):
-            shot.update(0, 600)
-        self.assertEqual(shot.angle, angle)
-        self.assertFalse(shot.unblockable)
-        self.assertFalse(shot.persistent)
+                shot.update(800 if now < 3300 else 120, 600)
+            lowest = max(lowest, shot.y)
+            if shot.missile_pass == 0:
+                first_angles.append(shot.angle)
+            if shot.missile_pass == 2:
+                returned_y = min(returned_y, shot.y)
+                second_angles.append(shot.angle)
+            if not shot.alive:
+                break
+        self.assertGreater(max(first_angles), 10)
+        self.assertGreater(lowest, config.SCREEN_HEIGHT)
+        self.assertLess(returned_y, 180)
+        self.assertTrue(any(math.sin(math.radians(angle)) < -.2 for angle in second_angles))
+        self.assertFalse(shot.alive)
+        self.assertGreater(shot.y, config.SCREEN_HEIGHT)
+
+    def test_rail_extends_before_three_lashes_and_hits_along_the_curve(self):
+        with patch.object(config, 'game_ticks', return_value=1000):
+            rail, = self.boss(MechaLizardBoss)._skill_shots('plasma_rail', 400, 0)
+        rail.whip_directions = 0b101
+        for index, direction in enumerate((0, 1, -1, 1)):
+            elapsed = (RAIL_EXTEND_MS // 2 if not index else
+                       RAIL_EXTEND_MS + (index - 1) * (RAIL_LASH_MS + RAIL_GAP_MS) + RAIL_LASH_MS // 2)
+            with patch.object(config, 'game_ticks', return_value=1000 + rail.warning_ms + elapsed):
+                rail.update()
+                points = rail._rail_points()
+                x, y = points[-1]
+                self.assertEqual(rail.hits_rect(pygame.Rect(round(x) - 4, round(y) - 4, 8, 8)), bool(index))
+                if direction == 0:
+                    self.assertEqual(x, rail.x)
+                    self.assertLess(y, config.GAME_AREA_BOTTOM)
+                else:
+                    self.assertEqual(y, config.GAME_AREA_BOTTOM)
+                    self.assertGreater(direction * (x - rail.x), 100)
+                    self.assertTrue(any(direction * (px - rail.x) < -50 for px, _ in points))
+                    self.assertFalse(rail.hits_rect(pygame.Rect(round(rail.x) - 4, round(y) - 4, 8, 8)))
+
+    def test_whip_drifts_harmlessly_between_strikes_and_can_hit_again(self):
+        boss = self.boss(MechaLizardBoss)
+        with patch.object(config, 'game_ticks', return_value=1000):
+            rail, = boss.attack(1000, 400)
+        first_strike = 1000 + rail.warning_ms + RAIL_EXTEND_MS
+        target = object()
+        poses = []
+        for delay in (RAIL_GAP_MS // 3, RAIL_GAP_MS * 2 // 3):
+            with patch.object(config, 'game_ticks', return_value=first_strike + RAIL_LASH_MS + delay):
+                rail.update()
+                self.assertTrue(rail.is_active())
+                self.assertFalse(rail.hits_rect(rail.bounds()))
+                poses.append(rail._rail_points())
+        self.assertNotEqual(*poses)
+        rail._hit_players.add(target)
+        with patch.object(config, 'game_ticks', return_value=first_strike + RAIL_LASH_MS + RAIL_GAP_MS):
+            rail.update()
+            self.assertTrue(rail.hits_rect(rail.bounds()))
+            self.assertNotIn(target, rail._hit_players)
+
+    def test_emp_iron_balls_launch_then_burst_as_the_circle_closes(self):
+        boss = self.boss(MechaLizardBoss)
+        with patch.object(config, 'game_ticks', return_value=1000):
+            ring, = boss._skill_shots('emp_ring', 0, 0)
+        self.assertEqual((ring.x, ring.y), (config.SCREEN_WIDTH / 2, config.SCREEN_HEIGHT / 2))
+        start = 1000 + ring.warning_ms
+        for age in (0, 340, 3000, 3750, 4499, 4500, 4700):
+            now = start + age
+            with patch.object(config, 'game_ticks', return_value=now):
+                ring.update()
+                points = list(ring._emp_orbs())
+                if age == 0:
+                    self.assertLess(ring.ring_radius, 10)
+                    self.assertFalse(points)
+                elif age == 340:
+                    point, = points
+                    self.assertLess(math.dist((ring.x, ring.y), point), ring.ring_radius)
+                    self.assertFalse(ring._emp_link_points())
+                elif age == 3000:
+                    span = min(config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT, config.SCREEN_HEIGHT)
+                    self.assertAlmostEqual(ring.ring_radius, (5 * ring.visual_scale + span * .192) * .8)
+                    self.assertGreater(ring._emp_orb_radius(), 24 * ring.visual_scale)
+                    self.assertEqual(len(points), 8)
+                    full_radius = ring.ring_radius
+                elif age < 4500:
+                    self.assertEqual(ring.ring_radius, full_radius)
+                    self.assertEqual(len(points), 8)
+                    for x, y in points:
+                        self.assertAlmostEqual(math.hypot(x - ring.x, y - ring.y), full_radius)
+                    if age == 3750:
+                        half_circle = len(ring._emp_link_points())
+                        self.assertGreater(half_circle, 1)
+                    else:
+                        self.assertGreater(len(ring._emp_link_points()), half_circle)
+                else:
+                    self.assertEqual(len(points), 16)
+                    self.assertFalse(ring._emp_link_points())
+                    if age > 4500:
+                        self.assertTrue(all(math.dist((ring.x, ring.y), p) > full_radius for p in points))
+
+    def test_emp_dash_reaches_center_and_hits_along_its_route(self):
+        boss = self.boss(MechaLizardBoss)
+        boss.x = config.SCREEN_WIDTH / 2 - 200
+        boss.skill_index = 2
+        before = boss.rect()
+        with patch.object(config, 'game_ticks', return_value=1000):
+            shot, = boss.attack(1000, 0)
+        self.assertFalse(shot.is_active(1000))
+        now = 1000 + shot.warning_ms
+        with patch.object(config, 'game_ticks', return_value=now):
+            boss.update()
+            after = boss.rect()
+            self.assertAlmostEqual(boss.x, shot.x)
+            self.assertAlmostEqual(boss.y + boss.h / 2, shot.y)
+            target = pygame.Rect(before.centerx, before.centery, 6, 6)
+            self.assertFalse(after.colliderect(target))
+            self.assertTrue(any(rect.colliderect(target) for rect in boss.hitboxes()))
+            self.assertTrue(shot.is_active(now))
 
     def test_simulation_time_not_update_count_controls_straight_shots(self):
         with patch.object(config, 'game_ticks', return_value=1000):
@@ -196,7 +347,7 @@ class AbyssBossTests(unittest.TestCase):
         with patch.object(config, 'game_ticks', return_value=1000):
             shot = AbyssProjectile('plasma_rail', 400, 200, warning_ms=1000)
             shot.height = 400
-        with patch.object(config, 'game_ticks', return_value=2200):
+        with patch.object(config, 'game_ticks', return_value=2000 + RAIL_EXTEND_MS):
             shot.update()
             self.assertIs(game._hit_by_projectile(shot), first)
             shot._hit_players.add(first)
@@ -208,7 +359,7 @@ class AbyssBossTests(unittest.TestCase):
     def test_final_png_ring_collision_is_inside_visible_band(self):
         from game_core.asset_loader import image_asset
         from game_core.abyss_bosses import EFFECT_ASSETS
-        for skill in ('emp_ring', 'sonar_ring'):
+        for skill in ('sonar_ring',):
             if image_asset(EFFECT_ASSETS[skill]) is None:
                 self.skipTest('Final PNG assets unavailable in this checkout')
             for radius in (24, 100, 250, 400, 600):
