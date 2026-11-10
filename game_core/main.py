@@ -6,14 +6,16 @@ from time import perf_counter
 
 import pygame
 
-from . import config
+from . import asset_loader, config
 from .config import FPS
 from .render import RenderSurface
 
 
 FRAME_TIMING_TOLERANCE = 0.002
-DEFAULT_BROWSER_RENDER_DENSITY = 1.5
-HD_SHORT_EDGE = 1080
+RENDER_TIMING_TOLERANCE = 0.006
+DEFAULT_BROWSER_RENDER_DENSITY = 1.15
+DEFAULT_MAX_VIEW = (1800, 960)
+HD_MAX_VIEW = (2560, 1080)
 
 
 def _draw_scaled(window, scaled):
@@ -30,19 +32,26 @@ def _draw_scaled(window, scaled):
 
 
 def _browser_size(window, viewport):
-    density = getattr(window, 'ttgamesRenderDensity', None)
-    if density == 2 and min(viewport) > 0:
-        density = HD_SHORT_EDGE / min(viewport)
-    elif density not in (1, 1.5, 2):
-        density = DEFAULT_BROWSER_RENDER_DENSITY
+    hd = getattr(window, 'ttgamesRenderDensity', None) == 2
+    short, long = sorted(viewport)
+    if short <= 0:
+        return viewport
+    max_long, max_short = HD_MAX_VIEW if hd else DEFAULT_MAX_VIEW
+    density = min(max_short / short, max_long / long)
+    if not hd:
+        density = min(density, DEFAULT_BROWSER_RENDER_DENSITY)
     return tuple(round(value * density) for value in viewport)
 
 
+def _browser_render_step(hd):
+    return (2 if hd else 1) / FPS
+
+
 def _browser_frame_deadline(now, deadline, step):
-    # Keep the cadence anchored when a browser callback arrives slightly early.
-    if now < deadline - FRAME_TIMING_TOLERANCE:
+    # Accept early callbacks without waiting an entire refresh interval.
+    if now < deadline - RENDER_TIMING_TOLERANCE:
         return None
-    slots = max(1, int((now - deadline + FRAME_TIMING_TOLERANCE) / step) + 1)
+    slots = int((now - deadline + RENDER_TIMING_TOLERANCE) / step) + 1
     return deadline + slots * step
 
 
@@ -54,7 +63,10 @@ async def main():
         pass
     browser_window = getattr(platform, 'window', None)
     viewport = None
+    hd = False
     if browser_window is not None:
+        hd = getattr(browser_window, 'ttgamesRenderDensity', None) == 2
+        asset_loader.web_hd_assets = hd
         viewport = (max(1, int(browser_window.innerWidth)), max(1, int(browser_window.innerHeight)))
         window_size = _browser_size(browser_window, viewport)
     else:
@@ -68,17 +80,18 @@ async def main():
 
     from .game import Game, GameState
     from .asset_loader import image_asset
-    from .background import background_art, make_background
+    from .background import background_art, clear_background_cache, make_background, scrolling_background_art
     from .boss_skills import SKILL_IMAGES
     from .sounds import advance_music, make_sound, start_music
 
     start_music()
-    game = Game(desktop_controls=browser_window is None)
+    game = Game(desktop_controls=browser_window is None, scroll_campaign_backgrounds=True)
     for filename in SKILL_IMAGES:
         image_asset(filename)
     for sound in ('boss_appear', 'kill', 'level_up', 'player_hit'):
         make_sound(sound)
     warmed_background = None
+    warmed_panorama = None
     warmed_boss = None
     running = True
     draw_ui = getattr(browser_window, 'ttgamesDrawUI', None)
@@ -105,9 +118,17 @@ async def main():
                         GameState.LEVEL_TRANSITION, GameState.VICTORY)
 
     while running:
+        render_step = step
+        quality_changed = False
         if browser_window is not None:
             now = perf_counter()
-            deadline = _browser_frame_deadline(now, next_frame, step)
+            new_hd = getattr(browser_window, 'ttgamesRenderDensity', None) == 2
+            quality_changed = new_hd != hd
+            if quality_changed:
+                hd = new_hd
+                next_frame = now
+            render_step = _browser_render_step(hd)
+            deadline = _browser_frame_deadline(now, next_frame, render_step)
             if deadline is None:
                 await asyncio.sleep(0)
                 continue
@@ -123,9 +144,14 @@ async def main():
         resized = False
         events = pygame.event.get()
         if browser_window is not None:
+            if quality_changed:
+                asset_loader.web_hd_assets = hd
+                clear_background_cache()
+                game.bg = game._load_bg()
+                warmed_background = warmed_panorama = warmed_boss = None
             new_viewport = (int(browser_window.innerWidth), int(browser_window.innerHeight))
             size = _browser_size(browser_window, new_viewport)
-            if min(size) > 0 and (size != window_size or new_viewport != viewport):
+            if min(size) > 0 and (size != window_size or new_viewport != viewport or quality_changed):
                 layout_changed = new_viewport != viewport
                 viewport = new_viewport
                 window_size = size
@@ -175,7 +201,9 @@ async def main():
                                              config.VIEW_OFFSET, track_damage=True, desktop_ui=browser_window is None)
                     previous_background = None
                 config.SCR = rendered
-                background = background_art(level, config.VIEW_SIZE)
+                background = game.scrolling_background(config.VIEW_SIZE)
+                if background is None:
+                    background = background_art(level, config.VIEW_SIZE)
                 game.draw(labels, draw_background=background is None)
                 if show_timings:
                     compose_started = perf_counter()
@@ -252,10 +280,16 @@ async def main():
         warm_campaign = (game.state == GameState.LEVEL_TRANSITION
                          and game.level_transition_end - config.game_ticks() <= 1100)
         warm_infinite = (game.infinite_mode and use_hd and game.bg_transition_prev is None)
+        warm_scroll = (browser_window is not None and warm_campaign and not game.infinite_mode
+                       and not config.LEVEL_CONFIGS[next_index].get('boss_on_start'))
         if (not hidden and game.difficulty and background_key != warmed_background
                 and (warm_campaign or warm_infinite)):
-            make_background(next_level, art_size=config.VIEW_SIZE)
+            make_background(next_level, art_size=None if warm_scroll else config.VIEW_SIZE)
             warmed_background = background_key
+        elif not hidden and warm_scroll and warmed_panorama != background_key:
+            # A scrolling level uses a display-size panorama, not the static backdrop.
+            scrolling_background_art(next_level, config.VIEW_SIZE, 0)
+            warmed_panorama = background_key
         elif (not hidden and warm_campaign and warmed_boss != next_level
               and config.LEVEL_CONFIGS[next_index].get('boss_on_start')):
             boss = config.BOSS_DEFS[config.LEVEL_CONFIGS[next_index]['boss_idx']]
@@ -264,7 +298,7 @@ async def main():
         else:
             if browser_window is not None:
                 # Keep track generation from consuming the next display slot.
-                remaining = step - (perf_counter() - frame_time) - 0.001
+                remaining = render_step - (perf_counter() - frame_time) - 0.001
                 advance_music(max(0.00025, min(0.004, remaining)))
             else:
                 advance_music()

@@ -49,22 +49,54 @@ class WebServerTests(unittest.TestCase):
                 server.shutdown()
                 worker.join()
 
-    def test_web_images_keep_sprite_pixels_and_bound_background_size(self):
+    def test_web_images_downsample_sprite_frames_and_bound_background_size(self):
         from PIL import Image
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ('anim_player1_run.png', 'bg1.png'):
+            for name, source_size, default_size, hd_size in (
+                ('anim_player1_run.png', (2880, 720), (1152, 288), (1536, 384)),
+                ('bg1.png', (2880, 720), (1620, 405), (2160, 540)),
+                ('bg2.png', (1920, 2880), (1200, 1800), (1600, 2400)),
+            ):
                 source = root / name
-                Image.new('RGBA', (2880, 720), (10, 20, 30, 150)).save(source)
+                Image.new('RGBA', source_size, (10, 20, 30, 150)).save(source)
                 output = root / 'output'
                 output.mkdir(exist_ok=True)
-                prepare_image(source, output)
-                result = output / ('bg1.jpg' if name.startswith('bg') else name)
-                with Image.open(result) as image:
-                    expected_size = (2880, 720) if name.startswith('anim') else (1920, 480)
-                    self.assertEqual(image.size, expected_size)
-                    if name.startswith('anim'):
-                        self.assertEqual(image.getpixel((0, 0)), (10, 20, 30, 150))
+                hd_output = root / 'hd'
+                prepare_image(source, output, hd_output)
+                filename = source.with_suffix('.jpg').name if name.startswith('bg') else name
+                for directory, expected_size in ((output, default_size), (hd_output, hd_size)):
+                    with Image.open(directory / filename) as image:
+                        self.assertEqual(image.size, expected_size)
+                        if name.startswith('anim'):
+                            self.assertEqual(image.getpixel((0, 0)), (10, 20, 30, 150))
+                with Image.open(source) as image:
+                    self.assertEqual(image.size, source_size)
+
+    def test_web_atlas_preserves_each_frame_without_blending_into_its_neighbor(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'anim_boss_ancient_whale.png'
+            original = Image.new('RGBA', (2048, 2012))
+            colors = [(255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 150), (0, 0, 0, 0)]
+            for index, color in enumerate(colors):
+                x, y = index % 2 * 1024, index // 2 * 1006
+                original.paste(color, (x, y, x + 1024, y + 1006))
+            original.save(source)
+            output = root / 'output'
+            output.mkdir()
+            hd_output = root / 'hd'
+            prepare_image(source, output, hd_output)
+            with Image.open(hd_output / source.name) as image:
+                self.assertEqual(image.size, (1536, 1508))
+                for index, color in enumerate(colors):
+                    x, y = index % 2 * 768, index // 2 * 754
+                    frame = image.crop((x, y, x + 768, y + 754))
+                    self.assertEqual(frame.getextrema(), tuple((value, value) for value in color))
+            with Image.open(source) as image:
+                self.assertEqual(image.size, original.size)
 
     def test_client_reset_during_request_line_is_quiet(self):
         connected = threading.Event()

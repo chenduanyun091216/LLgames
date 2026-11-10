@@ -35,7 +35,8 @@ class AbyssBossTests(unittest.TestCase):
         for cls in (MechaLizardBoss, AncientWhaleBoss):
             boss = self.boss(cls)
             seen = []
-            for index in range(4):
+            skills = cls.CAST_SKILLS if cls is AncientWhaleBoss else cls.SKILLS
+            for index in range(len(skills)):
                 now = 10000 + index * 10000
                 with patch.object(config, 'game_ticks', return_value=now):
                     shots = boss.attack(now, config.SCREEN_WIDTH * .6)
@@ -55,10 +56,39 @@ class AbyssBossTests(unittest.TestCase):
                         shot.update()
                         self.assertFalse(shot.alive)
                         self.assertFalse(shot.hits_rect(pygame.Rect(0, 0, 3000, 3000)))
-            self.assertEqual(tuple(seen), cls.SKILLS)
+            self.assertEqual(tuple(seen), skills)
             with patch.object(config, 'game_ticks', return_value=60000):
                 boss.attack(60000, 480)
                 self.assertEqual(boss.current_skill, cls.SKILLS[0])
+
+    def test_whale_patrol_repeats_moon_blade_every_two_seconds(self):
+        boss = self.boss(AncientWhaleBoss)
+        self.assertEqual(len(boss.patrol_shots(1000)), 1)
+        self.assertEqual(boss.patrol_shots(2999), [])
+        self.assertEqual(len(boss.patrol_shots(3000)), 1)
+        boss.current_skill = 'rune_geyser'
+        boss.skill_started_at = 4500
+        self.assertEqual(boss.patrol_shots(5000), [])
+        self.assertEqual(len(boss.patrol_shots(7000)), 1)
+
+    def test_pearl_arms_after_six_bounces_and_bursts_three_seconds_later(self):
+        with patch.object(config, 'game_ticks', return_value=1000):
+            shot = AbyssProjectile('ancient_pearl', config.SCREEN_WIDTH / 2, 180,
+                                   angle=90, speed=12, warning_ms=0, active_ms=20000)
+        now = 1000
+        while now < 12000 and not shot.pearl_burst_at:
+            now += 16
+            with patch.object(config, 'game_ticks', return_value=now):
+                shot.update()
+        self.assertEqual(shot.pearl_bounces, 6)
+        self.assertEqual(shot.pearl_burst_at, now + 3000)
+        with patch.object(config, 'game_ticks', return_value=now + 2999):
+            shot.update()
+            self.assertTrue(shot.alive)
+        with patch.object(config, 'game_ticks', return_value=now + 3000):
+            shot.update()
+            self.assertFalse(shot.alive)
+            self.assertEqual(len(shot.pearl_fragments()), 6)
 
     def test_ring_center_and_gap_safe_but_annulus_damages(self):
         with patch.object(config, 'game_ticks', return_value=1000):
@@ -71,6 +101,34 @@ class AbyssBossTests(unittest.TestCase):
             self.assertTrue(shot.hits_rect(pygame.Rect(400 + radius - 5, 195, 10, 10)))
             self.assertTrue(shot.persistent)
             self.assertTrue(shot.unblockable)
+
+    def test_sonar_has_no_other_safe_arc_even_when_a_frame_skips_the_wave(self):
+        with patch.object(config, 'game_ticks', return_value=1000):
+            shot = AbyssProjectile('sonar_ring', 400, 200, warning_ms=0)
+            shot.update()
+        shot.gap_angle = 22
+        with patch.object(config, 'game_ticks', return_value=2200):
+            shot.update()
+            for angle in range(2, 360, 5):
+                direction = math.radians(angle)
+                x = 400 + math.sin(direction) * 150
+                y = 200 + math.cos(direction) * 150
+                hit = shot.hits_rect(pygame.Rect(round(x), round(y), 1, 1))
+                inside_gap = abs((angle - 22 + 180) % 360 - 180) < 38
+                self.assertEqual(hit, not inside_gap, angle)
+
+    def test_whale_sonar_gap_leaves_danger_on_both_sides_of_portrait_arena(self):
+        with patch.multiple(config, GAME_AREA_LEFT=0, GAME_AREA_RIGHT=390,
+                            GAME_AREA_BOTTOM=740):
+            boss = self.boss(AncientWhaleBoss)
+            boss.x, boss.y = 195, 18
+            with patch('game_core.abyss_bosses.random.uniform', return_value=.5):
+                shots = boss.attack(1000, 195, 700)
+            self.assertEqual(len(shots), 2)
+            for shot in shots:
+                depth = config.GAME_AREA_BOTTOM - shot.y
+                self.assertAlmostEqual(2 * depth * math.tan(math.radians(shot.gap_degrees / 2)), 117)
+                self.assertAlmostEqual(shot.gap_angle, 0)
 
     def test_whip_is_held_by_the_moving_boss(self):
         boss = self.boss(MechaLizardBoss)

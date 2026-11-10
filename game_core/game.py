@@ -6,8 +6,9 @@ P2: 方向键移动 小键盘1射击 小键盘2/3技能 小键盘Enter激光 小
 import math, random, pygame
 from copy import deepcopy
 from . import config
-from .render import Draw, RenderSurface
+from .render import Draw, RenderSurface, blit_effect, effect_layer
 from .asset_loader import image_asset, scale_surface_cached
+from .background import scrolling_background_art
 from .config import (
     WEAPON_SWITCH_COOLDOWN,
     WHITE, GOLD_COLOR, OCEAN_BLUE, SAND_COLOR, PLAYER_HP_GREEN, HEALTH_RED, HEALTH_GREEN,
@@ -43,6 +44,13 @@ class GameState:
     INFINITE_COUNTDOWN = 12; KEY_SETTINGS = 13; PAID_REVIVE = 14
 
 
+TEMPLE_WORM = {'key': 'ancient_worm', 'name': '远古虫', 'is_large': False,
+               'gold': 0, 'base_speed': 2.5, 'size': (42, 42),
+               'sprite_asset': 'enemies/enemy_ancient_worm.png'}
+TEMPLE_RIFT = {'key': 'ancient_rift', 'name': '裂隙之眼', 'is_large': False,
+               'gold': 0, 'base_speed': 0, 'size': (126, 42),
+               'sprite_asset': 'enemies/enemy_ancient_rift.png'}
+
 CONTACT_DAMAGE_COOLDOWN = 1000
 TITLE_CROP_RATIO = 390 / 1057
 TITLE_MAX_SCALE = 1.30
@@ -58,6 +66,7 @@ GIFT_DROP_MAX_MS = 15000
 GIFT_BUFF_MS = 10000
 GIFT_LIGHTNING_DAMAGE = 5.0
 BG_FADE_MS = 900
+BACKGROUND_SCROLL_TICKS = 52 * config.FPS
 INFINITE_BOSS_CYCLE_HP_GROWTH = 0.10
 INFINITE_BOSS_STEP_HP_GROWTH = 0.02
 CONTROL_DEFS = [
@@ -91,7 +100,8 @@ DESKTOP_HUD_KEYS = (pygame.K_LEFTBRACKET, pygame.K_p, pygame.K_RIGHTBRACKET)
 
 
 class Game:
-    def __init__(self, *, desktop_controls=False):
+    def __init__(self, *, desktop_controls=False, scroll_campaign_backgrounds=False):
+        self.scroll_campaign_backgrounds = scroll_campaign_backgrounds
         self.desktop_controls = desktop_controls
         self.clock = pygame.time.Clock()
         self.font_large = make_font(48, bold=True)
@@ -137,6 +147,7 @@ class Game:
 
     def reset(self):
         self.state = GameState.DIFFICULTY_SELECT
+        self.background_scroll_ticks = 0
         self.mobile_controls.reset()
         self.mobile_controls.auto_fire = not self.desktop_controls
         self.difficulty = None
@@ -147,6 +158,7 @@ class Game:
         self.infinite_start_time = 0
         self.infinite_music_variant = 0
         self.infinite_background_level = 1
+        self.temple_rifts_at = 0
         self.player_invincible_until = 0
         self.infinite_countdown_end = 0
         self.infinite_resume_state = GameState.PLAYING
@@ -211,6 +223,16 @@ class Game:
         from .background import make_background
         level = self.infinite_background_level if self.infinite_mode else getattr(self, 'current_level', 1)
         return make_background(level)
+
+    def _scrolls_background(self):
+        return (self.scroll_campaign_backgrounds and self.difficulty and not self.infinite_mode
+                and not LEVEL_CONFIGS[self.current_level - 1].get('boss_on_start'))
+
+    def scrolling_background(self, size):
+        if self._scrolls_background():
+            return scrolling_background_art(
+                self.current_level, size, self.background_scroll_ticks / BACKGROUND_SCROLL_TICKS)
+        return None
 
     def resize_view(self, previous_area=None):
         self._desktop_fonts.clear()
@@ -403,6 +425,7 @@ class Game:
                 self.chapter = target
                 self.infinite_boss_index = target - 1
                 self.infinite_background_level = (target - 1) % len(config.INFINITE_BOSS_HP) + 1
+                self.temple_rifts_at = 0
                 self.bg = self._load_bg()
                 self.bg_transition_until = now + BG_FADE_MS
                 self.boss = None
@@ -706,6 +729,9 @@ class Game:
         self.boss = None; self.boss_projectiles.clear(); self.enemy_projectiles.clear()
         self.enemies.clear(); self.bullets.clear(); self.coins.clear(); self.gift_boxes.clear(); self.gift_messages.clear(); self.explosions.clear()
         self.factory_link_attempts = set()
+        self.temple_rifts_at = 0
+        self.enemy_volley_times = []
+        self.leak_count = 0
         self.fire_walls.clear(); self.ice_floors.clear(); self.skill_projectiles.clear()
         self.magnetic_storms.clear(); self.radiation_lasers.clear(); self.lightnings.clear()
         self.dart_shields.clear(); self.laser_impacts.clear()
@@ -817,6 +843,7 @@ class Game:
 
     def _start_level(self, n, *, checkpoint=True):
         self.current_level = n; self.level_kills = 0
+        self.background_scroll_ticks = 0
         self.bg = self._load_bg()
         self.level_title_until = config.game_ticks() + 2200
         self.boss = None; self.boss_projectiles.clear()
@@ -826,6 +853,7 @@ class Game:
         self.enemies.clear(); self.bullets.clear(); self.gift_boxes.clear(); self.gift_messages.clear(); self.explosions.clear(); self.muzzle_flashes.clear()
         self.enemy_projectiles.clear()
         self.factory_link_attempts = set()
+        self.temple_rifts_at = 0
         self.skill_flash = None
         self.level_enemy_defs = get_level_enemy_defs(LEVEL_CONFIGS[n-1])
         self.gift_fire_until = 0; self.gift_ice_until = 0; self.gift_lightning_remaining = 0; self.gift_lightning_next = 0; self.gift_lightning_icon_until = 0
@@ -1385,6 +1413,8 @@ class Game:
         return any(rect.colliderect(fr) for fr in wall_rects)
 
     def _block_enemy_with_fire_walls(self, e, wall_rects=None):
+        if e.temple_kind == 'rift':
+            return
         er = e.rect()
         wall_rects = wall_rects if wall_rects is not None else [fw.rect() for fw in self.fire_walls]
         for fr in wall_rects:
@@ -1653,12 +1683,15 @@ class Game:
             self._update_lightnings(now)
         if self.state == GameState.LEVEL_TRANSITION:
             if now >= self.level_transition_end:
-                self.bg_transition_prev = self.bg.copy()
+                background = self.scrolling_background(self.bg.get_size())
+                self.bg_transition_prev = (background if background is not None else self.bg).copy()
                 self.bg_transition_until = now + BG_FADE_MS
                 self._start_level(self.current_level+1)
                 if self.state != GameState.BOSS_FIGHT:
                     self.state = GameState.PLAYING
             return
+        if self.state in (GameState.PLAYING, GameState.BOSS_FIGHT) and self._scrolls_background():
+            self.background_scroll_ticks = min(self.background_scroll_ticks + 1, BACKGROUND_SCROLL_TICKS)
         if self.state == GameState.PLAYING: self._update_playing(now)
         elif self.state == GameState.BOSS_FIGHT: self._update_boss_fight(now)
 
@@ -1692,8 +1725,7 @@ class Game:
         if hit_feedback and amount > 0:
             self.player_hit_impact = (pygame.time.get_ticks(), self.player.rect().center)
             play_sound('player_hit')
-        if not self.infinite_mode:
-            self.player_invincible_until = now + (850, 650, 550)[self._campaign_tier()]
+        self.player_invincible_until = now + (650 if self.infinite_mode else (850, 650, 550)[self._campaign_tier()])
         if self.player_hp <= 0:
             self._player_defeated(reason)
             return True
@@ -1701,24 +1733,20 @@ class Game:
 
     def _resolve_leak(self, enemy, now):
         reason = f'{enemy.edef["name"]} 入侵成功！'
-        if self.infinite_mode:
-            if self._player_is_invincible(now):
-                return False
-            self._player_defeated(reason)
-            return True
         self.enemies.remove(enemy)
         self.leak_count += 1
-        return self._damage_player(now, (1, 1, 2)[self._campaign_tier()], reason)
+        damage = 1 if self.infinite_mode else (1, 1, 2)[self._campaign_tier()]
+        return self._damage_player(now, damage, reason)
 
     def _enemy_contact_damage(self, e):
-        if not self.infinite_mode:
-            return (1, 2, 2)[self._campaign_tier()] if e.is_large else 1
-        if e.is_large:
-            return 3
-        return 1 if e.edef['key'] == 'goldfish' else 2
+        if not e.is_large:
+            return 1
+        return 2 if self.infinite_mode else (1, 2, 2)[self._campaign_tier()]
 
     def _damage_player_on_contacts(self, now):
         for e in self.enemies[:]:
+            if e.temple_kind == 'rift':
+                continue
             if now - e.last_contact_damage_time < CONTACT_DAMAGE_COOLDOWN:
                 continue
             if not self._player_is_invincible(now) and self._hit_player(e.rect()):
@@ -1730,8 +1758,6 @@ class Game:
                 and not (isinstance(self.boss, OrochiBoss) and self.boss.skill in ('split', 'storm', 'laser'))
                 and any(self._hit_player(br) for br in self.boss.hitboxes())
                 and not self._player_is_invincible(now)):
-            if self.infinite_mode:
-                return self._damage_player(now, self.player_hp, f'被{self.boss.name}撞击击败！', hit_feedback=True)
             contact = next(rect for rect in self.boss.hitboxes() if self._hit_player(rect))
             self.player.move(0, contact.bottom - self.player.rect().top + 2)
             return self._damage_player(now, 2, f'被{self.boss.name}撞击击败！', hit_feedback=True)
@@ -1828,18 +1854,16 @@ class Game:
         return self.mobile_controls.auto_fire or self.mobile_controls.is_pressed('attack')
 
     def _infinite_density(self, now):
-        return min(14, 4 + self.infinite_boss_index // 2) if self.infinite_mode else 1
+        if not self.infinite_mode:
+            return 1
+        limit = 7 if self.infinite_background_level in (9, 10) else 12
+        return min(limit, 4 + self.infinite_boss_index // 3)
 
     def _infinite_health_mult(self, now):
         return 1.0 + 0.2 * min(self.infinite_boss_index // len(config.INFINITE_BOSS_HP), 6)
 
     def _infinite_damage_mult(self):
         return 1.0
-
-    def _spawn_infinite_enemies_to_target(self, now, divisor=1):
-        target = max(1, self._infinite_density(now) // divisor)
-        if len(self.enemies) < target:
-            self.spawn_enemy()
 
     def _expire_radiation_lasers(self, now, cd_mult=None):
         if cd_mult is None:
@@ -2012,9 +2036,10 @@ class Game:
             return
         if now - self.last_spawn_time >= self.spawn_interval:
             if self.infinite_mode:
-                self._spawn_infinite_enemies_to_target(now)
+                if sum(not enemy.temple_kind for enemy in self.enemies) < self._infinite_density(now):
+                    self.spawn_enemy()
                 self.last_spawn_time = now
-            elif len(self.enemies) < self._campaign_value(config.CAMPAIGN_ENEMY_CAP):
+            elif sum(not e.temple_kind for e in self.enemies) < self._campaign_value(config.CAMPAIGN_ENEMY_CAP):
                 self.spawn_enemy()
                 self.last_spawn_time = now
         self._maybe_spawn_gift(now)
@@ -2026,11 +2051,12 @@ class Game:
         for b in self.bullets[:]:
             b.update()
             if b.is_offscreen(): self.bullets.remove(b)
+        self._update_temple_enemies(now)
         for e in self.enemies[:]:
-            if e.chase_color is None:
-                e.update()
-            else:
+            if e.chase_color is not None or e.temple_kind == 'worm':
                 e.update(self._nearest_player(e.x, e.y))
+            else:
+                e.update()
             self._block_enemy_with_fire_walls(e, fire_wall_rects)
             if self._enemy_can_attack(e, now):
                 self.enemy_projectiles.extend(self._enemy_shots(e, now))
@@ -2451,34 +2477,37 @@ class Game:
         if self._damage_player_on_contacts(now):
             return
         death_lasers = self.boss.death_laser_rects(now)
-        single_hit_laser = not self.infinite_mode or 'laser_offsets' in self.boss.bdef
-        if (not single_hit_laser or self.boss.last_laser_hit_until != self.boss.laser_active_until):
+        if self.boss.last_laser_hit_until != self.boss.laser_active_until:
             laser_hit = (any(self.boss.laser_hits(player.rect(), now) for player in self.players)
                          if isinstance(self.boss, NiuBoss) else any(self._hit_player(rect) for rect in death_lasers))
             if laser_hit and not self._player_is_invincible(now):
                 self.boss.last_laser_hit_until = self.boss.laser_active_until
                 if self._damage_player(now, 1, f'被{self.boss.name}毁灭激光击败！', hit_feedback=True): return
-        boss_spawn_interval = 1600 if self.infinite_mode else self._campaign_value(config.CAMPAIGN_REINFORCEMENT_MS)
-        if boss_spawn_interval and now - self.last_spawn_time >= boss_spawn_interval:
-            if self.infinite_mode:
-                self._spawn_infinite_enemies_to_target(now, 2)
-                self.last_spawn_time = now
-            elif (not self.warned_boss_shots and not self.boss.laser_warning_start
-                  and now >= self.boss.laser_active_until
-                  and len(self.enemies) < self._campaign_value(config.CAMPAIGN_REINFORCEMENT_CAP)):
-                self.spawn_enemy()
-                self.last_spawn_time = now
+        if self.infinite_mode:
+            cycle, index = divmod(self.infinite_boss_index, len(config.INFINITE_BOSS_HP))
+            interval = config.INFINITE_REINFORCEMENT_MS[index] * max(75, 100 - 5 * cycle) // 100
+            cap = config.INFINITE_REINFORCEMENT_CAP[index] + min(2, cycle)
+        else:
+            interval = self._campaign_value(config.CAMPAIGN_REINFORCEMENT_MS)
+            cap = self._campaign_value(config.CAMPAIGN_REINFORCEMENT_CAP)
+        if (interval and (not self.infinite_mode or self.boss.entered) and now - self.last_spawn_time >= interval
+                and not self.warned_boss_shots and not self.boss.laser_warning_start
+                and now >= self.boss.laser_active_until
+                and sum(not e.temple_kind for e in self.enemies) < cap):
+            self.spawn_enemy()
+            self.last_spawn_time = now
         self._maybe_spawn_gift(now)
         factory = self._is_factory_stage()
         if factory:
             self._settle_factory_link(now)
             self._start_factory_link(now)
         fire_wall_rects = [fw.rect() for fw in self.fire_walls]
+        self._update_temple_enemies(now)
         for e in self.enemies[:]:
-            if e.chase_color is None:
-                e.update()
-            else:
+            if e.chase_color is not None or e.temple_kind == 'worm':
                 e.update(self._nearest_player(e.x, e.y))
+            else:
+                e.update()
             self._block_enemy_with_fire_walls(e, fire_wall_rects)
             if self._enemy_can_attack(e, now):
                 self.enemy_projectiles.extend(self._enemy_shots(e, now))
@@ -2539,6 +2568,8 @@ class Game:
             if not self.infinite_mode and isinstance(self.boss, NiuBoss):
                 self._extend_ground_warning(self.boss, now)
             self._queue_boss_shots(shots, now)
+        if isinstance(self.boss, AncientWhaleBoss):
+            self._add_boss_projectiles(self.boss.patrol_shots(now))
         self._pull_projectiles_to_storms(self.boss_projectiles)
         for bp in self.boss_projectiles[:]:
             if isinstance(self.boss, MechaLizardBoss) and isinstance(bp, AbyssProjectile):
@@ -2564,6 +2595,9 @@ class Game:
                 if self._explode_enemy_bomb(bp, now): return
             if not bp.alive:
                 self.boss_projectiles.remove(bp)
+                if isinstance(bp, AbyssProjectile) and bp.pearl_burst_at and now >= bp.pearl_burst_at:
+                    self.explosions.append(Explosion(bp.x, bp.y, (255, 220, 145), 36))
+                    self._add_boss_projectiles(bp.pearl_fragments())
                 if (getattr(bp, 'bomb', False) and (not isinstance(bp, ZongBomb) or bp.proximity_detonated)
                         and self._explode_enemy_bomb(bp, now)): return
             elif not getattr(bp, 'unblockable', False) and self._blocked_by_fire_wall(bp.block_rect(), fire_wall_rects):
@@ -2805,6 +2839,7 @@ class Game:
     def _advance_infinite_background(self, now):
         self.bg_transition_prev = self.bg.copy()
         self.infinite_background_level = self.infinite_background_level % len(config.INFINITE_BOSS_HP) + 1
+        self.temple_rifts_at = 0
         self.bg = self._load_bg()
         self.bg_transition_until = now + BG_FADE_MS
 
@@ -2944,6 +2979,77 @@ class Game:
         enemy.last_attack_time = config.game_ticks()
         self.enemies.append(enemy)
 
+    def _spawn_temple_worm(self, parent, hp, offset, speed):
+        worm = Enemy(TEMPLE_WORM)
+        worm.temple_kind = 'worm'
+        worm.max_hp = hp
+        worm.speed = speed
+        worm.x = max(config.GAME_AREA_LEFT + worm.w / 2,
+                     min(config.GAME_AREA_RIGHT - worm.w / 2, parent.x + offset))
+        worm.y = min(config.GAME_AREA_BOTTOM - worm.h, parent.y + parent.h * .65)
+        self.enemies.append(worm)
+
+    def _open_temple_rift(self, rift, now, side):
+        width = config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT
+        center = config.GAME_AREA_LEFT + width / 2
+        outer = config.GAME_AREA_LEFT + rift.w / 2 if side < 0 else config.GAME_AREA_RIGHT - rift.w / 2
+        inner = center + side * rift.w / 2
+        rift.x = random.uniform(outer, inner)
+        rift.y = random.uniform(config.GAME_AREA_BOTTOM * .36, config.GAME_AREA_BOTTOM * .62)
+        rift.breath_start_time = now
+        tier = 1 if self.infinite_mode else self._campaign_tier()
+        rift.temple_spawn_at = now + (800, 650, 480)[tier] + (650 if side > 0 else 0)
+        rift.temple_worms_left = (3, 4, 6)[tier]
+
+    def _update_temple_enemies(self, now):
+        level = self.infinite_background_level if self.infinite_mode else self.current_level
+        if level != 10:
+            return
+        if not (self.infinite_mode and self.boss):
+            if not self.temple_rifts_at:
+                self.temple_rifts_at = now + 8500
+            elif now >= self.temple_rifts_at and self.temple_rifts_at != math.inf:
+                self.temple_rifts_at = math.inf
+                for side in (-1, 1):
+                    rift = Enemy(TEMPLE_RIFT)
+                    rift.temple_kind = 'rift'
+                    rift.temple_side = side
+                    rift.max_hp = 8
+                    self._open_temple_rift(rift, now, side)
+                    self.enemies.append(rift)
+        tier = 1 if self.infinite_mode else self._campaign_tier()
+        worm_cap = (6, 8, 10)[tier]
+        worms = sum(e.temple_kind == 'worm' for e in self.enemies)
+        for enemy in self.enemies[:]:
+            if enemy.temple_kind == 'rift':
+                if now < enemy.temple_spawn_at:
+                    continue
+                if enemy.temple_worms_left:
+                    if worms >= worm_cap:
+                        continue
+                    offset = (enemy.temple_worms_left - ((3, 4, 6)[tier] + 1) / 2) * enemy.w / 7
+                    self._spawn_temple_worm(enemy, enemy.max_hp * .3, offset, (2.8, 3.1, 3.4)[tier])
+                    worms += 1
+                    enemy.temple_worms_left -= 1
+                    enemy.temple_spawn_at = now + ((420, 350, 280)[tier] if enemy.temple_worms_left
+                                                   else (10000, 8500, 7000)[tier])
+                else:
+                    self._open_temple_rift(enemy, now, enemy.temple_side)
+            elif (enemy.edef['key'] in config.TEMPLE_ENEMY_KEYS and enemy.temple_spawn_at == 0
+                  and enemy.y >= 70 and not enemy.frozen):
+                enemy.temple_spawn_at = now or 1
+                if worms < worm_cap and random.random() < (.18, .24, .28)[tier]:
+                    hp = enemy.max_hp
+                    if hp is None:
+                        pistol = config.WEAPON_DEFS['pistol']
+                        hits = pistol.large_shots if enemy.is_large else pistol.normal_shots
+                        hp = math.ceil(hits * enemy.health_mult)
+                    count = min(random.randint(1, (2, 2, 3)[tier]), worm_cap - worms)
+                    for index in range(count):
+                        offset = (index - (count - 1) / 2) * enemy.w / 3
+                        self._spawn_temple_worm(enemy, hp * .3, offset, 2.5)
+                    worms += count
+
     def _is_factory_stage(self):
         return (self.infinite_background_level if self.infinite_mode else self.current_level) == 9
 
@@ -2984,9 +3090,9 @@ class Game:
             mini.factory_kind = 'mini_boss'
             if self.infinite_mode:
                 cycle, index = divmod(self.infinite_boss_index, len(config.INFINITE_BOSS_HP))
-                mini.max_hp = self._infinite_boss_hp(index, cycle) * .33
+                mini.max_hp = self._infinite_boss_hp(index, cycle) * .16
             else:
-                mini.max_hp = self._campaign_boss_hp() * .33
+                mini.max_hp = self._campaign_boss_hp() * (.12, .16, .20)[self._campaign_tier()]
             mini.factory_patrol_direction = 1
             mini.x = max(config.GAME_AREA_LEFT + mini.w / 2,
                          min(config.GAME_AREA_RIGHT - mini.w / 2, x))
@@ -3040,12 +3146,10 @@ class Game:
         return shots
 
     def _enemy_can_attack(self, enemy, now):
-        if enemy.chase_color is not None or not enemy.should_attack(now):
+        if enemy.temple_kind or enemy.chase_color is not None or not enemy.should_attack(now):
             return False
-        if self.infinite_mode:
-            return True
         self.enemy_volley_times[:] = [t for t in self.enemy_volley_times if now - t < 1000]
-        cap = 1 if self.boss else (1, 2, 2)[self._campaign_tier()]
+        cap = 1 if self.boss else 2 if self.infinite_mode else (1, 2, 2)[self._campaign_tier()]
         if len(self.enemy_volley_times) >= cap:
             enemy.last_attack_time += 180
             return False
@@ -3096,7 +3200,7 @@ class Game:
         if e.chase_partner:
             e.chase_partner.chase_partner = None
             e.chase_partner = None
-        credit = 0 if e.factory_kind == 'fragment' else 3 if e.factory_kind == 'mini_boss' else 1
+        credit = 0 if e.temple_kind or e.factory_kind == 'fragment' else 3 if e.factory_kind == 'mini_boss' else 1
         self.enemies.remove(e); self.kill_count += credit; self.level_kills += credit
         if credit and any(player.character == 'water' for player in self.players):
             self.water_passive_kills += 1
@@ -3225,7 +3329,8 @@ class Game:
     def draw(self, ui_labels=None, draw_background=True):
         self._ui_labels = ui_labels
         if draw_background:
-            config.SCR.blit(self.bg, (0, 0))
+            background = self.scrolling_background(self.bg.get_size())
+            config.SCR.blit(background if background is not None else self.bg, (0, 0))
         if self.bg_transition_prev:
             now = config.game_ticks()
             if now < self.bg_transition_until:
@@ -3264,7 +3369,7 @@ class Game:
         fade = 1 - progress
         radius = round(25 + 68 * progress)
         extent = radius + 24
-        impact = pygame.Surface((2 * extent + 1, 2 * extent + 1), pygame.SRCALPHA)
+        impact = effect_layer(config.SCR, (2 * extent + 1, 2 * extent + 1))
         center = (extent, extent)
         if progress < 0.25:
             _circle(impact, (255, 240, 210, round(170 * (1 - 4 * progress))), center, 27)
@@ -3277,7 +3382,7 @@ class Game:
             _line(impact, (255, 205, 130, round(255 * fade)),
                   (extent + dx * inner, extent + dy * inner),
                   (extent + dx * outer, extent + dy * outer), 3)
-        config.SCR.blit(impact, (x - extent, y - extent))
+        blit_effect(config.SCR, impact, (x - extent, y - extent))
 
     def _draw_difficulty_select(self):
         width, height = config.SCREEN_WIDTH, config.SCREEN_HEIGHT

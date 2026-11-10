@@ -41,9 +41,9 @@ SCHEMA['ZongReflectBullet'] = list(SCHEMA['BossProjectile'])
 SCHEMA['NiuFanBullet'] = SCHEMA['BossProjectile'] + ['red']
 SCHEMA['OrochiFireball'] = SCHEMA['BossProjectile'] + ['color']
 SCHEMA['MechaLizardBoss'] = SCHEMA['Boss'] + 'skill_index current_skill skill_started_at self_telegraphed'.split()
-SCHEMA['AncientWhaleBoss'] = list(SCHEMA['MechaLizardBoss'])
+SCHEMA['AncientWhaleBoss'] = SCHEMA['MechaLizardBoss'] + ['moon_cast_at', 'swim_direction', 'swim_turn_at']
 SCHEMA['AbyssProjectile'] = SCHEMA['BossProjectile'] + list(A.ABYSS_PROJECTILE_FIELDS)
-SCHEMA['Enemy'] += ['factory_kind', 'factory_link_until']
+SCHEMA['Enemy'] += ['factory_kind', 'factory_link_until', 'temple_kind']
 CLASSES = {name: getattr(E, name) for name in (
     'Player Enemy Bullet Coin GiftBox Particle Explosion FireWall IceFloor SkillProjectile '
     'Lightning MagneticStorm RadiationLaser SpinningDarts BossProjectile DragonFireball Boss').split()}

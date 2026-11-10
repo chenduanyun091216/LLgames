@@ -239,6 +239,8 @@ class Enemy:
         self.max_hp = None
         self.damage_taken = 0.0
         self.factory_kind = ''
+        self.temple_kind = ''
+        self.temple_spawn_at = 0
         self.factory_link_until = 0
         self.burning = False
         self.burn_start = 0
@@ -325,7 +327,14 @@ class Enemy:
         move_mult = self.slow_mult if now < self.slowed_until else 1.0
         if move_mult == 1.0:
             self.slow_mult = 1.0
-        if self.factory_kind == 'mini_boss':
+        if self.temple_kind == 'rift':
+            return
+        if self.temple_kind == 'worm' and target is not None:
+            dx, dy = target.rect().centerx - self.x, target.rect().centery - self.rect().centery
+            step = min(1, self.speed * move_mult / max(1, math.hypot(dx, dy)))
+            self.x += dx * step
+            self.y += dy * step
+        elif self.factory_kind == 'mini_boss':
             left = config.GAME_AREA_LEFT + self.w / 2
             right = config.GAME_AREA_RIGHT - self.w / 2
             self.x += self.factory_patrol_direction * self.speed * move_mult
@@ -478,9 +487,25 @@ class Enemy:
         return (self.hits.get(weapon_name, 0) + self.burn_hits) >= needed
 
     def reached_bottom(self):
-        return not self.factory_link_until and self.chase_color is None and self.y > config.GAME_AREA_BOTTOM + 20
+        return not self.temple_kind and not self.factory_link_until and self.chase_color is None and self.y > config.GAME_AREA_BOTTOM + 20
 
     def draw(self, surf):
+        if self.temple_kind == 'rift':
+            age = max(0, config.game_ticks() - self.breath_start_time)
+            opening = min(1, age / 420)
+            height = max(1, round(self.h * opening))
+            size = (self.w, height)
+            sprite = image_asset(self.sprite_asset, None if isinstance(surf, RenderSurface) else size)
+            if sprite is not None:
+                rect = pygame.Rect((0, 0), size)
+                rect.center = self.rect().center
+                if isinstance(surf, RenderSurface):
+                    surf.blit(sprite, rect.topleft, logical_size=size)
+                else:
+                    surf.blit(sprite, rect.topleft)
+            else:
+                Draw.ellipse(surf, (127, 52, 175), self.rect())
+            return
         # 阴影
         shadow_y = int(self.y + self.h - 6)
         _ellipse(surf, (0, 0, 0, 50), (int(self.x - self.w // 2 + 8), shadow_y, self.w - 16, 6))
@@ -2104,20 +2129,36 @@ class Boss:
                 sprite_y += (size[1] - action_size[1]) * (mouth_laser[2] - .5)
             breathing_surface = scale_surface_cached(sprite, action_size)
         else:
-            idle = animation.boss_idle_frame(self.bdef['key'], self.breath_base, now - self.breath_start_time)
+            idle_base = self.breath_base
+            if isinstance(surf, RenderSurface) and self.bdef['key'] in animation.IDLE_BODY_TRAVEL:
+                source = image_asset(self.sprite_asset)
+                if source is not None:
+                    idle_size = tuple(surf.length(value) for value in self.breath_base.get_size())
+                    idle_base = scale_surface_cached(source, idle_size)
+            idle = animation.boss_idle_frame(self.bdef['key'], idle_base, now - self.breath_start_time)
             if idle is not self.breath_base or body_size != breathing_surface.get_size():
                 breathing_surface = scale_surface_cached(idle, body_size)
                 sprite = idle
         slam_start = getattr(self, 'axe_slam_start', None)
         slam_active = slam_start is not None and 0 <= now - slam_start < self.axe_slam_duration
+        flashing = self.laser_warning_start and (now - self.laser_warning_start) // 150 % 2 == 0
+        source = sprite or self.sprite_asset
         if slam_active:
-            breathing_surface = _niu_slam_sprite(scale_surface_cached(
-                breathing_surface, tuple(round(value * 1.35) for value in breathing_surface.get_size())))
+            breathing_surface = scale_surface_cached(
+                breathing_surface, tuple(round(value * 1.35) for value in breathing_surface.get_size()))
+        if slam_active or flashing:
+            tinted = breathing_surface
+            if isinstance(surf, RenderSurface):
+                tinted = sprite or image_asset(self.sprite_asset) or breathing_surface
+            if slam_active:
+                tinted = _niu_slam_sprite(tinted)
+            if flashing:
+                tinted = _laser_flash_sprite(tinted)
+            if isinstance(surf, RenderSurface):
+                source = tinted
+            else:
+                breathing_surface = tinted
         bsw, bsh = breathing_surface.get_size()
-        source = breathing_surface if slam_active else sprite or self.sprite_asset
-        if self.laser_warning_start and (now - self.laser_warning_start) // 150 % 2 == 0:
-            breathing_surface = _laser_flash_sprite(breathing_surface)
-            source = breathing_surface
         blit_lit_sprite(surf, breathing_surface, (sprite_x - bsw // 2, sprite_y - bsh // 2), glow_c, 185, source=source)
         if self.laser_warning_start:
             elapsed = now - self.laser_warning_start

@@ -180,6 +180,8 @@ class CampaignParityTests(unittest.TestCase):
                                            active_ms=10000, damage=damage)
                     if skill in LANES:
                         shot.height = 110
+                    if skill == 'rune_geyser':
+                        shot.spawn_time -= 200
                     for p in game.all_players:
                         p.x, p.y = 480, 575 if skill in RINGS else 550
                     if skill == 'plasma_rail':

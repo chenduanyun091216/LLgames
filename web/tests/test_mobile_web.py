@@ -194,7 +194,7 @@ class MobileWebTests(unittest.TestCase):
     def test_campaign_boss_health_and_final_victory_timeout(self):
         game = self.game
         game._start_game('easy')
-        for level, hp in ((7, 118), (8, 131), (9, 142), (10, 150), (11, 150)):
+        for level, hp in ((7, 118), (8, 128), (9, 132), (10, 136), (11, 148)):
             game.boss = None
             game._start_level(level)
             game._trigger_boss()
@@ -213,7 +213,7 @@ class MobileWebTests(unittest.TestCase):
         game._start_infinite_game()
         game.infinite_boss_index = 7
         game._trigger_infinite_boss()
-        self.assertEqual(game.boss.max_hp, 192)
+        self.assertEqual(game.boss.max_hp, 184)
         game._kill_boss()
         self.assertEqual(game.state, GameState.PLAYING)
 
@@ -242,7 +242,7 @@ class MobileWebTests(unittest.TestCase):
         left, right = zong.hitboxes()
         zong.hit_by('pistol', 1, source='bullet', hit_rect=left)
         zong.hit_by('pistol', 1, source='skill', hit_rect=right)
-        self.assertEqual(zong.body_hp, [64.5, 64.5])
+        self.assertEqual(zong.body_hp, [63, 63])
         game._start_infinite_game()
         game.infinite_boss_index = 6
         game._trigger_infinite_boss()
@@ -536,7 +536,7 @@ class MobileWebTests(unittest.TestCase):
         game = self.game
         game._start_infinite_game()
         cycle = len(config.BOSS_DEFS)
-        for defeated, hp, interval in ((0, 30, 4400), (cycle - 1, 220, 3400),
+        for defeated, hp, interval in ((0, 30, 4400), (cycle - 1, 220, 3600),
                                        (cycle, 36, 4180), (2 * cycle, 42, 3960),
                                        (6 * cycle, 66, 3080), (7 * cycle, 66, 3080)):
             with self.subTest(defeated=defeated):
@@ -553,7 +553,7 @@ class MobileWebTests(unittest.TestCase):
     def test_infinite_density_tracks_bosses_and_ignores_elapsed_time(self):
         game = self.game
         game._start_infinite_game()
-        for defeated, expected in ((0, 4), (2, 5), (8, 8), (20, 14), (48, 14)):
+        for defeated, expected in ((0, 4), (2, 4), (3, 5), (8, 6), (20, 10), (48, 12)):
             game.infinite_boss_index = defeated
             self.assertEqual(game._infinite_density(10000000), expected)
 
@@ -610,7 +610,7 @@ class MobileWebTests(unittest.TestCase):
         game._start_custom_game()
         game._start_level(8)
         game._trigger_boss()
-        self.assertEqual(game.boss.max_hp, 209)
+        self.assertEqual(game.boss.max_hp, 202)
 
     def test_three_lives_then_paid_revive(self):
         game = self.game

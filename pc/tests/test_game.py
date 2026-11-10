@@ -16,6 +16,57 @@ from run_pc import main
 
 
 class DesktopGameTests(unittest.TestCase):
+    def test_first_level_background_scrolls_at_constant_speed_until_top(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        config.update_mobile_view((960, 720))
+        game = Game(desktop_controls=True, scroll_campaign_backgrounds=True)
+        game._start_game('medium')
+        size = (480, 360)
+        start = game.scrolling_background(size)
+        self.assertIsNotNone(start)
+        self.assertEqual(start.get_masks()[3], 0)
+        with patch.object(game, '_update_playing'):
+            for _ in range(config.FPS * 13):
+                game.update()
+        moving = game.scrolling_background(size)
+        self.assertEqual(moving.get_offset()[1], round(start.get_offset()[1] * 0.75))
+        game._trigger_boss()
+        self.assertIs(game.scrolling_background(size), moving)
+        with patch.object(game, '_update_boss_fight'):
+            for _ in range(config.FPS * 13):
+                game.update()
+            self.assertEqual(game.scrolling_background(size).get_offset()[1],
+                             round(start.get_offset()[1] * 0.5))
+            for _ in range(config.FPS * 26):
+                game.update()
+            top = game.scrolling_background(size)
+            self.assertEqual(top.get_offset()[1], 0)
+            game.update()
+            self.assertIs(game.scrolling_background(size), top)
+        for level in range(2, 12):
+            with self.subTest(level=level):
+                game.state = GameState.PLAYING
+                game._start_level(level)
+                frame = game.scrolling_background(size)
+                if level in (6, 11):
+                    self.assertEqual(game.state, GameState.BOSS_FIGHT)
+                    self.assertIsNone(frame)
+                    with patch.object(game, '_update_boss_fight'):
+                        game.update()
+                    self.assertEqual(game.background_scroll_ticks, 0)
+                else:
+                    self.assertIsNotNone(frame)
+                    self.assertGreater(frame.get_offset()[1], 0)
+                    with patch.object(game, '_update_playing'):
+                        for _ in range(config.FPS):
+                            game.update()
+                    self.assertLess(game.scrolling_background(size).get_offset()[1],
+                                    frame.get_offset()[1])
+        game._start_level(1)
+        self.assertEqual(game.scrolling_background(size).get_offset(), start.get_offset())
+
     def test_enemy_entry_reaches_top_margin_with_linear_deceleration(self):
         pygame.init()
         self.addCleanup(pygame.quit)

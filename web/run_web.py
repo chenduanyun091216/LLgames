@@ -98,15 +98,77 @@ def download(url, target, min_size):
         raise RuntimeError(f'下载文件不完整：{target}')
 
 
-def prepare_image(path, target_images):
-    if re.fullmatch(r'bg[0-9]+|background', path.stem):
-        from PIL import Image
-        with Image.open(path) as image:
-            background = image.convert('RGB')
-            background.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
-            background.save(target_images / f'{path.stem}.jpg', quality=94, optimize=True)
-    else:
-        shutil.copy2(path, target_images / path.name)
+def _atlas_layout(image, name):
+    if name == 'anim_boss_ancient_whale':
+        return 2, 2, 768
+    if name == 'anim_boss_orochi_idle':
+        return 6, 4, 624
+    return max(1, image.width // image.height), 1, 384
+
+
+def _resize_atlas(image, columns, rows, max_edge):
+    from PIL import Image
+
+    width, height = image.width // columns, image.height // rows
+    if max(width, height) <= max_edge:
+        return image
+    scale = max_edge / max(width, height)
+    size = max(1, round(width * scale)), max(1, round(height * scale))
+    atlas = Image.new('RGBA', (size[0] * columns, size[1] * rows))
+    for row in range(rows):
+        for column in range(columns):
+            frame = image.crop((column * width, row * height,
+                                (column + 1) * width, (row + 1) * height))
+            atlas.paste(frame.resize(size, Image.Resampling.LANCZOS),
+                        (column * size[0], row * size[1]))
+    return atlas
+
+
+DEFAULT_ASSET_SCALE = 0.75
+
+
+def prepare_image(path, target_images, hd_images):
+    from PIL import Image
+
+    background = re.fullmatch(r'bg[0-9]+|bg1-scroll|background', path.stem)
+    atlas = path.stem.startswith('anim_')
+    # UI icons are small on both tiers. A single copy also keeps the startup title shared.
+    limits = {'enemies': 512, 'players': 512, 'bosses': 1024, 'effects': 768,
+              'weapons': 384, 'ui': 1280, 'animations': 768}
+    name = path.with_suffix('.jpg').name if background else path.name
+    with Image.open(path) as source:
+        original = source.convert('RGB' if background else 'RGBA')
+        if background:
+            max_size = (1600, 2400) if source.height > source.width else (2160, 2160)
+        elif atlas:
+            columns, rows, edge = _atlas_layout(source, path.stem)
+        else:
+            limit = 512 if path.name == 'coin.png' else limits.get(path.parent.name)
+            max_size = (limit, limit) if limit else source.size
+
+        previous_size = None
+        default_scale = 1 if path.parent.name in ('ui', 'weapons') else DEFAULT_ASSET_SCALE
+        variants = [(target_images, default_scale)]
+        if default_scale < 1:
+            variants.append((hd_images, 1))
+        for directory, scale in variants:
+            if atlas:
+                image = _resize_atlas(original, columns, rows, round(edge * scale))
+            else:
+                image = original.copy()
+                image.thumbnail(tuple(round(value * scale) for value in max_size), Image.Resampling.LANCZOS)
+            if image.size == previous_size:
+                continue
+            previous_size = image.size
+            directory.mkdir(parents=True, exist_ok=True)
+            target = directory / name
+            if background:
+                image.save(target, quality=94, subsampling=0, optimize=True)
+            elif image.size == source.size:
+                shutil.copy2(path, target)
+            else:
+                options = {'icc_profile': source.info['icc_profile']} if 'icc_profile' in source.info else {}
+                image.save(target, optimize=True, **options)
 
 
 def prepare_sources():
@@ -120,13 +182,13 @@ def prepare_sources():
         'import asyncio\nimport pygame\nfrom game_core.main import main\nasyncio.run(main())\n', encoding='utf-8')
     target_images = STAGING / 'assets' / 'images'
     target_images.mkdir(parents=True)
-    # Keep sprites lossless and cap JPEG background dimensions for browser decoding.
+    hd_images = STAGING / 'assets' / 'images-hd'
+    # Downsample shared originals for browser decoding while keeping sprite alpha lossless.
     for path in sorted(IMAGE_SOURCE.rglob('*.png')):
         if path.stem.startswith('ui_'):
             continue  # The web UI does not load these desktop assets.
-        target_dir = target_images / path.parent.relative_to(IMAGE_SOURCE)
-        target_dir.mkdir(parents=True, exist_ok=True)
-        prepare_image(path, target_dir)
+        category = path.parent.relative_to(IMAGE_SOURCE)
+        prepare_image(path, target_images / category, hd_images / category)
     font_dir = STAGING / 'assets' / 'fonts'
     cached_font_dir = RESOURCE_CACHE / 'fonts'
     download(FONT_URL, cached_font_dir / 'NotoSansCJKsc-Regular.otf', 1_000_000)
@@ -242,9 +304,8 @@ def finalize_webroot(pygbag_output):
                         '<button id="ttgames-fullscreen" type="button" aria-label="进入全屏" title="进入全屏">⛶</button>'
                         '<details id="ttgames-quality" hidden><summary aria-label="画质设置" title="画质设置">⚙</summary>'
                         '<fieldset><legend>画质设置</legend>'
-                        '<label><input type="radio" name="quality" value="1">普通 <span>1 倍</span></label>'
-                        '<label><input type="radio" name="quality" value="1.5" checked>默认 <span>1.5 倍</span></label>'
-                        '<label><input type="radio" name="quality" value="2">高清 <span>1080p 级别</span></label>'
+                        '<label><input type="radio" name="quality" value="1.5" checked>默认 <span>目标 60 FPS</span></label>'
+                        '<label><input type="radio" name="quality" value="2">高清 <span>目标 30 FPS</span></label>'
                         '</fieldset></details></body>')
     from PIL import Image
     with Image.open(WEBROOT / 'favicon.png') as icon:

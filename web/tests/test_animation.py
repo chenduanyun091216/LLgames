@@ -7,7 +7,8 @@ os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 
-from game_core import animation, config, entities, special_bosses
+from game_core import animation, config, entities, orochi, special_bosses
+from game_core.render import RenderSurface
 
 
 class AnimationTests(unittest.TestCase):
@@ -15,6 +16,21 @@ class AnimationTests(unittest.TestCase):
     def setUpClass(cls):
         pygame.init()
         pygame.display.set_mode((1, 1))
+
+    def test_orochi_fireball_rotates_at_output_size_and_reuses_the_pose(self):
+        art = pygame.Surface((100, 200), pygame.SRCALPHA)
+        shot = orochi.OrochiFireball(120, 90, (255, 80, 40), art)
+        shot.angle = 30
+        for output, expected in (((2560, 1440), (67, 131)), ((1920, 1080), (50, 98))):
+            with self.subTest(output=output):
+                pixels = pygame.Surface(output, pygame.SRCALPHA)
+                view = RenderSurface(pixels, (960, 540), output, (0, 0))
+                with patch.object(pygame.transform, 'rotate', wraps=pygame.transform.rotate) as rotate:
+                    shot.draw(view)
+                    shot.draw(view)
+                rotate.assert_called_once()
+                self.assertEqual(rotate.call_args.args[0].get_size(), expected)
+                self.assertEqual(rotate.call_args.args[1], 30)
 
     def test_player_motion_only_when_position_changes(self):
         player = entities.Player()
@@ -60,6 +76,22 @@ class AnimationTests(unittest.TestCase):
         with patch.object(*clock, return_value=3500), patch.object(entities.animation, 'frame', wraps=entities.animation.frame) as pick:
             enemy.draw(canvas)
             pick.assert_called_with('zongzong_hurt', 3)
+
+    def test_zongzong_rotates_both_idle_bodies_at_output_resolution(self):
+        definition = next(boss for boss in config.BOSS_DEFS if boss['key'] == 'boss_zongzong')
+        boss = special_bosses.ZongBoss(definition, config.DIFFICULTY_PRESETS['easy'])
+        logical = pygame.Surface((960, 540), pygame.SRCALPHA)
+        pixels = pygame.Surface((2560, 1440), pygame.SRCALPHA)
+        view = RenderSurface(pixels, (960, 540), pixels.get_size(), (0, 0))
+        with patch.object(config, 'game_ticks', return_value=400), \
+                patch.object(pygame.transform, 'rotate', wraps=pygame.transform.rotate) as rotate:
+            boss.draw(logical)
+            original_sizes = [call.args[0].get_size() for call in rotate.call_args_list]
+            rotate.reset_mock()
+            boss.draw(view)
+        self.assertEqual(len(original_sizes), 2)
+        self.assertEqual([call.args[0].get_size() for call in rotate.call_args_list],
+                         [tuple(view.length(side) for side in size) for size in original_sizes])
 
     def test_boss_animation_matches_special_state(self):
         niu = SimpleNamespace(bdef={'key': 'boss_niu'}, last_pattern='vortex', animation_attack_at=1000)
@@ -107,6 +139,18 @@ class AnimationTests(unittest.TestCase):
                 patch('game_core.special_bosses.image_asset') as load:
             boss.draw(canvas)
             load.assert_not_called()
+
+    def test_niu_shield_is_sized_for_output_before_it_breaks(self):
+        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
+        pixels = pygame.Surface((2560, 1440), pygame.SRCALPHA)
+        view = RenderSurface(pixels, (960, 540), pixels.get_size(), (0, 0))
+        boss.shield_break_at = 1000
+        width = round(boss.w * 2.5)
+        with patch.object(special_bosses, '_niu_shield_fragments',
+                          wraps=special_bosses._niu_shield_fragments) as split:
+            boss._draw_shield_break(view, 1300)
+        self.assertEqual(split.call_args.args[0].get_size(),
+                         (view.length(width), view.length(round(width / 3))))
 
     def test_niu_shield_break_effect_follows_damage_and_expiry(self):
         boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
@@ -285,6 +329,22 @@ class AnimationTests(unittest.TestCase):
                 normal = draw.call_args.args[1].get_at((0, 0))
         self.assertGreater(bright.r, normal.r)
         self.assertEqual(bright.a, normal.a)
+
+    def test_2k_boss_flash_keeps_full_animation_source(self):
+        boss = entities.Boss(config.BOSS_DEFS[1], config.DIFFICULTY_PRESETS['easy'])
+        boss.y = 60
+        boss.laser_warning_start = 1000
+        frame = pygame.Surface((512, 512), pygame.SRCALPHA)
+        frame.fill((50, 60, 70, 255))
+        canvas = pygame.Surface((2560, 1440), pygame.SRCALPHA)
+        view = RenderSurface(canvas, (960, 540), canvas.get_size(), (0, 0))
+        with patch.object(config, 'game_ticks', return_value=1000), \
+                patch.object(entities.animation, 'boss_frame', return_value=frame), \
+                patch.object(entities, 'blit_lit_sprite') as draw:
+            boss.draw(view)
+        source = draw.call_args.kwargs['source']
+        self.assertEqual(source.get_size(), (512, 512))
+        self.assertGreater(source.get_at((0, 0)).r, frame.get_at((0, 0)).r)
 
     def test_every_skill_has_a_dedicated_sheet(self):
         skills = {

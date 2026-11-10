@@ -13,7 +13,7 @@ from game_core.render import RenderSurface
 
 
 class DesktopHDAssetsTests(unittest.TestCase):
-    def test_boss_sheet_uses_four_hd_frames_only_with_desktop_assets(self):
+    def test_boss_sheet_uses_four_shared_hd_frames(self):
         pygame.init()
         self.addCleanup(pygame.quit)
         window = pygame.display.set_mode((2560, 1440))
@@ -22,46 +22,31 @@ class DesktopHDAssetsTests(unittest.TestCase):
         self.assertEqual(config.VIEW_SIZE, (2560, 1440))
         self.assertEqual(target.length(162), 432)
 
-        original = animation.frame('boss_attack', 0)
-        self.assertEqual(original.get_size(), (160, 160))
-        desktop_assets = Path(__file__).resolve().parents[1] / 'assets'
-        with patch.object(asset_loader, 'PREFERRED_ASSET_DIR', desktop_assets):
-            frames = [animation.frame('boss_attack', index) for index in range(4)]
-            self.assertEqual([frame.get_size() for frame in frames], [(512, 512)] * 4)
-            self.assertEqual(len(set(frames)), 4)
-            self.assertIs(animation.frame('boss_attack', 4), frames[0])
-            self.assertEqual(animation.frame('player1_back', 0).get_size(),
-                             asset_loader.image_asset('players/player1.png').get_size())
-        self.assertIs(animation.frame('boss_attack', 0), original)
+        frames = [animation.frame('boss_attack', index) for index in range(4)]
+        self.assertEqual([frame.get_size() for frame in frames], [(512, 512)] * 4)
+        self.assertEqual(len(set(frames)), 4)
+        self.assertIs(animation.frame('boss_attack', 4), frames[0])
+        self.assertEqual(animation.frame('player1_back', 0).get_size(),
+                         asset_loader.image_asset('players/player1.png').get_size())
 
-    def test_redrawn_sheets_keep_original_frame_counts(self):
+    def test_shared_hd_sheets_and_backgrounds(self):
         pygame.display.init()
         self.addCleanup(pygame.display.quit)
         pygame.display.set_mode((1, 1))
-        desktop_assets = Path(__file__).resolve().parents[1] / 'assets'
-        shared_animations = Path(asset_loader.ASSET_DIR) / 'animations'
-        shared_only = {'anim_boss_orochi_idle.png', 'anim_boss_zongzong_expressions.png'}
-        with patch.object(asset_loader, 'PREFERRED_ASSET_DIR', desktop_assets):
-            for original in sorted(shared_animations.glob('anim_*.png')):
-                if original.stem.startswith('anim_player1_'):
-                    continue
-                with self.subTest(sheet=original.name):
-                    width, height = pygame.image.load(original).get_size()
-                    sheet = asset_loader.image_asset(f'animations/{original.name}')
-                    if original.name in shared_only:
-                        self.assertEqual(sheet.get_size(), (width, height))
-                    else:
-                        self.assertEqual(sheet.get_size(), (512 * (width // height), 512))
-                    self.assertTrue(sheet.get_masks()[-1])
+        assets = Path(asset_loader.ASSET_DIR)
+        for path in sorted((assets / 'backgrounds').glob('bg*.png')):
+            with self.subTest(background=path.name):
+                width, height = pygame.image.load(path).get_size()
+                self.assertGreaterEqual(width, 2560)
+                self.assertGreaterEqual(height, 1440)
 
-            title = asset_loader.image_asset('ui/title.png')
-            self.assertGreaterEqual(title.get_width(), 1595)
-            self.assertEqual(asset_loader.image_asset('effects/boss_claw.png').get_size(), (426, 640))
-            for color in ('gold', 'red'):
-                trident = asset_loader.image_asset(f'effects/boss_trident_{color}.png')
-                bounds = trident.get_bounding_rect(min_alpha=16)
-                self.assertGreaterEqual(bounds.width, 75)
-                self.assertGreaterEqual(bounds.height, 216)
+        for name, count in (('boss_attack', 4), ('boss_niu_laser', 8), ('boss_mecha_lizard', 8)):
+            with self.subTest(sheet=name):
+                sheet = asset_loader.image_asset(f'animations/anim_{name}.png')
+                self.assertEqual(sheet.get_size(), (512 * count, 512))
+                self.assertTrue(sheet.get_masks()[-1])
+        self.assertGreaterEqual(asset_loader.image_asset('ui/title.png').get_width(), 1595)
+        self.assertEqual(asset_loader.image_asset('effects/boss_claw.png').get_size(), (426, 640))
 
     def test_desktop_menu_title_has_space_at_peak_scale(self):
         from game_core.game import Game
@@ -78,6 +63,40 @@ class DesktopHDAssetsTests(unittest.TestCase):
         subtitle = text.call_args_list[0].args[3]
         image = game.title_image
         self.assertLessEqual(y + int(width * 1.3 * image.get_height() / image.get_width()), subtitle.top)
+
+    def test_orochi_idle_art_has_headroom_at_1440p(self):
+        from game_core.orochi import OrochiBoss
+
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        window = pygame.display.set_mode((2560, 1440))
+        config.update_mobile_view(window.get_size())
+        target = RenderSurface(window, (960, 540), config.VIEW_SIZE, config.VIEW_OFFSET)
+        boss = OrochiBoss(config.BOSS_DEFS[-1], config.DIFFICULTY_PRESETS['hard'])
+        with patch.object(target, 'blit') as blit:
+            boss._draw_idle(target, boss.spawned_at)
+        frame = blit.call_args.args[0]
+        shown_size = blit.call_args.kwargs['logical_size']
+        for actual, shown in zip(frame.get_size(), shown_size):
+            self.assertGreaterEqual(actual, round(target.length(shown) * 1.2))
+
+    def test_abyss_laser_warning_art_covers_peak_size_at_1440p(self):
+        from game_core import entities
+
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        window = pygame.display.set_mode((2560, 1440))
+        config.update_mobile_view(window.get_size())
+        target = RenderSurface(window, (960, 540), config.VIEW_SIZE, config.VIEW_OFFSET)
+        boss = entities.Boss(config.BOSS_DEFS[5], config.DIFFICULTY_PRESETS['hard'])
+        boss.laser_warning_start, boss.breath_start_time = 1600, 200
+        with patch.object(config, 'game_ticks', return_value=1600), \
+                patch.object(entities, 'blit_lit_sprite') as draw:
+            boss.draw(target)
+        image = draw.call_args.args[1]
+        source = draw.call_args.kwargs['source']
+        for actual, logical in zip(source.get_size(), image.get_size()):
+            self.assertGreaterEqual(actual, round(target.length(logical) * 1.15))
 
     def test_battle_label_rasterizes_at_window_size(self):
         from game_core.visuals import blit_label

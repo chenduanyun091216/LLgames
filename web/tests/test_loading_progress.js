@@ -9,7 +9,7 @@ const nativeProgress = {value: 0, max: 100, hasAttribute: () => true};
 const loading = {querySelector: selector => ({progress, '.loading-status': status, '.loading-percent': percent})[selector]};
 const box = {textContent: '', dataset: {}, addEventListener() {}, setAttribute() {}};
 const button = {addEventListener() {}, toggleAttribute() {}};
-const choices = [{value: '1'}, {value: '1.5', checked: true}, {value: '2'}];
+const choices = [{value: '1.5', checked: true}, {value: '2'}];
 const qualityHandlers = {};
 const qualityAttributes = new Set();
 const quality = {
@@ -22,7 +22,7 @@ const quality = {
         else qualityAttributes.delete(name);
     },
 };
-const storage = new Map();
+const storage = new Map([['ttgames-render-density', '1']]);
 const cleared = [];
 const context2d = {
     setTransform() {},
@@ -50,7 +50,7 @@ const context = {window: {isSecureContext: true, localStorage: {getItem: key => 
 vm.runInNewContext(fs.readFileSync('web/shell.js', 'utf8'), context);
 assert.strictEqual(context.window.ttgamesRenderDensity, 1.5);
 quality.open = true;
-qualityHandlers.change({target: choices[2]});
+qualityHandlers.change({target: choices[1]});
 assert.strictEqual(context.window.ttgamesRenderDensity, 2);
 assert.strictEqual(storage.get('ttgames-render-density'), '2');
 assert.strictEqual(quality.open, false);

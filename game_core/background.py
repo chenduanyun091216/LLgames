@@ -17,6 +17,13 @@ from .sprites import _circle, _ellipse, _aaline, _polygon, _line, _rect
 _bg_surf = {}
 
 
+def clear_background_cache():
+    _bg_surf.clear()
+    background_art.cache_clear()
+    _panorama_frame.cache_clear()
+    _background_panorama.cache_clear()
+
+
 def _gradient_line(surf, y, color_top, color_bottom, h):
     t = max(0, min(1, y / max(1, h)))
     c = lerp_color(color_top, color_bottom, t)
@@ -42,6 +49,32 @@ def background_art(level, size):
                 fade.fill((20, 39, 48, 76))
                 image.blit(fade, (0, 0))
                 return image.convert()
+    return None
+
+
+@lru_cache(maxsize=2)
+def _background_panorama(level, size):
+    stem = 'bg1-scroll' if level == 1 else f'bg{level}'
+    for suffix in ('jpg', 'png'):
+        panorama = cover_image_asset(f'backgrounds/{stem}.{suffix}', size, panorama=True)
+        if panorama is not None:
+            fade = pygame.Surface(panorama.get_size(), pygame.SRCALPHA)
+            fade.fill((20, 39, 48, 76))
+            panorama.blit(fade, (0, 0))
+            return panorama
+    return None
+
+
+@lru_cache(maxsize=4)
+def _panorama_frame(panorama, size, y):
+    return panorama.subsurface((0, y, *size))
+
+
+def scrolling_background_art(level, size, progress):
+    panorama = _background_panorama(level, size)
+    if panorama is not None:
+        y = round((panorama.get_height() - size[1]) * (1 - progress))
+        return _panorama_frame(panorama, size, y)
     return None
 
 

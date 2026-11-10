@@ -261,6 +261,11 @@ def _niu_rotated_shield_fragment(piece, angle):
     return pygame.transform.rotate(piece, angle)
 
 
+def _niu_shield_image(surf, width, height):
+    size = (surf.length(width), surf.length(height)) if isinstance(surf, RenderSurface) else (width, height)
+    return image_asset('effects/boss_niu_shield.png', size)
+
+
 class NiuBoss(Boss):
     AXE_SLAM_CYCLE_MS = 1500
     AXE_SLAM_COUNT = 3
@@ -486,7 +491,7 @@ class NiuBoss(Boss):
         blit_effect(surf, effect, (round(self.x - cx), round(self.y + self.h - cy)))
         shield_width = max(1, round(self.w * 2.5))
         shield_height = max(1, round(shield_width / 3))
-        shield = image_asset('effects/boss_niu_shield.png', (shield_width, shield_height))
+        shield = _niu_shield_image(surf, shield_width, shield_height)
         if shield is not None:
             for i, piece in enumerate(_niu_shield_fragments(shield)):
                 direction = i - 2
@@ -500,8 +505,11 @@ class NiuBoss(Boss):
                 y = (self.y + self.h - shield_height * .22 + shield_height / 2
                      - (1.1 - abs(direction) * .2) * shield_height * progress
                      + shield_height * .6 * progress * progress)
-                surf.blit(fragment, (round(x - fragment.get_width() / 2),
-                                     round(y - fragment.get_height() / 2)))
+                if isinstance(surf, RenderSurface):
+                    surf.blit_pixels(fragment, fragment.get_rect(center=surf.point((x, y))).topleft)
+                else:
+                    surf.blit(fragment, (round(x - fragment.get_width() / 2),
+                                         round(y - fragment.get_height() / 2)))
 
     def draw(self, surf):
         super().draw(surf)
@@ -566,9 +574,13 @@ class NiuBoss(Boss):
         if now < self.shield_until:
             width = max(1, round(self.w * 2.5))
             height = max(1, round(width / 3))
-            shield = image_asset('effects/boss_niu_shield.png', (width, height))
+            shield = _niu_shield_image(surf, width, height)
             if shield is not None:
-                surf.blit(shield, (round(self.x - width / 2), round(self.y + self.h - height * .22)))
+                position = round(self.x - width / 2), round(self.y + self.h - height * .22)
+                if isinstance(surf, RenderSurface):
+                    surf.blit_pixels(shield, surf.point(position))
+                else:
+                    surf.blit(shield, position)
             else:
                 Draw.line(surf, (255, 190, 55), (self.x - self.w, self.y + self.h + 8),
                           (self.x + self.w, self.y + self.h + 8), max(2, round(8 * self.size_scale)))
@@ -576,6 +588,13 @@ class NiuBoss(Boss):
             self._draw_shield_break(surf, now)
         if self.axe_slam_start is not None and 0 <= now - self.axe_slam_start < self.axe_slam_duration:
             self._draw_axe_slam(surf, now)
+
+
+@lru_cache(maxsize=8)
+def _zong_crescent_flash(image):
+    flash = image.copy()
+    flash.fill((125, 125, 125), special_flags=pygame.BLEND_RGB_ADD)
+    return flash
 
 
 class ZongBoss(Boss):
@@ -870,6 +889,7 @@ class ZongBoss(Boss):
             scale = 1.45 if self.fusion_mode else 1.0
             size = (int((self.w + 20) * scale), int((self.h + 20) * scale))
             image = scale_surface_cached(self.surface, size) if self.fusion_mode else self.surface
+            wobble = 0
             from . import animation
             sprite = animation.boss_frame(self, now)
             if not self.fusion_mode and self.crescent_started_at is not None:
@@ -888,9 +908,7 @@ class ZongBoss(Boss):
                     size = animation.boss_action_size(sprite, self.surface, size)
                     image = scale_surface_cached(sprite, size)
                 wobble = math.sin(now * .004 + body_index * 2) * 4
-                image = pygame.transform.rotate(image, wobble)
                 size = image.get_size()
-                sprite = image
                 phase = ((now // 3000) + body_index) % 4
                 float_y = cy - self.h * .64 - (now % 3000) / 3000 * 12 * self.size_scale
                 if phase in (0, 2):
@@ -908,13 +926,16 @@ class ZongBoss(Boss):
             flashing = (self.crescent_started_at is not None
                         and 0 <= now - self.crescent_started_at < 1500
                         and (now - self.crescent_started_at) // 375 in (1, 3))
+            source = sprite or self.sprite_asset
             if flashing:
-                image = image.copy()
-                image.fill((125, 125, 125), special_flags=pygame.BLEND_RGB_ADD)
+                if isinstance(surf, RenderSurface):
+                    source = _zong_crescent_flash(sprite or image_asset(self.sprite_asset) or image)
+                else:
+                    image = _zong_crescent_flash(image)
             accent = (255, 172, 96) if self.fusion_mode == 'rage' else (
                 (107, 226, 255) if x <= self.x else (211, 153, 255))
             blit_lit_sprite(surf, image, (x - size[0] // 2, cy - size[1] // 2), accent, 185,
-                            source=None if flashing else sprite or self.sprite_asset)
+                            source=source, angle=wobble)
             if not self.fusion_mode:
                 i = 0 if x < self.x else 1
                 bar_width, bar_height = round(110 * self.size_scale), max(1, round(7 * self.size_scale))

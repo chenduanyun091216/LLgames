@@ -45,7 +45,8 @@ class NewCampaignTests(unittest.TestCase):
         for name in ('CAMPAIGN_KILLS', 'CAMPAIGN_SPAWN_MS', 'CAMPAIGN_ENEMY_CAP',
                      'CAMPAIGN_BOSS_HP', 'CAMPAIGN_BOSS_ATTACK_MS', 'CAMPAIGN_REINFORCEMENT_MS',
                      'CAMPAIGN_REINFORCEMENT_CAP', 'CAMPAIGN_LARGE_CHANCE', 'CAMPAIGN_SPEED',
-                     'CAMPAIGN_REWARDS', 'INFINITE_BOSS_HP', 'INFINITE_BOSS_ATTACK_MS'):
+                     'CAMPAIGN_REWARDS', 'INFINITE_BOSS_HP', 'INFINITE_BOSS_ATTACK_MS',
+                     'INFINITE_REINFORCEMENT_MS', 'INFINITE_REINFORCEMENT_CAP'):
             self.assertEqual(len(getattr(config, name)), 11, name)
         for index, level in enumerate(config.LEVEL_CONFIGS):
             self.assertEqual(level['level'], index + 1)
@@ -91,6 +92,93 @@ class NewCampaignTests(unittest.TestCase):
         for old_level in config.LEVEL_CONFIGS[:8]:
             self.assertFalse(set(old_level['enemy_pool']) & set(config.FACTORY_ENEMY_KEYS + config.TEMPLE_ENEMY_KEYS))
 
+    def test_temple_rifts_stagger_worms_and_destroyed_eye_stays_gone(self):
+        for difficulty, batch_size in (('easy', 3), ('medium', 4), ('hard', 6)):
+            with self.subTest(difficulty=difficulty):
+                game = self.game(difficulty=difficulty)
+                game._start_level(10)
+                game._update_temple_enemies(1000)
+                game._update_temple_enemies(9500)
+                left, right = game.enemies
+                self.assertLess(left.x, right.x)
+                self.assertEqual(left.temple_worms_left, batch_size)
+                self.assertEqual(right.temple_worms_left, batch_size)
+                game._update_temple_enemies(left.temple_spawn_at)
+                self.assertEqual(len(game.enemies), 3)
+                self.assertEqual(right.temple_worms_left, batch_size)
+                game._kill_enemy(left)
+                for _ in range(batch_size):
+                    game._update_temple_enemies(right.temple_spawn_at)
+                self.assertEqual(game.level_kills, 0)
+                self.assertEqual(len(game.enemies), 2 + batch_size)
+                game._update_temple_enemies(right.temple_spawn_at)
+                self.assertNotIn(left, game.enemies)
+                self.assertEqual(right.temple_worms_left, batch_size)
+                game._start_level(11)
+                self.assertFalse(game.enemies)
+
+    def test_temple_rifts_wait_at_worm_cap_and_resume_when_slot_opens(self):
+        game = self.game(difficulty='hard')
+        game._start_level(10)
+        game._update_temple_enemies(1000)
+        game._update_temple_enemies(9500)
+        left, right = game.enemies
+        for now in range(9980, 12500, 20):
+            game._update_temple_enemies(now)
+        worms = [enemy for enemy in game.enemies if enemy.temple_kind == 'worm']
+        self.assertEqual(len(worms), 10)
+        remaining = left.temple_worms_left + right.temple_worms_left
+        self.assertEqual(remaining, 2)
+        game._kill_enemy(worms[0])
+        game._update_temple_enemies(12500)
+        self.assertEqual(sum(enemy.temple_kind == 'worm' for enemy in game.enemies), 10)
+        self.assertEqual(left.temple_worms_left + right.temple_worms_left, 1)
+
+    def test_infinite_leaks_remove_enemies_and_use_shared_hit_protection(self):
+        game = self.game()
+        game._begin_infinite_run(10)
+        for _ in range(3):
+            game.spawn_enemy()
+        first, second, third = game.enemies[:]
+        self.assertFalse(game._resolve_leak(first, 1000))
+        self.assertFalse(game._resolve_leak(second, 1649))
+        self.assertEqual(game.player_hp, 4)
+        self.assertFalse(game._resolve_leak(third, 1650))
+        self.assertEqual(game.player_hp, 3)
+        self.assertEqual(game.leak_count, 3)
+        self.assertFalse(game.enemies)
+
+    def test_infinite_orochi_has_no_reinforcements_and_temple_has_no_boss_rifts(self):
+        game = self.game()
+        game._begin_infinite_run(10)
+        game._trigger_infinite_boss()
+        game._update_temple_enemies(1000)
+        game._update_temple_enemies(15000)
+        self.assertFalse(game.enemies)
+        game._kill_boss()
+        game._trigger_infinite_boss()
+        game.last_spawn_time = 0
+        game._update_boss_fight(25000)
+        self.assertFalse(game.enemies)
+
+    def test_temple_worm_inherits_thirty_percent_hp_and_pursues(self):
+        game = self.game()
+        game._start_level(10)
+        game.spawn_enemy()
+        parent, = game.enemies
+        parent.y = 100
+        with patch('game_core.game.random.random', return_value=0), patch(
+                'game_core.game.random.randint', return_value=1):
+            game._update_temple_enemies(1000)
+        worm = game.enemies[-1]
+        self.assertEqual(worm.temple_kind, 'worm')
+        self.assertAlmostEqual(worm.max_hp, parent.max_hp * .3)
+        start_y = worm.y
+        worm.update(game.player)
+        self.assertGreater(worm.y, start_y)
+        worm.hit_by('pistol', worm.max_hp)
+        self.assertTrue(worm.is_killed('pistol'))
+
     def test_pc_browser_use_identical_boss_health_interval_and_attack_specs(self):
         fields = ('skill', 'warning_ms', 'active_ms', 'damage', 'speed', 'angle', 'width',
                   'height', 'ring_speed', 'ring_thickness', 'gap_degrees')
@@ -106,7 +194,8 @@ class NewCampaignTests(unittest.TestCase):
                     boss.entered = True
                     attacks = []
                     for i in range(4):
-                        shots = boss.attack(1000 + i * 10000, 480, 610)
+                        with patch('game_core.abyss_bosses.random.uniform', side_effect=random.Random(i).uniform):
+                            shots = boss.attack(1000 + i * 10000, 480, 610)
                         game._add_boss_projectiles(shots)
                         attacks.append([tuple(getattr(p, f) for f in fields) for p in shots])
                     specs.append((boss.hp, boss.attack_interval, attacks))
@@ -136,8 +225,7 @@ class NewCampaignTests(unittest.TestCase):
                     game.infinite_mode = infinite
                     boss = game.boss
                     boss.entered, boss.y = True, 60
-                    for _ in range(4):
-                        game._add_boss_projectiles(boss.attack(1000, game.player.x, game.player.y))
+                    game._add_boss_projectiles(boss.attack(1000, game.player.x, game.player.y))
                     config.campaign_time_ms = 2800 if active else 1100
                     for shot in game.boss_projectiles:
                         shot.update(game.player.x, game.player.y)
@@ -149,7 +237,14 @@ class NewCampaignTests(unittest.TestCase):
                     self.assertFalse(game.warned_boss_shots)
                     self.assertEqual(game.player_hp, hp)
                     self.assertFalse(boss.should_attack(config.game_ticks()))
-                    self.assertTrue(boss.should_attack(config.game_ticks() + boss.attack_interval))
+                    config.campaign_time_ms += boss.attack_interval
+                    if isinstance(boss, AncientWhaleBoss):
+                        boss.fight_start_time = config.game_ticks() - 5000
+                        for _ in range(200):
+                            if boss.should_attack(config.game_ticks()):
+                                break
+                            boss.update()
+                    self.assertTrue(boss.should_attack(config.game_ticks()))
                     config.campaign_time_ms = 1000
 
     def test_restart_final_is_immediate_boss_without_wave(self):

@@ -19,10 +19,11 @@ CAMPAIGN_FILES = {
     'assets/images/bosses/boss_mecha_lizard.png',
     'assets/images/animations/anim_boss_mecha_lizard.png',
     'assets/images/bosses/boss_ancient_whale.png',
+    'assets/images/animations/anim_boss_ancient_whale.png',
 }
 CAMPAIGN_FILES.update('assets/images/enemies/enemy_' + key + '.png' for key in (
     'mecha_crab', 'mecha_ray', 'mecha_jelly',
-    'ancient_nautilus', 'ancient_trilobite', 'ancient_ray'))
+    'ancient_nautilus', 'ancient_trilobite', 'ancient_ray', 'ancient_worm', 'ancient_rift'))
 CAMPAIGN_FILES.update('assets/images/effects/' + key + '.png' for key in (
     'mecha_plasma_rail', 'mecha_guided_missile', 'mecha_emp_ring', 'mecha_emp_iron_ball', 'mecha_molten_burst',
     'whale_sonar_ring', 'whale_tidal_crescent', 'whale_rune_geyser', 'whale_ancient_pearl'))

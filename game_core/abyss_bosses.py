@@ -18,7 +18,7 @@ ABYSS_PROJECTILE_FIELDS = (
     'skill', 'warning_ms', 'active_ms', 'origin_x', 'origin_y', 'last_update',
     'width', 'height', 'ring_radius', 'ring_speed', 'ring_thickness',
     'gap_angle', 'gap_degrees', 'visual_scale', 'whip_directions', 'missile_pass', 'unblockable',
-    'persistent', 'self_telegraphed',
+    'persistent', 'self_telegraphed', 'pearl_burst_at',
 )
 EFFECT_ASSETS = {
     'plasma_rail': 'effects/mecha_plasma_rail.png',
@@ -53,7 +53,8 @@ def _blit(surf, image, center, size):
     """Scale from the source PNG at the actual output resolution."""
     scale = surf.scale if isinstance(surf, RenderSurface) else 1
     size = tuple(max(1, round(v * scale)) for v in size)
-    image = pygame.transform.smoothscale(image, size)
+    if image.get_size() != size:
+        image = pygame.transform.smoothscale(image, size)
     center = surf.point(center) if isinstance(surf, RenderSurface) else center
     position = image.get_rect(center=(round(center[0]), round(center[1]))).topleft
     if isinstance(surf, RenderSurface):
@@ -78,19 +79,23 @@ class AbyssProjectile(BossProjectile):
         self.origin_x, self.origin_y = x, y
         self.last_update = self.spawn_time
         self.visual_scale = scale
-        self.r = {'guided_missile': 14, 'molten_burst': 30, 'emp_ring': 29}.get(skill, 12) * scale
+        self.r = {'guided_missile': 14, 'molten_burst': 30, 'emp_ring': 29,
+                  'ancient_pearl': 23, 'pearl_fragment': 8}.get(skill, 12) * scale
         self.width = (96 if skill == 'tidal_crescent' else 54) * scale
         self.height = 28 * scale
         self.ring_radius = 0.0
         self.ring_speed = (150 if skill == 'emp_ring' else 170) * scale
         self.ring_thickness = 13 * scale
+        self.previous_ring_radius = None
+        self.pearl_bounces = 0
+        self.pearl_burst_at = 0
         self.gap_angle = 0.0
         self.gap_degrees = 76.0 if skill == 'sonar_ring' else 0.0
         self.whip_directions = random.randrange(8) if skill == 'plasma_rail' else 0
         self.missile_pass = 0
         self.missile_turn_rate = 150
         self.unblockable = skill in RINGS + LANES or skill == 'guided_missile'
-        self.persistent = self.unblockable
+        self.persistent = self.unblockable or skill == 'ancient_pearl'
         self._hit_players = set()
         self.self_telegraphed = True
 
@@ -120,11 +125,14 @@ class AbyssProjectile(BossProjectile):
                 self._hit_players.clear()
             self.ring_radius = 5 * self.visual_scale + min(active_age, EMP_CHARGE_MS) / 1000 * self.ring_speed
             self.ring_thickness = min(13 * self.visual_scale, self.ring_radius * .06)
-        elif self.skill in RINGS:
+        elif self.skill == 'sonar_ring':
+            self.previous_ring_radius = 24 * self.visual_scale + previous_age / 1000 * self.ring_speed
             self.ring_radius = 24 * self.visual_scale + active_age / 1000 * self.ring_speed
             # A newborn PNG ring is thinner than a mature one. Keep its damage
             # band within the luminous core; large rings keep the original cap.
             self.ring_thickness = min(13 * self.visual_scale, self.ring_radius * .06)
+        elif self.skill == 'ancient_pearl':
+            self._update_pearl(dt, now)
         elif self.skill == 'guided_missile':
             self._update_missile(dt, target_x, target_y)
         elif self.skill not in LANES:
@@ -134,6 +142,46 @@ class AbyssProjectile(BossProjectile):
             if (self.y > config.SCREEN_HEIGHT + 100 or self.y < -100
                     or self.x < config.GAME_AREA_LEFT - 100 or self.x > config.GAME_AREA_RIGHT + 100):
                 self.alive = False
+
+    def _update_pearl(self, dt, now):
+        if self.pearl_burst_at:
+            self.alive = now < self.pearl_burst_at
+            return
+        left = config.GAME_AREA_LEFT + self.r
+        right = config.GAME_AREA_RIGHT - self.r
+        top, bottom = self.r, config.GAME_AREA_BOTTOM - self.r
+        self.x = max(left, min(right, self.x))
+        self.y = max(top, min(bottom, self.y))
+        rad = math.radians(self.angle)
+        vx, vy = math.sin(rad) * self.speed * 60, math.cos(rad) * self.speed * 60
+        while dt > 0:
+            tx = ((right if vx > 0 else left) - self.x) / vx if abs(vx) > 1e-8 else math.inf
+            ty = ((bottom if vy > 0 else top) - self.y) / vy if abs(vy) > 1e-8 else math.inf
+            step = min(dt, tx, ty)
+            self.x += vx * step
+            self.y += vy * step
+            dt -= step
+            if tx == step:
+                self.x = right if vx > 0 else left
+                vx = -vx
+                self.pearl_bounces += 1
+            if ty == step:
+                self.y = bottom if vy > 0 else top
+                vy = -vy
+                self.pearl_bounces += 1
+            if tx == step or ty == step:
+                self.angle = math.degrees(math.atan2(vx, vy))
+                self._hit_players.clear()
+            if self.pearl_bounces >= 6:
+                self.pearl_bounces = 6
+                self.pearl_burst_at = now + 3000
+                return
+
+    def pearl_fragments(self):
+        return [AbyssProjectile('pearl_fragment', self.x, self.y, angle=angle,
+                                speed=4.5 * self.visual_scale, warning_ms=0,
+                                active_ms=2300, damage=self.damage, scale=self.visual_scale)
+                for angle in range(0, 360, 60)]
 
     def _update_missile(self, dt, target_x, target_y):
         bottom = config.SCREEN_HEIGHT + self.r
@@ -224,8 +272,11 @@ class AbyssProjectile(BossProjectile):
                                math.ceil(max(xs) - min(xs) + self.width + 2),
                                math.ceil(max(ys) - self.y + self.width + 2))
         if self.skill in LANES:
-            return pygame.Rect(round(self.x - self.width / 2), round(self.y),
-                               round(self.width), round(self.height))
+            height = self.height
+            if self.skill == 'rune_geyser' and self.is_active():
+                height *= min(1, self._active_age() / 200)
+            return pygame.Rect(round(self.x - self.width / 2), round(self.y + self.height - height),
+                               round(self.width), round(height))
         if self.skill in RINGS:
             radius = self.ring_radius + self.ring_thickness / 2
             if self.skill == 'emp_ring':
@@ -273,7 +324,8 @@ class AbyssProjectile(BossProjectile):
         if self.skill not in RINGS:
             return nearest <= self.r
         outer = self.ring_radius + self.ring_thickness / 2
-        inner = max(0, self.ring_radius - self.ring_thickness / 2)
+        previous = self.previous_ring_radius
+        inner = max(0, (self.ring_radius if previous is None else previous) - self.ring_thickness / 2)
         corners = (rect.topleft, rect.topright, rect.bottomleft, rect.bottomright)
         farthest = max(math.hypot(x - self.x, y - self.y) for x, y in corners)
         if nearest > outer or farthest < inner:
@@ -339,7 +391,26 @@ class AbyssProjectile(BossProjectile):
                 if 0 <= burst_age < 280:
                     Draw.circle(surf, color, (x, y), round(self.r + burst_age * .07), 2)
             return
-        image = image_asset(EFFECT_ASSETS[self.skill])
+        if self.skill == 'pearl_fragment':
+            if not active:
+                return
+            rad = math.radians(self.angle)
+            dx, dy = math.sin(rad) * self.r, math.cos(rad) * self.r
+            points = [(self.x + dx, self.y + dy), (self.x - dy * .55, self.y + dx * .55),
+                      (self.x - dx * .9, self.y - dy * .9), (self.x + dy * .55, self.y - dx * .55)]
+            Draw.polygon(surf, (255, 222, 156), points)
+            Draw.polygon(surf, (189, 118, 52), points, 1)
+            return
+        scale = surf.scale if isinstance(surf, RenderSurface) else 1
+        effect_size = None
+        if self.skill == 'ancient_pearl':
+            effect_size = (max(1, round(self.r * 3 * scale)),) * 2
+        elif self.skill == 'tidal_crescent':
+            effect_size = (max(1, round(self.width * 1.15 * scale)),
+                           max(1, round(self.height * 2.2 * scale)))
+        elif self.skill == 'rune_geyser':
+            effect_size = (max(1, round(self.width * scale)), max(1, round(self.height * scale)))
+        image = image_asset(EFFECT_ASSETS[self.skill], effect_size)
         if not active:
             # Exact lane footprints and ring safe corridors are gameplay UI,
             # rather than generated effect artwork.
@@ -387,21 +458,30 @@ class AbyssProjectile(BossProjectile):
                 Draw.rect(surf, color, self.bounds(), 2)
             return
         if self.skill in RINGS:
-            if self.gap_degrees:
-                image = image.copy()
-                cx, cy = image.get_width() / 2, image.get_height() / 2
-                radius = max(image.get_size()) * 2
-                points = [(cx, cy)] + [(cx + math.sin(math.radians(a)) * radius,
-                           cy + math.cos(math.radians(a)) * radius) for a in
-                           range(round(self.gap_angle - self.gap_degrees / 2),
-                                 round(self.gap_angle + self.gap_degrees / 2) + 1, 1)]
-                pygame.draw.polygon(image, (0, 0, 0, 0), points)
-            # Measured luminous-band centroids of the final 512px PNGs.
-            # Align the artwork's annulus to the collision radius, rather than
-            # scaling its transparent/glow border as though it were the band.
-            # The hit band remains conservatively narrower than the glow.
-            size = (self.ring_radius / .4232,) * 2
+            # The luminous annulus stays visible at every collision angle even
+            # if the decorative PNG has uneven opacity or a shifted center.
+            size = (self.ring_radius / .46,) * 2
             center = (self.x, self.y)
+            if self.skill == 'sonar_ring':
+                diameter = max(1, round(size[0] * scale))
+                image = pygame.transform.smoothscale(image, (diameter, diameter))
+                middle = diameter / 2
+                start = self.gap_angle + self.gap_degrees / 2
+                sweep = 360 - self.gap_degrees
+                angles = [math.radians(start + sweep * i / 180) for i in range(181)]
+                pygame.draw.lines(image, (137, 243, 255), False,
+                                  [(middle + math.sin(a) * self.ring_radius * scale,
+                                    middle + math.cos(a) * self.ring_radius * scale) for a in angles],
+                                  max(2, math.ceil(self.ring_thickness * scale)))
+                end = self.gap_angle + self.gap_degrees / 2
+                angles = [math.radians(end - self.gap_degrees * i / 60) for i in range(61)]
+                pygame.draw.polygon(image, (0, 0, 0, 0), [(middle, middle)] +
+                                    [(middle + math.sin(a) * diameter,
+                                      middle + math.cos(a) * diameter) for a in angles])
+        elif self.skill == 'rune_geyser':
+            height = self.height * min(1, self._active_age() / 200)
+            size = (self.width, height)
+            center = (self.x, self.y + self.height - height / 2)
         elif self.skill in LANES:
             size = (self.width * 1.35, self.height)
             center = (self.x, self.y + self.height / 2)
@@ -411,9 +491,16 @@ class AbyssProjectile(BossProjectile):
             size, center = (self.width * 1.15, self.height * 2.2), (self.x, self.y)
         else:
             size, center = (self.r * 3, self.r * 3), (self.x, self.y)
-            if self.angle:
+            if self.angle and self.skill not in ('ancient_pearl', 'pearl_fragment'):
                 image = pygame.transform.rotate(image, self.angle)
         _blit(surf, image, center, size)
+        if self.skill == 'ancient_pearl' and self.pearl_burst_at:
+            remaining = max(0, self.pearl_burst_at - config.game_ticks())
+            Draw.circle(surf, (255, 242, 165) if remaining % 500 < 250 else (255, 107, 48),
+                        (self.x, self.y), round(self.r * (1 + remaining / 6000)), 3)
+            for i in range(math.ceil(remaining / 1000)):
+                Draw.circle(surf, (255, 244, 186),
+                            (self.x + (i - 1) * self.r * .45, self.y - self.r * 1.25), 3)
 
 
 class AbyssBoss(Boss):
@@ -588,35 +675,168 @@ class MechaLizardBoss(AbyssBoss):
 class AncientWhaleBoss(AbyssBoss):
     SKILLS = ('sonar_ring', 'tidal_crescent', 'rune_geyser', 'ancient_pearl')
 
+    CAST_SKILLS = ('sonar_ring', 'rune_geyser', 'ancient_pearl')
+    CAST_MS = {'sonar_ring': 2500, 'rune_geyser': 2150, 'ancient_pearl': 1900,
+               'tidal_crescent': 360}
+
+    def __init__(self, bdef, difficulty):
+        super().__init__(bdef, difficulty)
+        self.next_moon_at = 0
+        self.moon_cast_at = -1000
+        self.swim_direction = 1
+        self.swim_turn_at = -1000
+        self.centering = False
+
+    def _casting(self, now):
+        return self.current_skill in self.CAST_SKILLS and (
+            now - self.skill_started_at < self.CAST_MS[self.current_skill])
+
+    def _center_x(self):
+        return (config.GAME_AREA_LEFT + config.GAME_AREA_RIGHT) / 2
+
+    def update(self):
+        now = config.game_ticks()
+        if not self.entered:
+            super().update()
+            return
+        if (not self._casting(now) and now - self.fight_start_time >= 5000
+                and super().should_attack(now)
+                and self.CAST_SKILLS[self.skill_index % len(self.CAST_SKILLS)] == 'sonar_ring'):
+            center = self._center_x()
+            self.centering = True
+            if center != self.x:
+                self.swim_direction = 1 if self.x < center else -1
+            self.x += max(-6, min(6, center - self.x))
+            self.y += max(-3, min(3, 18 - self.y))
+            return
+        self.centering = False
+        if not self._casting(now):
+            left = config.GAME_AREA_LEFT + self.w / 2
+            right = config.GAME_AREA_RIGHT - self.w / 2
+            self.x += self.swim_direction * self.speed * 2.1
+            if self.x >= right or self.x <= left:
+                self.x = max(left, min(right, self.x))
+                direction = -1 if self.x >= right else 1
+                if direction != self.swim_direction:
+                    self.swim_direction = direction
+                    self.swim_turn_at = now
+            target_y = 55 + 27 * math.sin((now - self.fight_start_time) * .002)
+            self.y += max(-2, min(2, target_y - self.y))
+
+    def should_attack(self, now):
+        if self._casting(now) or not super().should_attack(now):
+            return False
+        if self.CAST_SKILLS[self.skill_index % len(self.CAST_SKILLS)] == 'sonar_ring':
+            return abs(self.x - self._center_x()) < 1 and abs(self.y - 18) < 1
+        return True
+
+    def attack(self, now, player_x, player_y=None):
+        if self.hp <= 0:
+            return []
+        self.last_attack_time = self.skill_started_at = now
+        self.current_skill = self.CAST_SKILLS[self.skill_index % len(self.CAST_SKILLS)]
+        self.skill_index += 1
+        shots = self._skill_shots(self.current_skill, player_x, player_y)
+        for shot in shots:
+            shot.spawn_time = shot.last_update = now
+        return shots
+
+    def patrol_shots(self, now):
+        if self.hp <= 0 or not self.entered or self.centering or self._casting(now) or now < self.next_moon_at:
+            return []
+        self.moon_cast_at = now
+        self.next_moon_at = now + 2000
+        return [self._shot('tidal_crescent', self.x, self.y + self.h * .85,
+                           speed=4.2 * self.size_scale, warning_ms=0, active_ms=6500)]
+
+    def draw(self, surf):
+        scale = surf.scale if isinstance(surf, RenderSurface) else 1
+        width, height = max(1, round(self.w * 1.15 * scale)), max(1, round(self.h * scale))
+        art = image_asset(self.sprite_asset, (width, height))
+        if art is None:
+            super().draw(surf)
+            return
+        now = config.game_ticks()
+        phase = (now - self.breath_start_time) * .005
+        casting = self._casting(now)
+        age = now - (self.skill_started_at if casting else self.moon_cast_at)
+        skill = self.current_skill if casting else 'tidal_crescent' if age < 360 else ''
+        turn_age = now - self.swim_turn_at
+        pose = None
+        if skill == 'sonar_ring':
+            pose = (0, 1)
+        elif skill in ('rune_geyser', 'ancient_pearl'):
+            pose = (1, 1)
+        elif turn_age < 420:
+            pose = (1, 0)
+        elif skill == 'tidal_crescent' or math.sin(phase) > .25:
+            pose = (0, 0)
+        if pose:
+            atlas = image_asset('animations/anim_boss_ancient_whale.png', (2 * width, 2 * height))
+            if atlas is not None:
+                art = atlas.subsurface((pose[0] * width, pose[1] * height, width, height))
+        tilt = (10 + 6 * math.sin(phase)) * self.swim_direction
+        stretch = 1 + .09 * math.sin(phase)
+        if skill == 'sonar_ring':
+            tilt, stretch = 0, 1 + .13 * math.sin(age * .009)
+        elif skill == 'rune_geyser':
+            tilt, stretch = -14 * math.sin(math.pi * age / 2150), .92
+        elif skill == 'ancient_pearl':
+            tilt, stretch = 6 * math.sin(age * .016), 1.08
+        elif skill == 'tidal_crescent':
+            tilt += self.swim_direction * 14 * math.sin(math.pi * age / 360)
+        sprite = pygame.transform.smoothscale(art, (max(1, round(self.w * stretch * scale)), height))
+        faces_left = pose in ((0, 0), (1, 0))
+        if skill != 'sonar_ring' and faces_left != (self.swim_direction < 0):
+            sprite = pygame.transform.flip(sprite, True, False)
+        sprite = pygame.transform.rotate(sprite, tilt)
+        center = self.x, self.y + self.h / 2
+        _blit(surf, sprite, center, tuple(side / scale for side in sprite.get_size()))
+        if skill:
+            color = {'sonar_ring': (121, 240, 255), 'tidal_crescent': (77, 200, 250),
+                     'rune_geyser': (131, 181, 255), 'ancient_pearl': (255, 220, 140)}[skill]
+            pulse = .5 + .5 * math.sin(age * .012)
+            mouth = self.x, self.y + self.h * .81
+            Draw.circle(surf, color, mouth, max(3, round(self.h * (.04 + .075 * pulse))), 2)
+            Draw.circle(surf, color, mouth, max(2, round(self.h * .02)))
+
     def _skill_shots(self, skill, player_x, player_y):
         left, right = config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT
         width = right - left
+        bottom = config.GAME_AREA_BOTTOM
         origin_y = self.y + self.h * .7
         tier = self.bdef.get('campaign_tier', 1)
         if skill == 'sonar_ring':
-            shots = [self._shot(skill, self.x, origin_y, warning_ms=1400 + i * 700,
-                                active_ms=6500) for i in range(2)]
+            x = self._center_x()
+            reach = math.hypot(width / 2, bottom - origin_y) + 40
+            speed = 220
+            shots = [self._shot(skill, x, origin_y, warning_ms=1400 + i * 900,
+                                active_ms=math.ceil(reach / speed * 1000) + 100) for i in range(2)]
+            # Choose a corridor in battlefield coordinates. A fixed angle
+            # can cover the entire player row on a narrow portrait screen.
+            gap_x = left + width * random.uniform(.23, .77)
+            half_gap = width * .15
+            depth = max(1, bottom - origin_y)
+            low = math.degrees(math.atan2(gap_x - half_gap - x, depth))
+            high = math.degrees(math.atan2(gap_x + half_gap - x, depth))
             for shot in shots:
-                shot.gap_angle = max(-35, min(35, math.degrees(math.atan2(
-                    player_x - self.x, max(120, config.GAME_AREA_BOTTOM - origin_y)))))
+                shot.gap_angle = (low + high) / 2
+                shot.gap_degrees = high - low
+                shot.ring_speed = speed
             return shots
-        if skill == 'tidal_crescent':
-            return [self._shot(skill, left + width * fraction, origin_y,
-                               speed=(2.9 + tier * .2) * self.size_scale,
-                               warning_ms=1100 + i * 380, active_ms=6500)
-                    for i, fraction in enumerate((.2, .8, .35, .65))]
         if skill == 'rune_geyser':
-            # Alternating lanes always leave half the arena open; no retargeting.
             shots = []
-            for i, fraction in enumerate((.18, .5, .82)):
-                shot = self._shot(skill, left + width * fraction, origin_y,
-                                  warning_ms=1550 + i * 220, active_ms=750, damage=2)
+            for lane in range(3):
+                x = left + width * (lane + random.uniform(.24, .76)) / 3
+                height = (bottom - origin_y) * random.uniform(.40, .57)
+                shot = self._shot(skill, x, bottom - height, warning_ms=1200,
+                                  active_ms=950, damage=2)
                 shot.width = min(width * .12, 74 * self.size_scale)
-                shot.height = max(0, config.GAME_AREA_BOTTOM - origin_y)
+                shot.height = height
                 shots.append(shot)
             return shots
-        aim = math.degrees(math.atan2(player_x - self.x, max(100, config.GAME_AREA_BOTTOM - origin_y)))
+        aim = math.degrees(math.atan2(player_x - self.x, max(100, bottom - origin_y)))
         return [self._shot(skill, self.x, origin_y, angle=aim + a,
-                           speed=(2.8 + tier * .2 + wave * .25) * self.size_scale,
-                           warning_ms=1100 + wave * 380, active_ms=6500)
+                           speed=(4.1 + tier * .2 + wave * .25) * self.size_scale,
+                           warning_ms=800 + wave * 380, active_ms=120000)
                 for wave in range(3) for a in (-28, 0, 28)]

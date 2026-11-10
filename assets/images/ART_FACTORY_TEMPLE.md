@@ -29,4 +29,15 @@ Shared direction: polished hand-painted, colorful 2D underwater arcade fantasy; 
 
 Character sprites were cropped to visible alpha bounds and downsampled with Lanczos: enemies at most 384 pixels, bosses at most 768 pixels. Effects were cropped using alpha >= 12, retaining 1.5% glow padding; rings were centered in square canvases. Tall beams/geysers are at most 768 pixels; other effects at most 512 pixels. Original generated alpha was preserved. Backgrounds are 1448 x 1086 RGB PNGs. New assets total about 9.93 MB.
 
-All 18 final files were visually inspected in a contact sheet. Both ring center pixels have alpha 0. All character/effect files are RGBA with transparent outer space, no boxed backgrounds or watermarks. Gameplay should preserve missile/beam aspect ratios and anchor collision to visible art, rather than treating each PNG as a square.
+All 18 original files were visually inspected in a contact sheet. Both ring center pixels have alpha 0. All character/effect files are RGBA with transparent outer space, no boxed backgrounds or watermarks. Gameplay should preserve missile/beam aspect ratios and anchor collision to visible art, rather than treating each PNG as a square.
+
+
+## Ancient whale redraw
+
+The whale, all four skills, the worm, and the rift eye were redrawn using built-in image generation. The whale pose atlas adds a banking swim, side profile, open-mouth sonar, and forward lunge. Prompt details for the redrawn set follow.
+
+- Whale and poses: indigo ancient whale, raised gold temple armor, turquoise runes, isolated front and side views on transparent alpha.
+- Skills: continuous cyan rune annulus, downward aqua crescent, vertical rising rune geyser, and round pearl with gold coral veins.
+- Enemies: a round indigo parasite covered in spines and a purple space tear with one pair of orange eyes.
+
+The delivered RGBA sheets and sprites have a long edge of at least 2048 px. The generated whale, pose atlas, sonar, pearl, and worm were resized for the 2K export. The crescent, geyser, and rift eye were generated at 2172 px on the long edge.

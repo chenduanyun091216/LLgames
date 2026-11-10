@@ -5,7 +5,7 @@ from functools import lru_cache
 
 import pygame
 
-from . import config
+from . import asset_loader, config
 from .asset_loader import image_asset, scale_surface_cached
 from .entities import Boss, BossProjectile, Enemy
 from .render import Draw, RenderSurface
@@ -53,12 +53,16 @@ class OrochiFireball(BossProjectile):
         if self.art is None:
             Draw.circle(surf, self.color, center, self.r)
             return
-        sprite = scale_surface_cached(self.art, (25, 49))
         angle = round(self.angle / 10) * 10 % 360
-        sprite = _turn_fireball(sprite, angle)
         offset = pygame.Vector2(0, -12).rotate(-angle)
-        rect = sprite.get_rect(center=(round(self.x + offset.x), round(self.y + offset.y)))
-        _blit_art(surf, sprite, rect)
+        position = self.x + offset.x, self.y + offset.y
+        if isinstance(surf, RenderSurface):
+            size = surf.length(25), surf.length(49)
+            sprite = _turn_fireball(scale_surface_cached(self.art, size), angle)
+            surf.blit_pixels(sprite, sprite.get_rect(center=surf.point(position)).topleft)
+        else:
+            sprite = _turn_fireball(scale_surface_cached(self.art, (25, 49)), angle)
+            surf.blit(sprite, sprite.get_rect(center=tuple(round(value) for value in position)))
 
 
 class OrochiBoss(Boss):
@@ -72,6 +76,8 @@ class OrochiBoss(Boss):
     IDLE_ROWS = 4
     IDLE_STEP = 80
     IDLE_PERIOD = IDLE_COLUMNS * IDLE_ROWS * IDLE_STEP
+    # The original 624×432 cell has 24 pixels of padding on each side.
+    IDLE_ART_SIZE = (624, 432)
     IDLE_PADDING = 24
     SLAM_ROUND = 1350
     SLAM_IMPACT = 900
@@ -107,6 +113,10 @@ class OrochiBoss(Boss):
         self.hazard_hit = None
         self.hit_flashes = []
         self.last_head_hit_sound = -1000
+        self._load_artwork()
+
+    def _load_artwork(self):
+        self._hd_artwork = asset_loader.web_hd_assets
         self.idle_frames = self._load_idle_frames()
         self.slam_art = _load_art('bosses/boss_orochi_slam.png')
         self.laser_art = _load_art('bosses/boss_orochi_laser.png')
@@ -536,12 +546,13 @@ class OrochiBoss(Boss):
             return
         body = self._body_art_rect()
         pad = self.IDLE_PADDING
-        pad_x = round(body.w * pad / (art.get_width() - 2 * pad))
-        pad_y = round(body.h * pad / (art.get_height() - 2 * pad))
+        pad_x = round(body.w * pad / (self.IDLE_ART_SIZE[0] - 2 * pad))
+        pad_y = round(body.h * pad / (self.IDLE_ART_SIZE[1] - 2 * pad))
         _blit_art(surf, art, body.inflate(2 * pad_x, 2 * pad_y))
 
     def _draw_storm(self, surf, now):
-        _blit_art(surf, self.surface, self._body_art_rect())
+        art = image_asset(self.sprite_asset) if isinstance(surf, RenderSurface) else None
+        _blit_art(surf, art or self.surface, self._body_art_rect())
         pulse = self.storm_pulse(now)
         for i, rect in self._active_heads(now):
             radius = max(7, rect.w // 2)
@@ -553,6 +564,8 @@ class OrochiBoss(Boss):
             Draw.circle(surf, (255, 54, 62, round(100 + 155 * blink)), marker, 3 + round(3 * ratio))
 
     def draw(self, surf):
+        if self._hd_artwork != asset_loader.web_hd_assets:
+            self._load_artwork()
         now = config.game_ticks()
         age = self.age(now)
         if self.death_at is not None:

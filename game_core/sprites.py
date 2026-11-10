@@ -31,15 +31,23 @@ def _resize_sprite(image, size):
     return pygame.transform.smoothscale(image, size)
 
 
-def blit_lit_sprite(target, image, position, color, strength=140, source=None):
+def blit_lit_sprite(target, image, position, color, strength=140, source=None, *, angle=0):
     if isinstance(target, RenderSurface):
         if isinstance(source, str):
             source = image_asset(source)
         size = tuple(target.length(value) for value in image.get_size())
         sprite = _resize_sprite(source or image, size)
         x, y = target.point(position)
+        if angle:
+            center = x + size[0] // 2, y + size[1] // 2
+            sprite = pygame.transform.rotate(sprite, angle)
+            x, y = sprite.get_rect(center=center).topleft
         target.blit_pixels(_lit_sprite(sprite, color, strength), (x - 3, y - 3))
         return
+    if angle:
+        center = image.get_rect(topleft=position).center
+        image = pygame.transform.rotate(image, angle)
+        position = image.get_rect(center=center).topleft
     target.blit(_lit_sprite(image, color, strength), (int(position[0]) - 3, int(position[1]) - 3))
 
 

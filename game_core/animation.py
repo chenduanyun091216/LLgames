@@ -17,7 +17,7 @@ DOWNWARD_LASER_POSES = {
 
 # Left and right edge travel as a fraction of sprite height. Keep the
 # central body still and let the claws, tentacles or fins carry the motion.
-_BODY_TRAVEL = {
+IDLE_BODY_TRAVEL = {
     'boss_lobster': (-.075, .075),
     'boss_crab': (-.065, .065),
     'boss_octopus': (-.085, .080),
@@ -35,7 +35,7 @@ def _body_pose(sprite, name, swing):
     if not swing:
         return sprite
     width, height = sprite.get_size()
-    left, right = _BODY_TRAVEL[name]
+    left, right = IDLE_BODY_TRAVEL[name]
     result = pygame.Surface((width, height), pygame.SRCALPHA)
     # The canvas and body center stay fixed so the pose cannot move the hitbox.
     for x in range(width):
@@ -47,7 +47,7 @@ def _body_pose(sprite, name, swing):
 
 
 def boss_idle_frame(name, sprite, elapsed):
-    if name not in _BODY_TRAVEL:
+    if name not in IDLE_BODY_TRAVEL:
         return sprite
     if name == 'boss_dragon':
         sprite = frame('boss_dragon_attack', 0) or sprite
@@ -143,7 +143,7 @@ def boss_frame(boss, now):
             return sprite
     start = getattr(boss, 'animation_attack_at', None)
     name = boss.bdef['key']
-    if name in _BODY_TRAVEL:
+    if name in IDLE_BODY_TRAVEL:
         signature = getattr(boss, 'signature', None)
         if signature and name != 'boss_dragon' and now < signature.end_at:
             index, swing = _signature_pose(signature, now)

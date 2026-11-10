@@ -47,7 +47,7 @@ class FactoryEnemiesTests(unittest.TestCase):
         game._update_playing(now + 2000)
         mini, = game.enemies
         self.assertEqual(mini.factory_kind, 'mini_boss')
-        self.assertAlmostEqual(mini.max_hp, config.INFINITE_BOSS_HP[8] * .33)
+        self.assertAlmostEqual(mini.max_hp, config.INFINITE_BOSS_HP[8] * .16)
         self.assertIsNone(game.boss)
         game.spawn_enemy()
         enemy = game.enemies[-1]
@@ -99,7 +99,7 @@ class FactoryEnemiesTests(unittest.TestCase):
             self.game._start_factory_link(1500)
         self.game._settle_factory_link(3500)
         mini, = [e for e in self.game.enemies if e.factory_kind == 'mini_boss']
-        self.assertAlmostEqual(mini.max_hp, self.game._campaign_value(config.CAMPAIGN_BOSS_HP) * .33)
+        self.assertAlmostEqual(mini.max_hp, self.game._campaign_value(config.CAMPAIGN_BOSS_HP) * .16)
         self.assertEqual(self.game.level_kills, 0)
         missiles = self.game._enemy_shots(mini, 5000)
         self.assertEqual(len(missiles), 3)

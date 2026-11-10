@@ -308,6 +308,8 @@ class OnlineGame(Game):
                         and not (isinstance(self.boss, core_game.OrochiBoss)
                                  and self.boss.skill in ('split', 'storm', 'laser')))
         for entity in tuple(self.enemies) + ((self.boss,) if boss_contact else ()):
+            if entity is not self.boss and entity.temple_kind == 'rift':
+                continue
             for p in self.players:
                 key = (entity, p.slot)
                 last_contact = self._contact_hits.get(key, getattr(entity, 'last_contact_damage_time', -9999))
