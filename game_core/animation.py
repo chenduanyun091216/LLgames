@@ -1,7 +1,10 @@
 """Small sprite-sheet helper for character and boss animations."""
 from functools import lru_cache
 
+import pygame
+
 from .asset_loader import image_asset
+from .boss_skills import BITE_REPEAT_MS, CHASE_MS, CLAW_DELAY_MS, LASH_MS, TRIDENT_INTERVAL_MS
 
 _FRAMES = {}
 DOWNWARD_LASER_POSES = {
@@ -11,6 +14,64 @@ DOWNWARD_LASER_POSES = {
     'boss_dragon': (1, .62, .32),
     'boss': (1, .68, .77),
 }
+
+# Left and right edge travel as a fraction of sprite height. Keep the
+# central body still and let the claws, tentacles or fins carry the motion.
+_BODY_TRAVEL = {
+    'boss_lobster': (-.075, .075),
+    'boss_crab': (-.065, .065),
+    'boss_octopus': (-.085, .080),
+    'boss_shark': (-.11, .025),
+    'boss_dragon': (-.075, -.065),
+    'boss': (-.095, .035),
+}
+_IDLE_SWING = (0, .55, 1, .45, -.45, -1)
+_ATTACK_POSES = ((2, 1), (2, .65), (2, .25), (3, .60),
+                 (3, .35), (3, -.20), (0, -.15), (0, 0))
+
+
+@lru_cache(maxsize=128)
+def _body_pose(sprite, name, swing):
+    if not swing:
+        return sprite
+    width, height = sprite.get_size()
+    left, right = _BODY_TRAVEL[name]
+    result = pygame.Surface((width, height), pygame.SRCALPHA)
+    # The canvas and body center stay fixed so the pose cannot move the hitbox.
+    for x in range(width):
+        edge = (2 * x - width + 1) / width
+        travel = left if edge < 0 else right
+        shift = round(height * travel * swing * edge ** 2)
+        result.blit(sprite, (x, shift), (x, 0, 1, height))
+    return result
+
+
+def boss_idle_frame(name, sprite, elapsed):
+    if name not in _BODY_TRAVEL:
+        return sprite
+    if name == 'boss_dragon':
+        sprite = frame('boss_dragon_attack', 0) or sprite
+    return _body_pose(sprite, name, _IDLE_SWING[elapsed // 135 % len(_IDLE_SWING)])
+
+
+def _signature_pose(signature, now):
+    age = now - signature.impact_at
+    if age < 0:
+        return 1, -.75
+    if signature.key == 'boss':
+        if age >= BITE_REPEAT_MS:
+            age -= BITE_REPEAT_MS
+        return (2, 1) if age < CHASE_MS else (3, .35)
+    if signature.key == 'boss_octopus':
+        phase = age % LASH_MS / LASH_MS
+        return (1, -.75) if phase < .23 else (2, 1) if phase < .72 else (3, .35)
+    if signature.key == 'boss_lobster':
+        if age < CLAW_DELAY_MS:
+            return (2, 1) if age < 135 else (1, -.65)
+        age -= CLAW_DELAY_MS
+    if signature.key == 'boss_shark' and age < 3 * TRIDENT_INTERVAL_MS:
+        age %= TRIDENT_INTERVAL_MS
+    return _ATTACK_POSES[min(7, age // 75)]
 
 
 def frame(name, index):
@@ -80,10 +141,24 @@ def boss_frame(boss, now):
         sprite = frame(name + '_laser', index) or frame(name + '_attack', index)
         if sprite is not None:
             return sprite
-    index = action_frame(getattr(boss, 'animation_attack_at', None), now)
+    start = getattr(boss, 'animation_attack_at', None)
+    name = boss.bdef['key']
+    if name in _BODY_TRAVEL:
+        signature = getattr(boss, 'signature', None)
+        if signature and name != 'boss_dragon' and now < signature.end_at:
+            index, swing = _signature_pose(signature, now)
+        elif start is not None and 0 <= now - start < 600:
+            index, swing = _ATTACK_POSES[(now - start) // 75]
+            # Dragon fireballs already set the animation clock back by 300 ms.
+            if name == 'boss_dragon' and signature and 300 <= now - start < 450:
+                index = 2
+        else:
+            return None
+        sprite = frame(name + '_attack', index)
+        return _body_pose(sprite, name, swing) if sprite is not None else None
+    index = action_frame(start, now)
     if index is None:
         return None
-    name = boss.bdef['key']
     if name == 'boss_niu':
         index = min(7, (now - boss.animation_attack_at) // 75)
     pattern = getattr(boss, 'last_pattern', '')

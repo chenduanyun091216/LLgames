@@ -191,10 +191,10 @@ class AnimationTests(unittest.TestCase):
         clock = (config, 'game_ticks')
         canvas = pygame.Surface((1200, 1000), pygame.SRCALPHA)
         for definition in config.BOSS_DEFS:
-            if definition['key'] == 'boss_orochi':
+            if definition['key'] in ('boss_niu', 'boss_orochi'):
                 continue
             with self.subTest(boss=definition['key']):
-                cls = special_bosses.NiuBoss if definition['key'] == 'boss_niu' else special_bosses.ZongBoss if definition['key'] == 'boss_zongzong' else entities.Boss
+                cls = special_bosses.ZongBoss if definition['key'] == 'boss_zongzong' else entities.Boss
                 boss = cls(definition, config.DIFFICULTY_PRESETS['easy'])
                 boss.y = 60
                 boss.entered = True
@@ -203,6 +203,38 @@ class AnimationTests(unittest.TestCase):
                     boss.draw(canvas)
                     self.assertTrue(pick.called)
                     self.assertIsNotNone(pick(boss, 1300))
+
+    def test_niu_running_reverses_direction_and_laser_takes_priority(self):
+        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
+        boss.entered = True
+        right = boss._body_frame(1000)
+        self.assertIsNotNone(right)
+        boss.movement_timer = 16
+        self.assertIsNot(boss._body_frame(1000), right)
+        boss.movement_timer = 0
+        boss.running_left = True
+        left = boss._body_frame(1000)
+        self.assertEqual(pygame.image.tostring(left, 'RGBA'),
+                         pygame.image.tostring(pygame.transform.flip(right, True, False), 'RGBA'))
+        boss.laser_active_until = 2000
+        self.assertIs(boss._body_frame(1000), special_bosses.image_asset('bosses/boss_niu_laser.png'))
+
+    def test_first_six_bosses_play_distinct_idle_and_attack_poses(self):
+        for definition in config.BOSS_DEFS[:6]:
+            with self.subTest(boss=definition['key']):
+                boss = entities.Boss(definition, config.DIFFICULTY_PRESETS['easy'])
+                boss.animation_attack_at = 1000
+                idle = [animation.boss_idle_frame(definition['key'], boss.surface, i * 135)
+                        for i in range(6)]
+                attack = [animation.boss_frame(boss, 1000 + i * 75) for i in range(8)]
+                for frames in (idle, attack):
+                    self.assertEqual(len({pygame.image.tobytes(frame, 'RGBA') for frame in frames}),
+                                     len(frames))
+                self.assertIsNone(animation.boss_frame(boss, 1600))
+                if boss.can_laser():
+                    boss.bdef = {**definition, 'campaign_level': 2}
+                    boss.laser_active_until = 3000
+                    self.assertIs(animation.boss_frame(boss, 1000), animation.boss_frame(boss, 2000))
 
     def test_boss_action_size_compensates_for_transparent_padding(self):
         boss = entities.Boss(config.BOSS_DEFS[1], config.DIFFICULTY_PRESETS['easy'])

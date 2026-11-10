@@ -265,6 +265,7 @@ class NiuBoss(Boss):
     AXE_SLAM_CYCLE_MS = 1500
     AXE_SLAM_COUNT = 3
     axe_slam_duration = AXE_SLAM_CYCLE_MS * AXE_SLAM_COUNT
+    RUN_POSES = ('run_stride', 'run_pass', 'run_reverse', 'run_pass')
 
     def __init__(self, bdef, difficulty):
         super().__init__(bdef, difficulty)
@@ -282,6 +283,7 @@ class NiuBoss(Boss):
         self.shield_thresholds = bdef.get('shield_thresholds', (0.75, 0.5, 0.25))
         self.shield_triggered = set()
         self.next_hazard_time = 0
+        self.running_left = False
 
     def hit_by(self, weapon_name, amount=1.0, source='skill', hit_rect=None):
         previous_hp = self.hp
@@ -301,13 +303,42 @@ class NiuBoss(Boss):
 
     def update(self):
         was_entered = self.entered
+        previous_x = self.x
         super().update()
+        if self.x != previous_x:
+            self.running_left = self.x < previous_x
         now = config.game_ticks()
         if self.shield_until and now >= self.shield_until:
             self.shield_break_at = self.shield_until
             self.shield_until = 0
         if self.entered and not was_entered and 'campaign_tier' not in self.bdef:
             self.last_attack_time = config.game_ticks()
+
+    @staticmethod
+    @lru_cache(maxsize=3)
+    def _left_run_frame(sprite):
+        return pygame.transform.flip(sprite, True, False)
+
+    def _body_frame(self, now):
+        attack_at = getattr(self, 'animation_attack_at', None)
+        running = False
+        if self.laser_warning_start or now < self.laser_active_until:
+            pose = 'laser'
+        elif self.axe_slam_start is not None and 0 <= now - self.axe_slam_start < self.axe_slam_duration:
+            pose = 'slam' if (now - self.axe_slam_start) % self.AXE_SLAM_CYCLE_MS < 800 else 'axes'
+        elif now < self.lightning_until:
+            pose = 'lightning'
+        elif attack_at is not None and 0 <= now - attack_at < 600:
+            pose = 'bullets' if self.last_pattern == 'bullets' else 'axes'
+        elif self.entered:
+            running = True
+            pose = self.RUN_POSES[int(self.movement_timer / 8) % len(self.RUN_POSES)]
+        else:
+            return None
+        sprite = image_asset(f'bosses/boss_niu_{pose}.png')
+        if sprite is None:
+            return super()._body_frame(now)
+        return self._left_run_frame(sprite) if running and self.running_left else sprite
 
     def should_attack(self, now):
         if self.laser_warning_start or now < self.laser_active_until:

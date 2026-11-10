@@ -1957,6 +1957,9 @@ class Boss:
                                  max(1, config.SCREEN_HEIGHT - top))
                      for x in self.death_laser_xs())
 
+    def _body_frame(self, now):
+        return animation.boss_frame(self, now)
+
     def draw(self, surf):
         now = config.game_ticks()
         size_scale = self.size_scale
@@ -2041,19 +2044,24 @@ class Boss:
         breathing_surface = scale_surface_cached(
             self.breath_base, (round(sw * scale / 1.3), round(sh * scale / 1.3))
         )
-        sprite = animation.boss_frame(self, now)
+        sprite = self._body_frame(now)
         sprite_x, sprite_y = self.x, center_y
+        body_size = breathing_surface.get_size()
+        if self.bdef['key'] == 'boss' and not (mouth_laser or self.laser_warning_start):
+            body_size = tuple(round(value * .85) for value in body_size)
         if sprite is not None:
-            size = self.surface.get_size() if mouth_laser else breathing_surface.get_size()
+            size = self.surface.get_size() if mouth_laser else body_size
             action_size = animation.boss_action_size(sprite, self.surface, size)
             if mouth_laser:
                 # Keep the mouth at the existing beam origin when the frame grows.
                 sprite_x += (size[0] - action_size[0]) * (mouth_laser[1] - .5)
                 sprite_y += (size[1] - action_size[1]) * (mouth_laser[2] - .5)
             breathing_surface = scale_surface_cached(sprite, action_size)
-        elif self.bdef['key'] == 'boss':
-            breathing_surface = scale_surface_cached(
-                breathing_surface, tuple(round(value * .85) for value in breathing_surface.get_size()))
+        else:
+            idle = animation.boss_idle_frame(self.bdef['key'], self.breath_base, now - self.breath_start_time)
+            if idle is not self.breath_base or body_size != breathing_surface.get_size():
+                breathing_surface = scale_surface_cached(idle, body_size)
+                sprite = idle
         slam_start = getattr(self, 'axe_slam_start', None)
         slam_active = slam_start is not None and 0 <= now - slam_start < self.axe_slam_duration
         if slam_active:
