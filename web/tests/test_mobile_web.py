@@ -194,7 +194,7 @@ class MobileWebTests(unittest.TestCase):
     def test_campaign_boss_health_and_final_victory_timeout(self):
         game = self.game
         game._start_game('easy')
-        for level, hp in ((7, 118), (8, 131), (9, 150)):
+        for level, hp in ((7, 118), (8, 131), (9, 142), (10, 150), (11, 150)):
             game.boss = None
             game._start_level(level)
             game._trigger_boss()
@@ -535,8 +535,10 @@ class MobileWebTests(unittest.TestCase):
     def test_infinite_boss_growth_and_death_progress(self):
         game = self.game
         game._start_infinite_game()
-        for defeated, hp, interval in ((0, 30, 4400), (8, 220, 3400), (9, 36, 4180), (18, 42, 3960),
-                                       (54, 66, 3080), (63, 66, 3080)):
+        cycle = len(config.BOSS_DEFS)
+        for defeated, hp, interval in ((0, 30, 4400), (cycle - 1, 220, 3400),
+                                       (cycle, 36, 4180), (2 * cycle, 42, 3960),
+                                       (6 * cycle, 66, 3080), (7 * cycle, 66, 3080)):
             with self.subTest(defeated=defeated):
                 game.infinite_boss_index = defeated
                 game._trigger_infinite_boss()
@@ -1426,7 +1428,8 @@ class MobileWebTests(unittest.TestCase):
                 with self.subTest(size=size, boss=definition['key']):
                     boss = game.boss = game._make_boss(definition)
                     boss.y = 55
-                    if definition['key'] in ('boss_niu', 'boss_zongzong', 'boss_orochi'):
+                    if definition['key'] in ('boss_niu', 'boss_zongzong', 'boss_orochi',
+                                              'boss_mecha_lizard', 'boss_ancient_whale'):
                         self.assertFalse(game._try_boss_signature(1000))
                         self.assertIsNone(boss.signature)
                         continue

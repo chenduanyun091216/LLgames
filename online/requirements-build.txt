@@ -1,0 +1,2 @@
+# Read the existing pinned builder dependencies without changing them.
+-r ../requirements.txt

@@ -819,6 +819,9 @@ def make_enemy_surface(key):
         'seahorse': 'goldfish',
         'starfish': 'goldfish',
         'turtle': 'crab',
+        # Keep missing-art/headless operation safe; release builds ship bespoke PNGs.
+        'mecha_crab': 'crab', 'mecha_ray': 'shark', 'mecha_jelly': 'octopus',
+        'ancient_nautilus': 'octopus', 'ancient_trilobite': 'lobster', 'ancient_ray': 'shark',
     }.get(key, key)
     return make_sprite(size, drawers[fallback_key])
 

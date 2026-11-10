@@ -33,6 +33,7 @@ from .entities import (
 )
 from .boss_skills import BOSS_COLORS, CRAB_BUBBLE_BURST_MS, CRAB_BUBBLE_COLORS, BossSignature, SIGNATURES, circle_hits_rect
 from .orochi import OrochiBoss
+from .abyss_bosses import AbyssProjectile, MechaLizardBoss, AncientWhaleBoss
 from .special_bosses import CrescentWave, NiuBoss, ReturningAxe, ZongBomb, ZongBoss, ZongReflectBullet
 
 class GameState:
@@ -246,6 +247,19 @@ class Game:
             enemy.x = max(config.GAME_AREA_LEFT + half_width,
                           min(config.GAME_AREA_RIGHT - right_half_width, enemy.x))
         if self.boss:
+            if (previous_area and previous_area != (config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT,
+                                                    config.GAME_AREA_BOTTOM)
+                    and isinstance(self.boss, (MechaLizardBoss, AncientWhaleBoss))):
+                # A telegraph belongs to the arena in which it was announced.
+                # On solo rotation, cancel only these new attacks and give a
+                # full recovery interval instead of stretching a live hitbox
+                # onto the player. Online rooms never change layout mid-match.
+                self.boss_projectiles[:] = [shot for shot in self.boss_projectiles
+                                            if not isinstance(shot, AbyssProjectile)]
+                self.warned_boss_shots[:] = [shot for shot in self.warned_boss_shots
+                                             if not isinstance(shot, AbyssProjectile)]
+                self.boss.last_attack_time = config.game_ticks()
+                self.boss.current_skill = ''
             boss_scale = config.MOBILE_LANDSCAPE_BOSS_SCALE if config.MOBILE_LANDSCAPE_VIEW else size_scale
             if self.boss.signature:
                 self.boss.signature.stop(self.boss)
@@ -333,9 +347,10 @@ class Game:
                     if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
                         continue
             if event.type == pygame.KEYDOWN:
-                level = event.key - pygame.K_0
+                level = (event.key - pygame.K_0 if pygame.K_1 <= event.key <= pygame.K_9
+                         else {pygame.K_0: 10, pygame.K_MINUS: 11}.get(event.key, 0))
                 jump_limit = (len(config.INFINITE_BOSS_HP) if self.infinite_mode or self.selecting_infinite_mode
-                              else min(9, len(LEVEL_CONFIGS)))
+                              else len(LEVEL_CONFIGS))
                 if 1 <= level <= jump_limit and event.mod & pygame.KMOD_SHIFT:
                     self._jump_to_level(level)
                     continue
@@ -703,7 +718,7 @@ class Game:
         self.player_invincible_until = 0
         self.next_infinite_boss_time = now + 25000
         self.infinite_boss_index = start_chapter - 1
-        # 沿用第 8 关的小怪池。第 9 关战役只有 Boss。
+        # 无限模式沿用原第 8 关的小怪池，不改变既有无限模式刷怪组成。
         self.level_enemy_defs = get_level_enemy_defs(LEVEL_CONFIGS[7])
         self.level_title_until = 0
         self.bg_transition_until = 0
@@ -940,7 +955,8 @@ class Game:
 
     def _make_boss(self, bdef):
         cls = {'boss_niu': NiuBoss, 'boss_zongzong': ZongBoss,
-               'boss_orochi': OrochiBoss}.get(bdef['key'], Boss)
+               'boss_orochi': OrochiBoss, 'boss_mecha_lizard': MechaLizardBoss,
+               'boss_ancient_whale': AncientWhaleBoss}.get(bdef['key'], Boss)
         boss = cls(bdef, self.difficulty)
         boss.intro_until = config.game_ticks() + 950
         return boss
@@ -1647,6 +1663,15 @@ class Game:
             if rect.colliderect(player.rect()):
                 return player
         return None
+
+    def _hit_by_projectile(self, projectile):
+        """Use the same precise telegraph/ring/beam collision in every runtime."""
+        hits_rect = getattr(projectile, 'hits_rect', None)
+        if hits_rect is None:
+            return self._hit_player(projectile.rect())
+        hit_players = getattr(projectile, '_hit_players', ())
+        return next((player for player in self.players
+                     if player not in hit_players and hits_rect(player.rect())), None)
 
     def _player_is_invincible(self, now):
         return now < self.player_invincible_until
@@ -2485,7 +2510,7 @@ class Game:
         elif now - self.boss.fight_start_time >= 5000 and self.boss.should_attack(now):
             self.boss.animation_attack_at = now
             target = self._nearest_player(self.boss.x, self.boss.y)
-            if isinstance(self.boss, ZongBoss):
+            if isinstance(self.boss, (ZongBoss, MechaLizardBoss, AncientWhaleBoss)):
                 shots = self.boss.attack(now, target.x, target.y)
             else:
                 shots = self.boss.attack(now, target.x)
@@ -2527,12 +2552,15 @@ class Game:
             elif getattr(bp, 'bomb', False) and self._hit_player(bp.rect()):
                 self.boss_projectiles.remove(bp)
                 if self._explode_enemy_bomb(bp, now): return
-            elif (hit_player := self._hit_player(bp.rect())):
-                if not hasattr(bp, 'impact_pending'):
+            elif (hit_player := self._hit_by_projectile(bp)):
+                if not hasattr(bp, 'impact_pending') and not getattr(bp, 'persistent', False):
                     self.boss_projectiles.remove(bp)
                 if (not self._player_is_invincible(now)
-                        and now - getattr(bp, 'last_player_hit', -9999) >= 800):
+                        and (getattr(bp, 'persistent', False)
+                             or now - getattr(bp, 'last_player_hit', -9999) >= 800)):
                     bp.last_player_hit = now
+                    if getattr(bp, 'persistent', False):
+                        bp._hit_players.add(hit_player)
                     if isinstance(bp, ReturningAxe) and not bp.red:
                         self._apply_niu_ice_axe_effect(bp, hit_player, now)
                     if self._damage_player(now, bp.damage, f'被{self.boss.name}击败！', hit_feedback=True): return
@@ -2864,7 +2892,7 @@ class Game:
         enemy = Enemy(definition)
         self.last_spawn_was_elite = enemy.is_large or enemy.is_zongzong
         self.level_spawn_count += 1
-        enemy.max_hp = 9 if enemy.is_large else 8 if enemy.is_zongzong else 3
+        enemy.max_hp = definition.get('campaign_hp', 9 if enemy.is_large else 8 if enemy.is_zongzong else 3)
         enemy.speed = definition['base_speed'] * random.uniform(0.88, 1.12)
         enemy.speed *= config.CAMPAIGN_SPEED[level - 1]
         enemy.speed *= (0.88, 1, 1.08)[tier]
