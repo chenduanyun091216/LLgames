@@ -493,7 +493,7 @@ class AbyssBoss(Boss):
 
     def __init__(self, bdef, difficulty):
         super().__init__(bdef, difficulty)
-        self.skill_index = 0
+        self._pending_attack_skill = None
         self.current_skill = ''
         self.skill_started_at = 0
         self.signature_opening_pending = False
@@ -504,11 +504,10 @@ class AbyssBoss(Boss):
         return False
 
     def should_attack(self, now):
-        # No generic acceleration or random attacks: these four moves are the
-        # entire repertoire. The interval includes warning and recovery time.
+        # The interval includes warning and recovery time.
         if self.hp <= 0 or not self.entered:
             return False
-        if self.skill_index == 0:
+        if self._last_attack_skill is None:
             return now - self.fight_start_time >= config.BOSS_OPENING_DELAY_MS
         return now - self.last_attack_time >= self.attack_interval
 
@@ -516,12 +515,17 @@ class AbyssBoss(Boss):
         if self.hp <= 0:
             return []
         self.last_attack_time = self.skill_started_at = now
-        self.current_skill = self.SKILLS[self.skill_index % 4]
-        self.skill_index += 1
+        self.current_skill = self._next_attack_skill()
+        self._pending_attack_skill = None
         shots = self._skill_shots(self.current_skill, player_x, player_y)
         for shot in shots:
             shot.spawn_time = shot.last_update = now
         return shots
+
+    def _next_attack_skill(self):
+        if self._pending_attack_skill is None:
+            self._pending_attack_skill = self._choose_attack_skill(self.SKILLS)
+        return self._pending_attack_skill
 
     def _shot(self, skill, x, y, **kwargs):
         return AbyssProjectile(skill, x, y, scale=self.size_scale, **kwargs)
@@ -714,9 +718,8 @@ class AncientWhaleBoss(AbyssBoss):
         if not self.entered:
             super().update()
             return
-        if (not self._casting(now) and now - self.fight_start_time >= config.BOSS_OPENING_DELAY_MS
-                and super().should_attack(now)
-                and self.CAST_SKILLS[self.skill_index % len(self.CAST_SKILLS)] == 'whale_suction'):
+        if (not self._casting(now) and super().should_attack(now)
+                and self._next_attack_skill() == 'whale_suction'):
             center = self._center_x()
             self.centering = True
             if center != self.x:
@@ -741,23 +744,14 @@ class AncientWhaleBoss(AbyssBoss):
     def should_attack(self, now):
         if self._casting(now) or not super().should_attack(now):
             return False
-        if self.CAST_SKILLS[self.skill_index % len(self.CAST_SKILLS)] == 'whale_suction':
+        if self._next_attack_skill() == 'whale_suction':
             return abs(self.x - self._center_x()) < 1 and abs(self.y - 18) < 1
         return True
 
-    def attack(self, now, player_x, player_y=None):
-        if self.hp <= 0:
-            return []
-        self.last_attack_time = self.skill_started_at = now
-        self.current_skill = self.CAST_SKILLS[self.skill_index % len(self.CAST_SKILLS)]
-        self.skill_index += 1
-        if self.current_skill == 'whale_suction':
-            self.suction_start_hp = self.hp
-            return []
-        shots = self._skill_shots(self.current_skill, player_x, player_y)
-        for shot in shots:
-            shot.spawn_time = shot.last_update = now
-        return shots
+    def _next_attack_skill(self):
+        if self._pending_attack_skill is None and self._last_attack_skill is None:
+            self._pending_attack_skill = self._choose_attack_skill(('tidal_crescent', 'rune_geyser', 'ancient_pearl'))
+        return super()._next_attack_skill()
 
     def draw(self, surf):
         scale = surf.scale if isinstance(surf, RenderSurface) else 1
@@ -845,6 +839,9 @@ class AncientWhaleBoss(AbyssBoss):
         draw_glow(surf, (round(self.x), round(mouth_y)), max(8, round(self.w * .24)), (104, 216, 237), 90)
 
     def _skill_shots(self, skill, player_x, player_y):
+        if skill == 'whale_suction':
+            self.suction_start_hp = self.hp
+            return []
         left, right = config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT
         width = right - left
         bottom = config.GAME_AREA_BOTTOM

@@ -1936,6 +1936,8 @@ class Boss:
         self.movement_timer = 0
         self.entered = False
         self.fight_start_time = 0
+        self._used_attack_skills = set()
+        self._last_attack_skill = None
         self.slowed_until = 0
         self.slow_mult = 1.0
         self.laser_warning_start = 0
@@ -1954,6 +1956,16 @@ class Boss:
         self.breath_base = None   # 高分辨率基准，呼吸缩放从它缩小采样，避免放大模糊
         self._breath_src = None
         self.font_hp = config.make_font(14, bold=True)
+
+    def _choose_attack_skill(self, skills):
+        unused = [skill for skill in skills if skill not in self._used_attack_skills]
+        if not unused:
+            self._used_attack_skills.clear()
+            unused = [skill for skill in skills if skill != self._last_attack_skill]
+        skill = random.choice(unused or skills)
+        self._used_attack_skills.add(skill)
+        self._last_attack_skill = skill
+        return skill
 
     def can_laser(self):
         return self.laser_chance > 0

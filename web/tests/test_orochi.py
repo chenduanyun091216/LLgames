@@ -304,24 +304,27 @@ class OrochiTests(unittest.TestCase):
         self.assertEqual(self.game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(self.game.boss, OrochiBoss)
 
-    def test_random_opening_at_three_seconds_then_regular_order(self):
+    def test_random_opening_at_three_seconds_then_unused_skills(self):
         self.boss.entered = False
         self.boss.y = 59
         config.campaign_time_ms = 3000
         self.game.update()
         self.assertTrue(self.boss.entered)
-        config.campaign_time_ms = 3999
+        config.campaign_time_ms = 5999
         self.game.update()
         self.assertIsNone(self.boss.skill)
-        with patch('game_core.orochi.random.choice', return_value='laser') as pick:
-            config.campaign_time_ms = 4000
+        with patch('game_core.entities.random.choice', return_value='laser'):
+            config.campaign_time_ms = 6000
             self.game.update()
-            pick.assert_called_once_with(self.boss.SKILLS)
         self.assertEqual(self.boss.skill, 'laser')
-        for expected in self.boss.SKILLS:
+        seen = ['laser']
+        for _ in range(7):
             self.boss._finish_skill(10000)
             self.boss.attack(10000 + self.boss.attack_interval, self.boss.x)
-            self.assertEqual(self.boss.skill, expected)
+            seen.append(self.boss.skill)
+        self.assertCountEqual(seen[:4], self.boss.SKILLS)
+        self.assertCountEqual(seen[4:], self.boss.SKILLS)
+        self.assertNotEqual(seen[3], seen[4])
 
     def test_burst_damage_cannot_skip_thresholds_and_final_success_dissolves(self):
         for threshold in (.5, .01):

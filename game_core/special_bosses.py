@@ -415,7 +415,8 @@ class NiuBoss(Boss):
         return None
 
     def _move(self, speed_mult, laser=False):
-        if self._attack_pose(config.game_ticks()) is None:
+        now = config.game_ticks()
+        if self._attack_pose(now) is None or self.axe_slam_rect(now) is not None:
             super()._move(speed_mult, laser=laser)
 
     @staticmethod
@@ -483,9 +484,8 @@ class NiuBoss(Boss):
     def attack(self, now, player_x, opening=False):
         self.last_attack_time = now
         self.animation_attack_at = now
-        pattern = (random.choice(('axes', 'slam', 'lightning')) if opening else
-                   random.choice([p for p in ('axes', 'axes', 'slam', 'lightning', 'bullets')
-                                  if p != self.last_pattern]))
+        skills = ('axes', 'slam', 'lightning') if opening else ('axes', 'axes', 'slam', 'lightning', 'bullets')
+        pattern = self._choose_attack_skill(skills)
         self.last_pattern = pattern
         tier = self.bdef.get('campaign_tier')
         warning = 0 if opening else (1200, 1000, 850)[tier] if tier is not None else 900
@@ -743,7 +743,6 @@ class ZongBoss(Boss):
         self.fusion_started_at = 0
         self.fusion_end_volley = False
         self.snow_until = 0
-        self.opening_snow_done = False
         self.expression_hit_at = None
         self.pending_projectiles = []
         self.crescent_projectiles = []
@@ -798,7 +797,11 @@ class ZongBoss(Boss):
             super()._move(speed_mult, laser=laser)
 
     def should_attack(self, now):
-        return self.crescent_started_at is None and super().should_attack(now)
+        if not self.entered or self.crescent_started_at is not None:
+            return False
+        if self._last_attack_skill is None:
+            return now - self.fight_start_time >= config.BOSS_OPENING_DELAY_MS
+        return super().should_attack(now)
 
     def update(self, target_x=None, target_y=None):
         super().update()
@@ -806,10 +809,6 @@ class ZongBoss(Boss):
             return
         now = config.game_ticks()
         tier = self.bdef.get('campaign_tier')
-        if not self.opening_snow_done and now - self.fight_start_time >= config.BOSS_OPENING_DELAY_MS:
-            duration = 5000 if tier is None else (2500, 3000, 3500)[tier]
-            self.snow_until = max(self.snow_until, now + duration)
-            self.opening_snow_done = True
         if self.crescent_started_at is not None:
             width_scale = (config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT) / 480
             half_width = 112 if tier is None else round(70 * width_scale)
@@ -882,9 +881,16 @@ class ZongBoss(Boss):
         self.last_attack_time = now
         if self.fusion_mode or self.fusion_warning_mode or self.crescent_started_at is not None:
             return []
-        self.attack_phase += 1
-        tier = self.bdef.get('campaign_tier')
-        if self.attack_phase % 2:
+        skills = ('bomb', 'wave', 'snow') if self._last_attack_skill is None else ('bomb', 'wave')
+        skill = self._choose_attack_skill(skills)
+        if skill == 'snow':
+            tier = self.bdef.get('campaign_tier')
+            duration = 5000 if tier is None else (2500, 3000, 3500)[tier]
+            self.snow_until = max(self.snow_until, now + duration)
+            self.animation_attack_at = None
+            return []
+        self.attack_phase = 1 if skill == 'bomb' else 2
+        if skill == 'bomb':
             bombs = [ZongBomb(self.body_x(i) + offset, self.y + self.h - 10, angle, 3.8,
                               homing=True, damage=3, bomb=True, explode_radius=45)
                      for i, offset, angle in ((0, -20, -20), (0, 20, 0), (1, 0, 20))

@@ -487,6 +487,34 @@ class MobileWebTests(unittest.TestCase):
         self.assertTrue(boss.death_laser_rects(fired_at + 1999))
         self.assertFalse(boss.death_laser_rects(fired_at + 2000))
 
+    def test_niu_moves_at_patrol_speed_while_swinging_axe_down(self):
+        game = self.game
+        game._start_game('hard')
+        game._start_level(7)
+        game._trigger_boss()
+        boss = game.boss
+        boss.entered = True
+        boss.y = 60
+        with patch.object(config, 'game_ticks', return_value=1900):
+            for phase, direction in ((0, 1), (157, -1)):
+                with self.subTest(direction=direction):
+                    boss.axe_slam_start = None
+                    boss.movement_timer = phase
+                    boss._move(0)
+                    start_x = boss.x
+                    boss.update()
+                    patrol_step = boss.x - start_x
+
+                    boss.movement_timer = phase
+                    boss.x = start_x
+                    boss.axe_slam_start = 1000
+                    before = boss.axe_slam_rect(1900)
+                    boss.update()
+                    after = boss.axe_slam_rect(1900)
+                    self.assertGreater(patrol_step * direction, 0)
+                    self.assertAlmostEqual(boss.x - start_x, patrol_step)
+                    self.assertGreater((after.centerx - before.centerx) * direction, 0)
+
     def test_niu_axe_slam_has_warning_damage_and_recovery(self):
         game = self.game
         game._start_game('hard')

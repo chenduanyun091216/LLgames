@@ -150,6 +150,7 @@ class CampaignParityTests(unittest.TestCase):
                     shared.entered, shared.x, shared.y = True, boss.x, boss.y
                     for skill_index, skill in enumerate(boss.SKILLS):
                         config.campaign_time_ms = 10000 + skill_index * 10000
+                        boss._pending_attack_skill = shared._pending_attack_skill = skill
                         random.seed(57)
                         shots = boss.attack(config.game_ticks(), 480, 600)
                         random.seed(57)
@@ -185,7 +186,7 @@ class CampaignParityTests(unittest.TestCase):
         game = OnlineGame('medium')
         game._start_level(10)
         game._trigger_boss()
-        game.boss.skill_index = 3
+        game.boss._pending_attack_skill = 'whale_suction'
         game.boss.attack(1000, game.player.x)
         game.lives = 2
         for player in game.players:
@@ -215,7 +216,7 @@ class CampaignParityTests(unittest.TestCase):
         game._trigger_boss()
         game.lives = 1
         game.player.gold = 0
-        game.boss.skill_index = 3
+        game.boss._pending_attack_skill = 'whale_suction'
         game.boss.attack(1000, game.player.x)
         game._update_whale_suction(6000)
         game.tick = 401

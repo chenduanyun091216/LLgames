@@ -27,12 +27,12 @@ class ZongSkillsTests(unittest.TestCase):
 
     def test_opening_snow_once_after_three_seconds(self):
         boss = self.make_boss()
-        with patch('game_core.config.game_ticks', return_value=3999):
-            boss.update()
-            self.assertEqual(boss.snow_until, 0)
-        with patch('game_core.config.game_ticks', return_value=4000):
-            boss.update()
-            self.assertEqual(boss.snow_until, 7000)
+        self.assertFalse(boss.should_attack(3999))
+        self.assertTrue(boss.should_attack(4000))
+        with patch('game_core.entities.random.choice', return_value='snow'):
+            self.assertEqual(boss.attack(4000, 200), [])
+        self.assertEqual(boss.snow_until, 7000)
+        self.assertFalse(boss.should_attack(4001))
         with patch('game_core.config.game_ticks', return_value=7001):
             boss.update()
             self.assertEqual(boss.snow_until, 7000)
@@ -53,7 +53,8 @@ class ZongSkillsTests(unittest.TestCase):
 
     def test_bombs_have_three_distinct_colors(self):
         boss = self.make_boss()
-        self.assertEqual([p.color for p in boss.attack(1000, 200)], ['black', 'yellow', 'red'])
+        with patch('game_core.entities.random.choice', return_value='bomb'):
+            self.assertEqual([p.color for p in boss.attack(1000, 200)], ['black', 'yellow', 'red'])
 
     def test_reflected_bullet_tracks_gently(self):
         bullet = ZongReflectBullet(100, 100)
@@ -71,9 +72,8 @@ class ZongSkillsTests(unittest.TestCase):
     def test_crescent_charge_locks_position_and_fires_four_aimed_shots(self):
         boss = self.make_boss()
         boss.y = 60
-        boss.attack_phase = 1
         boss.next_fusion_time = 999999
-        with patch('game_core.config.game_ticks', return_value=10000):
+        with patch('game_core.entities.random.choice', return_value='wave'):
             self.assertEqual(boss.attack(10000, boss.x + 200, 500), [])
         start_x = boss.x
         for now, count, target_x in ((11499, 0, start_x), (11500, 1, start_x + 200),

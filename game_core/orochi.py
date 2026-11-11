@@ -128,7 +128,6 @@ class OrochiBoss(Boss):
         super().__init__(bdef, difficulty)
         self.skill = None
         self.skill_at = 0
-        self.next_skill = 0
         self.opening_pending = True
         self.spawned_at = config.game_ticks()
         self.emitted = 0
@@ -162,13 +161,8 @@ class OrochiBoss(Boss):
                      else now - self.last_attack_time >= self.attack_interval))
 
     def attack(self, now, player_x):
-        if self.opening_pending:
-            self.opening_pending = False
-            skill = random.choice(self.SKILLS)
-        else:
-            skill = self.SKILLS[self.next_skill]
-            self.next_skill = (self.next_skill + 1) % len(self.SKILLS)
-        self._start_skill(skill, now)
+        self.opening_pending = False
+        self._start_skill(self._choose_attack_skill(self.SKILLS), now)
         return []
 
     def _start_skill(self, skill, now):
@@ -276,10 +270,7 @@ class OrochiBoss(Boss):
         if self.death_at is not None:
             return
         if self.skill is None:
-            entering = not self.entered
             super().update()
-            if entering and self.entered:
-                self.fight_start_time = self.spawned_at
             return
         age = self.age(now)
         if self.skill == 'volley':

@@ -101,7 +101,7 @@ class NewCampaignTests(unittest.TestCase):
                 game._trigger_boss()
                 game.lives = lives
                 game.player.gold = 0
-                game.boss.skill_index = 3
+                game.boss._pending_attack_skill = 'whale_suction'
                 game.boss.attack(1000, game.player.x)
                 with patch.object(config, 'game_ticks', return_value=6000):
                     game._update_whale_suction(6000)
@@ -219,7 +219,8 @@ class NewCampaignTests(unittest.TestCase):
                     boss.entered = True
                     attacks = []
                     for i in range(4):
-                        with patch('game_core.abyss_bosses.random', random.Random(i)):
+                        rng = random.Random(i)
+                        with patch('game_core.abyss_bosses.random', rng), patch('game_core.entities.random', rng):
                             shots = boss.attack(1000 + i * 10000, 480, 610)
                         game._add_boss_projectiles(shots)
                         attacks.append([tuple(getattr(p, f) for f in fields) for p in shots])
@@ -250,7 +251,8 @@ class NewCampaignTests(unittest.TestCase):
                     game.infinite_mode = infinite
                     boss = game.boss
                     boss.entered, boss.y = True, 60
-                    game._add_boss_projectiles(boss.attack(1000, game.player.x, game.player.y))
+                    with patch('game_core.entities.random.choice', side_effect=lambda skills: skills[0]):
+                        game._add_boss_projectiles(boss.attack(1000, game.player.x, game.player.y))
                     config.campaign_time_ms = 2800 if active else 1100
                     for shot in game.boss_projectiles:
                         shot.update(game.player.x, game.player.y)

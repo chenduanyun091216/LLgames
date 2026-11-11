@@ -211,7 +211,8 @@ class FactoryEnemiesTests(unittest.TestCase):
         self.game.infinite_boss_index = 8
         self.game._trigger_infinite_boss()
         boss = self.game.boss
-        boss.entered, boss.y, boss.skill_index = True, 60, 2
+        boss.entered, boss.y = True, 60
+        boss._pending_attack_skill = 'emp_ring'
         with patch.object(config, 'game_ticks', return_value=1000):
             shot, = boss.attack(1000, 480)
         with patch.object(config, 'game_ticks', return_value=1000 + shot.warning_ms):

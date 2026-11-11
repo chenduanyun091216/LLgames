@@ -37,11 +37,33 @@ class AbyssBossTests(unittest.TestCase):
                 boss = self.boss(cls)
                 boss.fight_start_time = 100
                 self.assertFalse(boss.should_attack(3099))
-                self.assertTrue(boss.should_attack(3100))
-                boss.attack(3100, boss.x)
-                self.assertEqual(boss.current_skill, boss.SKILLS[0])
+                with patch('game_core.entities.random.choice', side_effect=lambda skills: skills[0]), \
+                        patch.object(boss, '_choose_attack_skill', wraps=boss._choose_attack_skill) as choose:
+                    self.assertTrue(boss.should_attack(3100))
+                    boss.attack(3100, boss.x)
+                    choose.assert_called_once()
+                self.assertIn(boss.current_skill, boss.SKILLS)
                 self.assertFalse(boss.should_attack(7100))
+                if cls is AncientWhaleBoss:
+                    self.assertNotEqual(boss.current_skill, 'whale_suction')
+                    boss.x, boss.y = boss._center_x(), 18
                 self.assertTrue(boss.should_attack(8100))
+
+    def test_whale_keeps_selected_suction_while_swimming_to_center(self):
+        boss = self.boss(AncientWhaleBoss)
+        with patch('game_core.entities.random.choice', side_effect=lambda skills: skills[-1]):
+            boss.attack(3100, boss.x)
+        boss.x, boss.y = boss._center_x() + 12, 24
+        now = boss.last_attack_time + boss.attack_interval
+        with patch.object(config, 'game_ticks', return_value=now), \
+                patch('game_core.entities.random.choice', side_effect=lambda skills: skills[-1]) as choose:
+            boss.update()
+            self.assertFalse(boss.should_attack(now))
+            boss.update()
+            self.assertTrue(boss.should_attack(now))
+            boss.attack(now, boss.x)
+            choose.assert_called_once()
+        self.assertEqual(boss.current_skill, 'whale_suction')
 
     def test_all_eight_skills_start_and_expire(self):
         for cls in (MechaLizardBoss, AncientWhaleBoss):
@@ -68,10 +90,10 @@ class AbyssBossTests(unittest.TestCase):
                         shot.update()
                         self.assertFalse(shot.alive)
                         self.assertFalse(shot.hits_rect(pygame.Rect(0, 0, 3000, 3000)))
-            self.assertEqual(tuple(seen), skills)
+            self.assertCountEqual(seen, skills)
             with patch.object(config, 'game_ticks', return_value=60000):
                 boss.attack(60000, 480)
-                self.assertEqual(boss.current_skill, cls.SKILLS[0])
+                self.assertNotEqual(boss.current_skill, seen[-1])
 
     def test_whale_draws_all_eight_frames_for_each_motion(self):
         boss = self.boss(AncientWhaleBoss)
@@ -97,6 +119,7 @@ class AbyssBossTests(unittest.TestCase):
 
     def test_whale_rain_has_a_moving_center_gap(self):
         boss = self.boss(AncientWhaleBoss)
+        boss._pending_attack_skill = 'tidal_crescent'
         shots = boss.attack(1000, 480)
         self.assertEqual([shot.warning_ms for shot in shots[:3]], [0, 110, 220])
         self.assertLess(shots[-1].warning_ms, 5000)
@@ -112,6 +135,7 @@ class AbyssBossTests(unittest.TestCase):
 
     def test_whale_takes_half_damage_only_during_crescent_cast(self):
         boss = self.boss(AncientWhaleBoss)
+        boss._pending_attack_skill = 'tidal_crescent'
         boss.attack(1000, 480)
         hp = boss.hp
         for now, source in ((1000, 'bullet'), (5999, 'skill'), (6000, 'skill')):
@@ -134,7 +158,7 @@ class AbyssBossTests(unittest.TestCase):
 
     def test_whale_geysers_rise_in_three_distinct_pairs_then_shatter(self):
         boss = self.boss(AncientWhaleBoss)
-        boss.skill_index = 1
+        boss._pending_attack_skill = 'rune_geyser'
         shots = boss.attack(1000, 480)
         self.assertEqual(len({shot.x for shot in shots}), 6)
         self.assertEqual([shot.warning_ms for shot in shots], [800, 800, 1900, 1900, 3000, 3000])
@@ -160,7 +184,7 @@ class AbyssBossTests(unittest.TestCase):
 
         game = Game.__new__(Game)
         game.boss = boss = self.boss(AncientWhaleBoss)
-        boss.skill_index = 3
+        boss._pending_attack_skill = 'whale_suction'
         boss.hp = boss.max_hp * .75
         game.player = SimpleNamespace(x=boss.x + 100, y=500, move=Mock())
         enemy = SimpleNamespace(x=boss.x + 100, y=300, h=50, temple_kind='')
@@ -174,7 +198,7 @@ class AbyssBossTests(unittest.TestCase):
         self.assertFalse(game._update_whale_suction(5999))
         self.assertEqual(boss.current_skill, '')
         self.assertEqual(game._player_fire_interval_multiplier(5999), 1)
-        boss.skill_index = 3
+        boss._pending_attack_skill = 'whale_suction'
         boss.attack(10000, 480)
         with patch.object(game, '_defeat_players_by_suction') as defeat:
             boss.hp -= boss.max_hp * .19
@@ -193,7 +217,7 @@ class AbyssBossTests(unittest.TestCase):
 
     def test_pearl_volley_spawns_only_three_and_accelerates(self):
         boss = self.boss(AncientWhaleBoss)
-        boss.skill_index = 2
+        boss._pending_attack_skill = 'ancient_pearl'
         shots = boss.attack(1000, boss.x)
         self.assertEqual(len(shots), 3)
         self.assertEqual([shot.angle for shot in shots], [-48, 0, 48])
@@ -229,6 +253,7 @@ class AbyssBossTests(unittest.TestCase):
 
     def test_whip_is_held_by_the_moving_boss(self):
         boss = self.boss(MechaLizardBoss)
+        boss._pending_attack_skill = 'plasma_rail'
         with patch.object(config, 'game_ticks', return_value=1000):
             rail = boss.attack(1000, 300)[0]
         start = rail.x, rail.y
@@ -325,6 +350,7 @@ class AbyssBossTests(unittest.TestCase):
 
     def test_whip_drifts_harmlessly_between_strikes_and_can_hit_again(self):
         boss = self.boss(MechaLizardBoss)
+        boss._pending_attack_skill = 'plasma_rail'
         with patch.object(config, 'game_ticks', return_value=1000):
             rail, = boss.attack(1000, 400)
         first_strike = 1000 + rail.warning_ms + RAIL_EXTEND_MS
@@ -387,7 +413,7 @@ class AbyssBossTests(unittest.TestCase):
     def test_emp_dash_reaches_center_and_hits_along_its_route(self):
         boss = self.boss(MechaLizardBoss)
         boss.x = config.SCREEN_WIDTH / 2 - 200
-        boss.skill_index = 2
+        boss._pending_attack_skill = 'emp_ring'
         before = boss.rect()
         with patch.object(config, 'game_ticks', return_value=1000):
             shot, = boss.attack(1000, 0)
