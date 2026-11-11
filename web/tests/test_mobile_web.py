@@ -1,6 +1,7 @@
 import math
 import os
 import random
+import struct
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -10,7 +11,7 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 import pygame
 
-from game_core import config
+from game_core import config, menu_ui
 from game_core.game import Game, GameState
 from game_core.entities import Bullet, Enemy, GiftBox, SkillProjectile
 from game_core.entities import MagneticStorm, RadiationLaser, SpinningDarts
@@ -32,6 +33,71 @@ class MobileWebTests(unittest.TestCase):
     def setUp(self):
         config.update_mobile_view((480, 850))
         self.game = Game()
+
+    def test_web_level_title_is_centered_and_blocks_input_for_three_seconds(self):
+        game = Game(web=True)
+        with patch('pygame.time.get_ticks', return_value=1000) as clock:
+            game._start_game('easy')
+            for size in ((390, 844), (844, 390)):
+                config.update_mobile_view(size)
+                with patch.object(game, '_draw_panel') as panel, patch.object(game, '_draw_game') as battle:
+                    game.draw(draw_background=False)
+                battle.assert_not_called()
+                rect = pygame.Rect(*panel.call_args.args)
+                self.assertEqual(rect.center, (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2))
+            event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_k, mod=0)
+            with patch.object(game, '_handle_keydown') as keydown:
+                clock.return_value = 3999
+                self.assertTrue(game.web_level_intro_active())
+                game.handle_events([event])
+                keydown.assert_not_called()
+                clock.return_value = 4000
+                self.assertFalse(game.web_level_intro_active())
+                game.handle_events([event])
+                keydown.assert_called_once_with(event)
+
+    def test_web_skill_buttons_keep_icons_during_cooldown(self):
+        game = Game(web=True)
+        game.player.character = 'radiation'
+        controls = game.mobile_controls
+        with patch.object(config, 'game_ticks', return_value=1000), \
+                patch.object(controls, '_skill_timing', return_value=(2000, 1000)), \
+                patch.object(game, '_draw_text_fit') as labels, \
+                patch('game_core.mobile_controls.Draw.lines') as icons:
+            controls.draw(config.SCR, game)
+        self.assertGreaterEqual(icons.call_count, 4)
+        drawn = {call.args[0] for call in labels.call_args_list}
+        self.assertTrue(drawn.isdisjoint({'闪电链', '磁暴', '激光', '飞镖', '1s'}))
+
+    def test_web_home_scrim_preserves_the_background(self):
+        game = Game(web=True)
+        pixels = pygame.Surface((720, 405), pygame.SRCALPHA)
+        with patch.object(config, 'SCR', RenderSurface(pixels, (960, 540), pixels.get_size(), (0, 0))):
+            game.draw(draw_background=False)
+        self.assertGreater(pixels.get_at((0, 0)).a, 0)
+        self.assertLess(pixels.get_at((0, 0)).a, 255)
+
+    def test_mobile_web_restores_sprite_size_without_changing_hitboxes(self):
+        for size in ((390, 844), (844, 390)):
+            config.update_mobile_view(size)
+            game = Game(web=True, mobile_web=True)
+            game._start_game('easy')
+            game.player.character = 'water'
+            octopus = Enemy(next(enemy for enemy in config.ENEMY_DEFS if enemy['key'] == 'octopus'))
+            game.enemies = [octopus]
+            hitboxes = game.player.rect(), octopus.rect()
+            with patch('game_core.entities.blit_lit_sprite') as blit:
+                game._draw_game()
+                mobile_sizes = [call.args[1].get_size() for call in blit.call_args_list]
+                blit.reset_mock()
+                game.mobile_web = False
+                game._draw_game()
+                desktop_sizes = [call.args[1].get_size() for call in blit.call_args_list]
+            self.assertEqual(len(mobile_sizes), 2)
+            for mobile, desktop in zip(mobile_sizes, desktop_sizes):
+                self.assertGreater(mobile[0], desktop[0])
+                self.assertGreater(mobile[1], desktop[1])
+            self.assertEqual((game.player.rect(), octopus.rect()), hitboxes)
 
     def test_hud_does_not_overlap_touch_buttons(self):
         for size in ((360, 640), (390, 844), (844, 390), (1280, 720)):
@@ -114,6 +180,33 @@ class MobileWebTests(unittest.TestCase):
                 game.draw()
         self.assertFalse(any(call.args[0].startswith(('冰弹 ', '极速 ', '闪电 '))
                              for call in draw_text.call_args_list))
+
+    def test_sniper_missiles_prioritize_and_open_the_nearest_visible_gift(self):
+        game = self.game
+        game._start_game('easy')
+        enemy = Enemy(config.ENEMY_DEFS[0])
+        enemy.x, enemy.y = 220, 290
+        game.enemies = [enemy]
+        for flag in ('sniper_missile', 'sniper_submissile'):
+            with self.subTest(flag=flag):
+                missile = Bullet(240, 350, config.WEAPON_DEFS['sniper'], 'sniper')
+                setattr(missile, flag, True)
+                near, far = GiftBox(300), GiftBox(110)
+                near.y = far.y = 270
+                near.kind = 'haste'
+                game.gift_boxes = [far, near]
+                game.bullets = [missile]
+                game._advance_bullet(missile, 1000)
+                self.assertEqual(missile.angle, 7)
+                missile.x, missile.y = near.x, near.y
+                self.assertTrue(game._handle_bullet_gift_hit(missile, 1000))
+                self.assertEqual(game.gift_boxes, [far])
+                self.assertFalse(game.bullets)
+                self.assertGreater(game.player.gift_speed_until, 1000)
+                far.y = -GiftBox.SIZE
+                missile.x, missile.y, missile.angle = 240, 350, 0
+                game._advance_bullet(missile, 1000)
+                self.assertLess(missile.angle, 0)
 
     def test_gift_lightning_waits_for_a_visible_nearby_target_and_hits_after_travel(self):
         game = self.game
@@ -261,6 +354,42 @@ class MobileWebTests(unittest.TestCase):
         game._kill_boss()
         self.assertEqual(game.state, GameState.PLAYING)
 
+    def test_campaign_victory_totals_include_failed_attempts(self):
+        game = self.game
+        with patch.object(config, 'campaign_time_ms', 1000):
+            game._start_game('easy', len(config.LEVEL_CONFIGS))
+            enemy = Enemy(config.ENEMY_DEFS[0])
+            game.enemies.append(enemy)
+            game._kill_enemy(enemy)
+            game.lives = 1
+            game._player_defeated('测试')
+            game._retry_level()
+            self.assertEqual(game.kill_count, 0)
+            enemy = Enemy(config.ENEMY_DEFS[0])
+            game.enemies.append(enemy)
+            game._kill_enemy(enemy)
+        with patch.object(config, 'campaign_time_ms', 66000):
+            game._trigger_boss()
+            game._kill_boss()
+        for size in ((390, 844), (844, 390), (960, 720)):
+            with self.subTest(size=size), patch.object(config, 'campaign_time_ms', 68000):
+                config.update_mobile_view(size)
+                labels = []
+                game.draw(labels)
+                texts = [row[0] for row in labels]
+                viewport = pygame.Rect(0, 0, config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+                for label, value in (('总共耗时', '01:05'), ('总共消灭怪物', '2'),
+                                     ('死亡次数', '1'), ('重启次数', '1'),
+                                     ('击败首领', '1'), ('剩余金币', str(game.player.gold))):
+                    index = texts.index(label)
+                    self.assertEqual(texts[index + 1], value)
+                    self.assertTrue(viewport.contains(pygame.Rect(labels[index][4:8])))
+                    self.assertTrue(viewport.contains(pygame.Rect(labels[index + 1][4:8])))
+                self.assertIn('从第 11 关开始', texts)
+        game._start_game('easy')
+        self.assertEqual((game.campaign_enemies_defeated, game.campaign_bosses_defeated,
+                          game.campaign_deaths, game.campaign_restarts), (0, 0, 0, 0))
+
     def test_easy_campaign_reduces_late_boss_pressure(self):
         game = self.game
         game._start_game('easy')
@@ -307,7 +436,7 @@ class MobileWebTests(unittest.TestCase):
             bullet = game.player.shoot(1000)[0]
             bullet.update()
             self.assertFalse(bullet.is_offscreen())
-            gap = math.ceil(config.WEAPON_DEFS['pistol'].fire_rate / .70)
+            gap = 400
             self.assertFalse(game.player.can_shoot(1000 + gap - 1))
             self.assertTrue(game.player.can_shoot(1000 + gap))
 
@@ -810,12 +939,17 @@ class MobileWebTests(unittest.TestCase):
         game.player.gold = 10
         game.lives = 1
         game._start_level(6)
+        with patch.object(game, '_level_title_ticks', return_value=game.level_title_until):
+            game.update()
         self.assertEqual(game.state, GameState.BOSS_FIGHT)
         for _ in range(2):
             game.lives = 1
             game._player_defeated('测试')
             self.assertEqual(game.state, GameState.GAME_OVER)
             game._handle_keydown(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN))
+            self.assertIsNone(game.boss)
+            with patch.object(game, '_level_title_ticks', return_value=game.level_title_until):
+                game.update()
             self.assertEqual(game.state, GameState.BOSS_FIGHT)
             self.assertEqual(game.current_level, 6)
             self.assertEqual(game.lives, 3)
@@ -896,15 +1030,21 @@ class MobileWebTests(unittest.TestCase):
             self.game._move_player_from_controls(self.game.player, {}, pygame.time.get_ticks())
             self.assertEqual(self.game.player.x, before)
 
-    def test_difficulty_starts_single_player_without_mode_select(self):
+    def test_home_difficulty_opens_campaign_with_first_level_selected(self):
         game = self.game
         self.assertEqual(game.state, GameState.MENU)
-        game._handle_click(game._mobile_menu_rects()['start'].center)
+        with patch.object(game, 'web', True):
+            for key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                game._handle_keydown(pygame.event.Event(pygame.KEYDOWN, key=key, mod=0))
+                self.assertEqual(game.state, GameState.MENU)
+        game.selected_level = 9
+        game._handle_click(game._mobile_menu_rects()['medium'].center)
         self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
-        self.assertEqual(game.selected_difficulty, 'easy')
+        self.assertEqual(game.selected_difficulty, 'medium')
+        self.assertEqual(game.selected_level, 1)
         rects = game._campaign_rects()
+        self.assertEqual(set(rects) - {f'level:{i}' for i in range(1, 12)}, {'home', 'detail', 'start'})
         game._handle_click(rects['level:9'].center)
-        game._handle_click(rects['medium'].center)
         self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
         game._handle_click(rects['start'].center)
         self.assertEqual(self.game.state, GameState.PLAYING)
@@ -913,12 +1053,17 @@ class MobileWebTests(unittest.TestCase):
         self.assertEqual(len(self.game.players), 1)
         self.game.draw()
 
-    def test_shop_skill_preview_and_purchase_carry_into_campaign(self):
+    def test_battle_shop_skill_preview_and_purchase(self):
         game = self.game
-        game._handle_click(game._mobile_menu_rects()['start'].center)
-        game._handle_click(game._campaign_rects()['shop'].center)
+        game._handle_click(game._mobile_menu_rects()['easy'].center)
+        game._handle_click(game._campaign_rects()['start'].center)
+        game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE, mod=0)])
+        game._handle_mobile_action('shop')
         game.player.gold = 40
-        game._handle_click(game._mobile_shop_rects()['character'].center)
+        rects = game._mobile_shop_rects()
+        self.assertEqual(sum(key.startswith('weapon:') for key in rects), 4)
+        self.assertEqual(sum(key.startswith('character:') for key in rects), 4)
+        self.assertLess(rects['weapon:pistol'].bottom, rects['character:ice'].top)
         game._handle_click(game._mobile_shop_rects()['skills:fire'].center)
         self.assertEqual(game.shop_character, 'fire')
         self.assertEqual(game.player.gold, 40)
@@ -928,20 +1073,127 @@ class MobileWebTests(unittest.TestCase):
         self.assertEqual(game.player.character, 'fire')
         self.assertEqual(game.state, GameState.SHOP)
         game._handle_click(game._mobile_shop_rects()['close'].center)
-        game._handle_click(game._campaign_rects()['start'].center)
+        self.assertEqual(game.state, GameState.PLAYING)
         self.assertEqual(game.player.character, 'fire')
         self.assertEqual(game.player.gold, 14)
 
-    def test_difficulty_cards_and_custom_button_stay_separate(self):
+    def test_home_title_and_bosses_animate_independently_of_team(self):
+        pixels = pygame.Surface((960, 1700), pygame.SRCALPHA)
+        target = RenderSurface(pixels, (480, 850), pixels.get_size(), (0, 0))
+        sprite = pygame.Surface((10, 10))
+        with patch.object(self.game, 'title_image', object()), \
+                patch.object(self.game, '_draw_scrim'), \
+                patch.object(self.game, '_draw_text_fit'), \
+                patch.object(menu_ui, '_panel'), \
+                patch.object(config, 'SCR', target), \
+                patch.object(target, 'blit_pixels', wraps=target.blit_pixels) as blit, \
+                patch.object(menu_ui, '_boss_art', return_value=sprite), \
+                patch.object(menu_ui, '_art') as art, \
+                patch('pygame.time.get_ticks', return_value=0) as clock:
+            poster_frames, other_art, team_frames = [], [], []
+            for time in (0, 1800, 3600, 5400, 7200):
+                clock.return_value = time
+                blit.reset_mock()
+                art.reset_mock()
+                menu_ui.draw_home(self.game)
+                blit.assert_called_once()
+                image, position = blit.call_args.args
+                poster_frames.append(image.get_rect(topleft=position))
+                other_art.append([call.args[1] for call in art.call_args_list])
+                team_frames.append([call.args[0] for call in art.call_args_list[1:]])
+
+        resting, growing, expanded, shrinking, returned = poster_frames
+        self.assertEqual(expanded.w, target.length(round(menu_ui._home_boxes()[1].w * 0.88)))
+        self.assertAlmostEqual(resting.w / expanded.w, 0.90, delta=1 / expanded.w)
+        self.assertLess(resting.w, growing.w)
+        self.assertLess(growing.w, expanded.w)
+        self.assertEqual(growing, shrinking)
+        self.assertEqual(resting, returned)
+        self.assertTrue(all(rect.center == expanded.center for rect in poster_frames))
+        self.assertGreater(other_art[2][0].y, other_art[0][0].y)
+        self.assertEqual(other_art[0][1:], other_art[2][1:])
+        self.assertEqual(len(team_frames[0]), 5)
+        for first, later in zip(team_frames[0], team_frames[2]):
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(later)
+            self.assertNotEqual(pygame.image.tobytes(first, 'RGBA'), pygame.image.tobytes(later, 'RGBA'))
+        team_top = min(rect.top for rect in other_art[2][1:])
+        self.assertLess(expanded.bottom, target.point((0, team_top))[1])
+
+    def test_home_buttons_fit_portrait_and_landscape(self):
         for size in ((844, 390), (932, 393), (390, 844)):
             with self.subTest(size=size):
                 config.update_mobile_view(size)
-                rects = self.game._campaign_rects()
-                button = rects['custom']
-                cards = [rects[key] for key in ('easy', 'medium', 'hard')]
-                self.assertTrue(all(rect.bottom <= button.top for rect in cards))
+                rects = self.game._mobile_menu_rects()
+                cards = list(rects.values())
+                self.assertEqual(len({rect.top for rect in cards}),
+                                 1 if config.MOBILE_LANDSCAPE_VIEW else 3)
+                self.assertEqual((min(rect.left for rect in cards) + max(rect.right for rect in cards)) // 2,
+                                 config.SCREEN_WIDTH // 2)
+                bounds = pygame.Rect(0, 0, config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+                self.assertTrue(all(bounds.contains(rect) for rect in cards))
                 self.assertTrue(all(rect.collidelist(cards[index + 1:]) == -1
                                     for index, rect in enumerate(cards)))
+
+    def test_keyboard_home_settings_custom_campaign_and_endless(self):
+        game = self.game
+
+        def press(key):
+            game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)])
+
+        press(pygame.K_3)
+        self.assertEqual(game.selected_difficulty, 'hard')
+        self.assertEqual(game.selected_level, 1)
+        press(pygame.K_DOWN)
+        press(pygame.K_RIGHT)
+        self.assertEqual(game.selected_level, 5)
+        press(pygame.K_a)
+        press(pygame.K_w)
+        self.assertEqual(game.selected_level, 1)
+        press(pygame.K_d)
+        press(pygame.K_s)
+        self.assertEqual(game.selected_level, 5)
+        press(pygame.K_b)
+        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        press(pygame.K_ESCAPE)
+        press(pygame.K_k)
+        self.assertEqual(game.state, GameState.KEY_SETTINGS)
+        press(pygame.K_DOWN)
+        press(pygame.K_RETURN)
+        press(pygame.K_f)
+        self.assertEqual(game.controls['p1_right'], pygame.K_f)
+        press(pygame.K_ESCAPE)
+        self.assertEqual(game.state, GameState.MENU)
+        press(pygame.K_c)
+        self.assertEqual(game.state, GameState.CUSTOM_DIFFICULTY)
+        press(pygame.K_RIGHT)
+        press(pygame.K_RETURN)
+        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        self.assertEqual(game.selected_level, 1)
+        press(pygame.K_RETURN)
+        self.assertEqual(game.current_level, 1)
+        self.assertEqual(game.difficulty.name, '自定义')
+        self.assertEqual(game.difficulty.spawn_interval_start, 2500)
+        game.reset()
+        press(pygame.K_4)
+        self.assertTrue(game.infinite_mode)
+
+    def test_bottom_hp_label_renders_at_web_canvas_resolution(self):
+        game = Game(web=True)
+        game._start_game('easy')
+        for size in ((390, 844), (844, 390)):
+            with self.subTest(size=size):
+                config.update_mobile_view(size)
+                logical = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
+                pixels = tuple(round(dimension * 1.5) for dimension in logical)
+                target = RenderSurface(pygame.Surface(pixels), logical, pixels, (0, 0))
+                game._ui_labels = []
+                with patch.object(config, 'SCR', target), patch.object(
+                    game, '_desktop_font', wraps=game._desktop_font
+                ) as font:
+                    game._draw_hud()
+                font.assert_any_call(target.length(16), False)
+                self.assertFalse(any(row[0].startswith('HP ') for row in game._ui_labels))
 
     def test_modal_labels_do_not_reveal_covered_hud(self):
         self.game._start_game('easy')
@@ -976,17 +1228,22 @@ class MobileWebTests(unittest.TestCase):
                     game._draw_level_title()
                     labels = [label[0] for label in game._ui_labels]
                     self.assertIn(f'第{level}关', labels)
-                    if level == 9:
-                        self.assertIn('机房重地 之', labels)
-                        self.assertIn('废弃工厂', labels)
-                    else:
-                        self.assertIn(config.LEVEL_CONFIGS[level - 1]['title'], labels)
+                    self.assertIn(config.LEVEL_CONFIGS[level - 1]['title'], labels)
+                    boss = config.BOSS_DEFS[config.LEVEL_CONFIGS[level - 1]['boss_idx']]
+                    self.assertIn(boss['name'], labels)
+                    self.assertRegex(boss['name'], r'^[\u4e00-\u9fff]{4}·[\u4e00-\u9fff]{2}$')
                     icons = blit.call_args_list
-                    self.assertEqual(len(icons), 2 if level == 11 else 4)
-                    boss_width = icons[-1].kwargs['logical_size'][0]
-                    self.assertLessEqual(boss_width, 48)
+                    self.assertEqual(len(icons), 1 if level == 11 else 4)
+                    if level == 11:
+                        self.assertIn('直接挑战', labels)
                     self.assertTrue(all(icon.kwargs['logical_size'][0] <= 30 for icon in icons[:-1]))
                     plaque = pygame.Rect(*panel.call_args.args)
+                    boss_rect = pygame.Rect(icons[-1].args[1], icons[-1].kwargs['logical_size'])
+                    self.assertGreater(max(boss_rect.size), 48)
+                    self.assertLess(boss_rect.top, plaque.top)
+                    self.assertGreater(boss_rect.bottom, plaque.top)
+                    for row in game._ui_labels:
+                        self.assertFalse(boss_rect.colliderect(pygame.Rect(row[4:8])))
                     for action, (x, y), radius, _, _ in game.mobile_controls._buttons(game):
                         if action.startswith('character:'):
                             button = pygame.Rect(x - radius, y - radius, 2 * radius, 2 * radius)
@@ -1001,7 +1258,7 @@ class MobileWebTests(unittest.TestCase):
         game._ui_labels = []
         with patch.object(config, 'game_ticks', return_value=2199):
             game._draw_level_title()
-        self.assertEqual([label[0] for label in game._ui_labels], ['第20章', '机房重地 之', '废弃工厂'])
+        self.assertEqual([label[0] for label in game._ui_labels], ['第20章', '机房重地', '机械蜥蜴·熔芯'])
         game._ui_labels.clear()
         with patch.object(config, 'game_ticks', return_value=2200):
             game._draw_level_title()
@@ -1118,15 +1375,24 @@ class MobileWebTests(unittest.TestCase):
                         f'{window_size}: {button[0]} overlaps {other[0]}',
                     )
 
-    def test_campaign_tracks_have_distinct_tempos_and_clean_loop_seams(self):
+    def test_campaign_tracks_match_menu_level_and_keep_clean_loop_seams(self):
         lengths = set()
-        for level in range(1, 9):
-            generator = sounds._music_pcm(level, False, False, 0)
+        tracks = [(level, False, False, 0) for level in range(9)]
+        tracks += [(5, True, False, 0), (2, True, True, 1)]
+        for level, boss, infinite, variant in tracks:
+            generator = sounds._music_pcm(level, boss, infinite, variant)
             with self.assertRaises(StopIteration) as finished:
                 while True:
                     next(generator)
             pcm = finished.exception.value
-            lengths.add(len(pcm))
+            samples = struct.iter_unpack('<h', pcm)
+            rms = math.sqrt(sum(sample * sample for sample, in samples) / (len(pcm) // 2))
+            if level == 0:
+                menu_rms = rms
+            else:
+                self.assertAlmostEqual(rms, menu_rms, delta=1)
+                if not boss:
+                    lengths.add(len(pcm))
             self.assertEqual(pcm[:2], b'\0\0')
             self.assertEqual(pcm[-2:], b'\0\0')
         self.assertEqual(len(lengths), 8)
@@ -1153,13 +1419,39 @@ class MobileWebTests(unittest.TestCase):
                 sounds.advance_music()
                 previous = channel.get_sound()
                 self.assertIsNotNone(previous)
+                self.assertAlmostEqual(previous.get_volume(), .72, delta=.01)
                 sounds.start_music(1, boss=True)
                 sounds.advance_music()
                 self.assertIsNotNone(channel.get_sound())
                 self.assertIsNot(channel.get_sound(), previous)
+                self.assertAlmostEqual(channel.get_sound().get_volume(), .72, delta=.01)
                 self.assertEqual(previous.get_num_channels(), 0)
         finally:
             pygame.mixer.stop()
+
+    def test_first_level_restores_menu_volume_after_opening_fade(self):
+        pcm = b'\0\0' * sounds.SAMPLE_RATE
+
+        def track(*args):
+            yield
+            return pcm
+
+        self.assertTrue(sounds.ensure_audio())
+        self.addCleanup(sounds.stop_music)
+        sounds.stop_music()
+        channel = pygame.mixer.Channel(0)
+        with patch.object(sounds, '_music_pcm', side_effect=track):
+            sounds.start_music()
+            sounds.advance_music()
+            pygame.time.wait(100)
+            menu_volume = channel.get_volume()
+            sounds.set_music_volume(.13)
+            sounds.stop_music(fade_ms=300)
+            sounds.start_music(1)
+            sounds.advance_music()
+            pygame.time.wait(400)
+            self.assertTrue(channel.get_busy())
+            self.assertEqual(channel.get_volume(), menu_volume)
 
     def test_web_audio_mixer_can_retry_after_initialization_failure(self):
         with patch.object(sounds.pygame.mixer, 'get_init', side_effect=[None, (22050, -16, 1)]), \
@@ -1365,6 +1657,35 @@ class MobileWebTests(unittest.TestCase):
         self.assertGreaterEqual(controls.axis[0], 0.4)
         controls._update_axis((510, 300))
         self.assertEqual(controls.axis[0], 1.0)
+
+    def test_joystick_reverses_after_a_short_drag_back_from_full_tilt(self):
+        game = self.game
+        game.state = GameState.PLAYING
+        controls = game.mobile_controls
+        for size in ((844, 390), (390, 844)):
+            with self.subTest(size=size), patch.object(controls, '_window_size', return_value=size):
+                config.update_mobile_view(size)
+                controls.reset()
+                game.player.x = config.SCREEN_WIDTH // 2
+
+                def touch(event_type, x):
+                    event = pygame.event.Event(event_type, finger_id=7, x=x / size[0], y=0.9)
+                    game.handle_events([event])
+
+                touch(pygame.FINGERDOWN, 110)
+                touch(pygame.FINGERMOTION, 210)
+                game._move_player_from_controls(game.player, {}, pygame.time.get_ticks())
+                self.assertGreater(game.player.x, config.SCREEN_WIDTH // 2)
+
+                x = game.player.x
+                touch(pygame.FINGERMOTION, 182)
+                game._move_player_from_controls(game.player, {}, pygame.time.get_ticks())
+                self.assertLess(game.player.x, x)
+
+                touch(pygame.FINGERUP, 182)
+                x = game.player.x
+                game._move_player_from_controls(game.player, {}, pygame.time.get_ticks())
+                self.assertEqual(game.player.x, x)
 
     def test_landscape_gift_boxes_spawn_inside_center_half(self):
         config.update_mobile_view((844, 390))
@@ -1635,6 +1956,8 @@ class MobileWebTests(unittest.TestCase):
                             game._update_boss_fight(opening.end_at)
                             game._update_boss_fight(due - 1)
                             self.assertIsNone(boss.signature)
+                            if opening.key == 'boss_crab':
+                                game.enemies[:] = [enemy for enemy in game.enemies if enemy.chase_color is None]
                             attack_time = boss.last_attack_time
                             laser_time = boss.next_death_laser_time
                             game._update_boss_fight(due)
@@ -1643,6 +1966,26 @@ class MobileWebTests(unittest.TestCase):
                         self.assertEqual(boss.signature.impact_at, due)
                         self.assertEqual(boss.last_attack_time, attack_time)
                         self.assertEqual(boss.next_death_laser_time, laser_time)
+
+    def test_early_bosses_cast_one_extra_signature_below_half_health(self):
+        game = self.game
+        for level in range(1, 7):
+            with self.subTest(level=level):
+                game._start_game('easy', level)
+                game._trigger_boss()
+                boss = game.boss
+                self.assertTrue(game._try_boss_signature(3000, opening=True))
+                opening = boss.signature
+                boss.hp = boss.max_hp / 2 - 1
+                self.assertFalse(game._try_boss_signature(3001))
+                game._update_boss_signature(opening.end_at)
+                boss.hp = boss.max_hp / 2
+                self.assertFalse(game._try_boss_signature(opening.end_at + 1))
+                boss.hp -= 1
+                self.assertTrue(game._try_boss_signature(opening.end_at + 1))
+                extra = boss.signature
+                game._update_boss_signature(extra.end_at)
+                self.assertFalse(game._try_boss_signature(extra.end_at + 1))
 
     def test_animated_boss_signatures_exclude_bosses_with_custom_skills(self):
         from game_core.boss_skills import SIGNATURES
@@ -1774,6 +2117,8 @@ class MobileWebTests(unittest.TestCase):
         game._update_boss_signature(1861)
         self.assertEqual(tuple(crab.chase_color for crab in game.enemies), CRAB_BUBBLE_COLORS)
         crab, partner = game.enemies
+        for summon in (crab, partner):
+            self.assertAlmostEqual(summon.speed, 1.9 * .70)
         self.assertEqual(crab.max_hp, game.boss.max_hp * .20)
         game.player.x = crab.x + 60
         game.player.y = crab.y - 60
@@ -1882,10 +2227,13 @@ class MobileWebTests(unittest.TestCase):
         start_y = boss.y + boss.h * .58
         attack.target_x, attack.target_y = boss.x + boss.w, start_y
         for age in (LASH_MS / 4, LASH_MS / 2):
-            for points in attack._tentacles(boss, age):
+            for side, points in zip((-1, 1), attack._tentacles(boss, age)):
                 start, tip = points[0], points[-1]
                 path_length = sum(math.dist(a[:2], b[:2]) for a, b in zip(points, points[1:]))
-                self.assertAlmostEqual(path_length, config.SCREEN_HEIGHT - start_y)
+                self.assertAlmostEqual(start[0], boss.x + side * boss.w * .18)
+                self.assertAlmostEqual(start[1], boss.y + boss.h * .54)
+                root_offset = math.hypot(boss.w * .14, boss.h * .04)
+                self.assertAlmostEqual(path_length, config.SCREEN_HEIGHT - start_y, delta=root_offset)
                 self.assertLess(math.dist(start[:2], tip[:2]), path_length)
                 self.assertGreater(tip[0] - start[0], abs(tip[1] - start[1]))
         target = pygame.Rect(round(attack.target_x), round(start_y), 1, 1)
@@ -1965,6 +2313,7 @@ class MobileWebTests(unittest.TestCase):
         game = self.game
         game._start_game('medium')
         game._start_level(6)
+        game._trigger_boss()
         boss = game.boss
         boss.y = 60
         self.assertTrue(game._try_boss_signature(1000, opening=True))
@@ -2007,6 +2356,7 @@ class MobileWebTests(unittest.TestCase):
             for level in (2, 8):
                 game._start_level(level)
                 game._trigger_boss()
+                game.level_title_until = 0
                 labels = []
                 game.draw(labels)
                 name = game.boss.name if level == 2 else '小粽粽 × 2'

@@ -10,6 +10,7 @@ _sound_cache = {}
 
 SAMPLE_RATE = 22050
 _MUSIC_CHANNEL = 0
+_MENU_MUSIC_RMS = 1559  # 首页曲目的 16 位 PCM 均方根幅度。
 
 
 def ensure_audio():
@@ -408,6 +409,26 @@ _MUSIC_THEMES = (
 
 _pending_music = None
 _requested_music = None
+_music_volume = 1.0
+
+
+def set_music_volume(volume):
+    global _music_volume
+    _music_volume = volume
+    if pygame.mixer.get_init():
+        pygame.mixer.Channel(_MUSIC_CHANNEL).set_volume(volume)
+
+
+def stop_music(fade_ms=0):
+    global _pending_music, _requested_music, _music_volume
+    _pending_music = _requested_music = None
+    _music_volume = 1.0
+    if pygame.mixer.get_init():
+        channel = pygame.mixer.Channel(_MUSIC_CHANNEL)
+        if fade_ms:
+            channel.fadeout(fade_ms)
+        else:
+            channel.stop()
 
 
 def start_music(level=0, boss=False, infinite=False, variant=0):
@@ -435,9 +456,12 @@ def advance_music(budget=0.004):
             return
         try:
             snd = pygame.mixer.Sound(buffer=finished.value)
-            snd.set_volume(0.55 if _requested_music[0] <= 0 else 0.38)
-            # Replacing a sound on the same channel keeps the handoff exclusive.
-            pygame.mixer.Channel(_MUSIC_CHANNEL).play(snd, loops=-1, fade_ms=30)
+            snd.set_volume(0.72)
+            channel = pygame.mixer.Channel(_MUSIC_CHANNEL)
+            # SDL captures the channel volume when the fade-in starts.
+            channel.stop()
+            channel.set_volume(_music_volume)
+            channel.play(snd, loops=-1, fade_ms=30)
         except (pygame.error, AttributeError):
             _requested_music = None
 
@@ -467,6 +491,7 @@ def _music_pcm(level, boss, infinite, variant):
     step_len = int(SAMPLE_RATE * tempo)
     note_cache = {}
     pcm = bytearray()
+    energy = 0
     for bar in range(8):
         root = roots[bar % len(roots)]
         bass = []
@@ -484,9 +509,18 @@ def _music_pcm(level, boss, infinite, variant):
             offset = step * step_len
             for start in range(0, step_len, 1024):
                 end = min(start + 1024, step_len)
-                pcm.extend(_pack([_clamp16(b + m) for b, m in
-                                  zip(bass[offset + start:offset + end], lead[start:end])]))
+                samples = [_clamp16(b + m) for b, m in
+                           zip(bass[offset + start:offset + end], lead[start:end])]
+                energy += sum(sample * sample for sample in samples)
+                pcm.extend(_pack(samples))
                 yield
+    if energy:
+        gain = _MENU_MUSIC_RMS / math.sqrt(energy / (len(pcm) // 2))
+        for start in range(0, len(pcm), 2048):
+            end = min(start + 2048, len(pcm))
+            samples = struct.iter_unpack('<h', pcm[start:end])
+            pcm[start:end] = _pack([_clamp16(sample * gain) for sample, in samples])
+            yield
     # Integer subdivision can trim a sample from the last bass note.
     pcm[-2:] = b'\0\0'
     return bytes(pcm)

@@ -45,7 +45,7 @@ class OceanEnemiesTests(unittest.TestCase):
                 enemy = Enemy(definition)
                 enemy.y = 90
                 rect = enemy.rect()
-                action_asset = f'enemies/enemy_{definition["key"]}_action.png'
+                action_asset = f'animations/enemies/enemy_{definition["key"]}_action.png'
                 for age, asset in ((1000, enemy.sprite_asset), (3200, action_asset)):
                     self.assertIsNotNone(image_asset(asset))
                     with patch.object(config, 'game_ticks', return_value=enemy.breath_start_time + age), \

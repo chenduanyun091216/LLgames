@@ -155,6 +155,8 @@ class BossSignature:
         lash = math.sin(math.pi * progress)
         for side in (-1, 1):
             start = (boss.x + side * boss.w * .32, boss.y + boss.h * .58)
+            # Tuck the root under the mantle and blend into the original lash path.
+            root_dx, root_dy = -side * boss.w * .14, -boss.h * .04
             steps = 24
             reach = max(0, self.bottom - start[1])
             segment = reach / steps
@@ -163,7 +165,7 @@ class BossSignature:
             target_fraction = min(1, math.hypot(self.target_x - start[0], self.target_y - start[1])
                                   / max(1, reach))
             x, y = start
-            points = [(x, y, 23)]
+            points = [(x + root_dx, y + root_dy, 14)]
             for i in range(1, steps + 1):
                 t = i / steps
                 phase = (t - .5 / steps - target_fraction / 2) * math.tau
@@ -171,7 +173,10 @@ class BossSignature:
                 tangent = angle + wave * (.46 + .10 * (1 - lash))
                 x += math.cos(tangent) * segment
                 y += math.sin(tangent) * segment
-                points.append((x, y, max(3, 23 * (1 - t) ** .7)))
+                root_blend = max(0, 1 - i / 5) ** 2
+                width = (23 - 9 * root_blend) * (1 - t) ** .7
+                points.append((x + root_dx * root_blend, y + root_dy * root_blend,
+                               max(3, width)))
             yield points
 
     def _tridents(self, age):
@@ -374,8 +379,6 @@ def _draw_drop_warning(surface, x, y, bottom, color):
 def _draw_tentacle(surface, points):
     left, right = [], []
     for i, (x, y, width) in enumerate(points):
-        if i == 0:
-            width *= .55
         a = points[max(0, i - 1)]
         b = points[min(len(points) - 1, i + 1)]
         dx, dy = b[0] - a[0], b[1] - a[1]

@@ -63,7 +63,7 @@ class AnimationTests(unittest.TestCase):
             self.assertEqual(animation.player_frame(player, 'player_fire', 1450), 'player_fire_attack')
             player.animation_move_at = 1630
             self.assertEqual(animation.player_frame(player, 'player_fire', 1640), 'player_fire_run')
-            self.assertEqual(animation.player_frame(player, 'player_fire', 1800), 'player_fire_idle')
+            self.assertEqual(animation.player_frame(player, 'player_fire', 1800), 'player_fire_run')
 
     def test_fisher_animation_switches_between_grenade_shoot_walk_and_idle(self):
         player = entities.Player()
@@ -77,7 +77,9 @@ class AnimationTests(unittest.TestCase):
             self.assertEqual(animation.player_frame(player, 'player1', 1045), ('player1_attack', 1))
             player.animation_move_at = 1190
             self.assertEqual(animation.player_frame(player, 'player1', 1200), ('player1_run', 2))
-            self.assertEqual(animation.player_frame(player, 'player1', 1440), ('player1_idle', 2))
+            for index in range(4):
+                now = 1600 + index * 400
+                self.assertEqual(animation.player_frame(player, 'player1', now), ('player1_run', index))
 
     def test_zongzong_expressions_follow_hits_without_changing_damage(self):
         enemy = entities.Enemy(next(e for e in config.ENEMY_DEFS if e.get('zongzong')))
@@ -318,7 +320,7 @@ class AnimationTests(unittest.TestCase):
         boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
         boss.entered = True
         right = boss._body_frame(1000)
-        self.assertIsNotNone(special_bosses.image_asset('bosses/boss_niu_scooter.png'))
+        self.assertIsNotNone(special_bosses.image_asset('animations/bosses/boss_niu_scooter.png'))
         self.assertIsNot(boss._body_frame(1200), right)
         boss.running_left = True
         left = boss._body_frame(1000)
@@ -339,7 +341,7 @@ class AnimationTests(unittest.TestCase):
             boss.update()
         self.assertEqual(boss.x, x)
         self.assertIs(boss._body_frame(1599).get_parent(),
-                      special_bosses.image_asset('bosses/boss_niu_actions.png'))
+                      special_bosses.image_asset('animations/bosses/boss_niu_actions.png'))
         with patch.object(config, 'game_ticks', return_value=1600):
             boss.update()
         self.assertNotEqual(boss.x, x)
@@ -350,7 +352,7 @@ class AnimationTests(unittest.TestCase):
         boss.entered = True
         boss.last_pattern = 'axes'
         boss.animation_attack_at = 1000
-        sheet = special_bosses.image_asset('bosses/boss_niu_axe_sequence.png')
+        sheet = special_bosses.image_asset('animations/bosses/boss_niu_axe_sequence.png')
         frames = [boss._body_frame(1000 + 150 * index) for index in range(4)]
         self.assertTrue(all(frame.get_parent() is sheet for frame in frames))
         self.assertEqual(len({frame.get_offset() for frame in frames}), 4)

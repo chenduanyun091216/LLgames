@@ -16,6 +16,220 @@ from run_pc import main
 
 
 class DesktopGameTests(unittest.TestCase):
+    def test_rage_banner_shows_forge_panel_and_duration_until_expiry(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        game = Game(desktop_controls=True)
+        game.rage_banner_until = 4000
+        for scale in (1, 2):
+            with self.subTest(scale=scale):
+                logical = (config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+                size = (logical[0] * scale, logical[1] * scale)
+                surface = pygame.Surface(size, pygame.SRCALPHA)
+                target = surface if scale == 1 else RenderSurface(surface, logical, size, (0, 0), desktop_ui=True)
+                with patch.object(config, 'SCR', target), patch.object(config, 'game_ticks', return_value=1200) as clock, \
+                        patch('game_core.game.blit_label') as label:
+                    game._draw_rage_banner()
+                    self.assertEqual([call.args[2] for call in label.call_args_list],
+                                     ['终极狂暴', '射速与移速提升', '20', '秒'])
+                    self.assertGreater(surface.get_at((size[0] // 2, size[1] // 2)).a, 0)
+                    surface.fill((0, 0, 0, 0))
+                    clock.return_value = 4000
+                    game._draw_rage_banner()
+                    self.assertFalse(surface.get_bounding_rect())
+
+    def test_weapon_upgrades_from_shop_affect_shots(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        config.update_mobile_view((960, 720))
+        game = Game(desktop_controls=True)
+        game.player.gold = 200
+        game._open_shop()
+        game._buy_or_equip_shop_item('weapon', 'shotgun')
+        with patch.object(game, '_draw_keycap'), patch.object(game, '_draw_text_fit') as draw_text:
+            game.mobile_controls.draw(config.SCR, game)
+        self.assertFalse(any(call.args[0].isdigit() for call in draw_text.call_args_list))
+        for level, price in enumerate((12, 24, 36), 1):
+            gold = game.player.gold
+            game._handle_shop_click(*game._mobile_shop_rects()['upgrade:shotgun'].center)
+            self.assertEqual(game.player.gold, gold - price)
+            self.assertEqual(game.player.weapon_upgrades['shotgun'], level)
+            with patch.object(game, '_draw_keycap'), patch.object(game, '_draw_text_fit') as draw_text:
+                game.mobile_controls.draw(config.SCR, game)
+            self.assertEqual([call.args[0] for call in draw_text.call_args_list if call.args[0].isdigit()],
+                             [str(level)])
+        self.assertNotIn('upgrade:shotgun', game._mobile_shop_rects())
+        self.assertNotIn('upgrade:pistol', game._mobile_shop_rects())
+        game._shoot(10000)
+        self.assertTrue(all(math.isclose(b.damage, 1.6 * config.CAMPAIGN_BULLET_DAMAGE['shotgun'])
+                            for b in game.bullets))
+
+        game.player.owned_weapons.extend(('rifle', 'sniper'))
+        game.player.current_weapon = 'rifle'
+        game.player.gold = 200
+        game.player.last_shot_time = 10000
+        self.assertFalse(game.player.can_shoot(10225))
+        for _ in range(3):
+            game._upgrade_weapon('rifle')
+        self.assertTrue(game.player.can_shoot(10225))
+        game._shoot(10225)
+        self.assertAlmostEqual(game.bullets[-1].damage, 1.3 * config.CAMPAIGN_BULLET_DAMAGE['rifle'])
+
+        game.player.current_weapon = 'sniper'
+        for level in (1, 2, 3):
+            game._upgrade_weapon('sniper')
+            game.bullets.clear()
+            for i in range(4):
+                game._shoot(12000 + i * 1000)
+            self.assertEqual([getattr(b, 'sniper_missile', False) for b in game.bullets],
+                             [False, False, False, True])
+            self.assertEqual(game.bullets[-1].damage, (1, 1.5, 2)[level - 1])
+        self.assertIsNone(game._weapon_upgrade_cost('sniper'))
+        missile = game.bullets[-1]
+        targets = []
+        for offset in (0, 45, 200):
+            enemy = Enemy(config.ENEMY_DEFS[0])
+            enemy.x = missile.x + offset
+            enemy.y = missile.y - enemy.h // 2
+            targets.append(enemy)
+        game.enemies = targets.copy()
+        game._detonate_sniper_missile(missile, 15000)
+        self.assertNotIn(missile, game.bullets)
+        self.assertGreater(targets[0].hits.get('sniper', 0), 0)
+        self.assertGreater(targets[1].hits.get('sniper', 0), 0)
+        self.assertEqual(targets[2].hits.get('sniper', 0), 0)
+        game.player.gold = 0
+        game.player.weapon_upgrades['rifle'] = 2
+        game._upgrade_weapon('rifle')
+        self.assertEqual(game.player.weapon_upgrades['rifle'], 2)
+        self.assertEqual(game.player.gold, 0)
+
+    def test_upgraded_sniper_missile_turns_and_splits_at_each_level(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        game = Game(desktop_controls=True)
+        game.player.current_weapon = 'sniper'
+        game.player.gold = 200
+        for level, blast_damage, child_damage in ((1, 1, .5), (2, 1.5, .75), (3, 2, 1)):
+            with self.subTest(level=level):
+                game.player.weapon_upgrades['sniper'] = level
+                game.player.sniper_shots = 3
+                game.bullets.clear()
+                game._shoot(10000)
+                missile = game.bullets[0]
+                enemy = Enemy(config.ENEMY_DEFS[0])
+                enemy.x, enemy.y = missile.x + 85, missile.y - 220
+                game.enemies = [enemy]
+                missile.angle = -28
+                game._advance_bullet(missile, 10000)
+                self.assertEqual(missile.angle, -21)
+                for _ in range(90):
+                    if missile.rect().colliderect(enemy.rect()):
+                        break
+                    game._advance_bullet(missile, 10000)
+                self.assertTrue(missile.rect().colliderect(enemy.rect()))
+                game._detonate_sniper_missile(missile, 10000)
+                self.assertEqual(enemy.hits['sniper'], blast_damage)
+                self.assertEqual(len(game.bullets), level)
+                self.assertEqual(len({b.angle for b in game.bullets}), level)
+                for child in game.bullets:
+                    self.assertTrue(child.sniper_submissile)
+                    self.assertEqual(child.radius * 2, missile.radius)
+                    self.assertEqual(child.damage, child_damage)
+
+    def test_sniper_submissile_leaves_original_target_and_prefers_another_enemy(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        game = Game(desktop_controls=True)
+        game.player.current_weapon = 'sniper'
+        game.player.weapon_upgrades['sniper'] = 1
+        game.player.sniper_shots = 3
+        game._shoot(1000)
+        missile = game.bullets[0]
+        original, other = (Enemy(config.ENEMY_DEFS[0]) for _ in range(2))
+        original.x, original.y = 240, 260
+        original.max_hp = 20
+        other.x, other.y = 360, 300
+        game.enemies = [original, other]
+        missile.x, missile.y, missile.angle = 240, original.rect().bottom, 0
+        game._detonate_sniper_missile(missile, 1000, original)
+        child = game.bullets[0]
+        self.assertGreater(math.cos(math.radians(child.angle - 180)), .99)
+        game._advance_bullet(child, 1100)
+        self.assertFalse(child.sniper_can_hit_original)
+        game._advance_bullet(child, 1117)
+        self.assertTrue(child.sniper_left_original)
+        self.assertFalse(child.sniper_can_hit_original)
+        self.assertLess(child.angle, 180)
+        game.enemies.remove(other)
+        for now in range(1134, 4000, 17):
+            game._advance_bullet(child, now)
+            if child.rect().colliderect(original.rect()):
+                self.assertTrue(child.sniper_can_hit_original)
+                break
+        else:
+            self.fail('The child missile did not turn back into the original target')
+
+    def test_sniper_missiles_load_art_at_output_resolution(self):
+        surface = pygame.Surface((400, 400), pygame.SRCALPHA)
+        high_res = RenderSurface(surface, (200, 200), (400, 400), (0, 0))
+        for flag, size in (('sniper_missile', (75.6, 25.2)), ('sniper_submissile', (37.8, 12.6))):
+            bullet = Bullet(100, 100, config.WEAPON_DEFS['sniper'], 'sniper')
+            setattr(bullet, flag, True)
+            for target, scale in ((surface, 1), (high_res, 2)):
+                with self.subTest(flag=flag, scale=scale):
+                    pixels = (round(size[0] * scale), round(size[1] * scale))
+                    with patch('game_core.entities.image_asset', return_value=pygame.Surface(pixels)) as asset:
+                        bullet.draw(target)
+                    asset.assert_called_once_with('effects/sniper_upgrade_missile.png', pixels)
+
+    def test_guided_sniper_trail_keeps_the_curve_and_fades_toward_the_tail(self):
+        for flag, length in (('sniper_missile', 23), ('sniper_submissile', 17)):
+            with self.subTest(flag=flag):
+                missile = Bullet(120, 360, config.WEAPON_DEFS['sniper'], 'sniper')
+                setattr(missile, flag, True)
+                missile.speed = 7
+                for _ in range(24):
+                    missile.update()
+                missile.angle = 90
+                for _ in range(8):
+                    missile.update()
+                self.assertEqual(len(missile.sniper_trail), length)
+                old, recent = missile.sniper_trail[1], missile.sniper_trail[-2]
+                self.assertNotEqual(old[1], recent[1])
+                surface = pygame.Surface((400, 400), pygame.SRCALPHA)
+                with patch('game_core.entities.image_asset', return_value=pygame.Surface((1, 1))):
+                    missile.draw(surface)
+                old_alpha = surface.get_at(old).a
+                self.assertGreater(old_alpha, 0)
+                self.assertGreater(surface.get_at(recent).a, old_alpha)
+
+    def test_shop_number_row_and_keypad_purchase_or_equip(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        game = Game(desktop_controls=True)
+        game.player.gold = 100
+        game._open_shop()
+
+        def press(key):
+            game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)])
+
+        press(pygame.K_2)
+        self.assertEqual(game.player.current_weapon, 'rifle')
+        press(pygame.K_KP6)
+        self.assertEqual(game.player.character, 'water')
+        press(pygame.K_5)
+        self.assertEqual(game.player.character, 'ice')
+        gold = game.player.gold
+        press(pygame.K_KP6)
+        self.assertEqual(game.player.character, 'water')
+        self.assertEqual(game.player.gold, gold)
+
     def test_escape_exits_home_and_confirms_battle_exit(self):
         pygame.init()
         self.addCleanup(pygame.quit)
@@ -227,6 +441,49 @@ class DesktopGameTests(unittest.TestCase):
         self.assertEqual(game.state, GameState.LEVEL_TRANSITION)
         self.assertEqual(game.player.gold, config.CAMPAIGN_REWARDS[0])
 
+    def test_campaign_boss_waits_for_level_card(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 540))
+        config.update_mobile_view((960, 540))
+        for level in (6, 11):
+            for web in (False, True):
+                with self.subTest(level=level, web=web):
+                    game = Game(desktop_controls=True, web=web)
+                    with patch.object(game, '_level_title_ticks', return_value=1000):
+                        game._start_game('medium', level)
+                    with patch.object(game, '_level_title_ticks', return_value=game.level_title_until - 1):
+                        game.update()
+                        self.assertIsNone(game.boss)
+                    with patch.object(game, '_level_title_ticks', return_value=game.level_title_until):
+                        game.update()
+                        self.assertEqual(game.state, GameState.BOSS_FIGHT)
+                        self.assertIsNotNone(game.boss)
+
+    def test_level_clear_fades_to_next_level_card(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((480, 720))
+        config.update_mobile_view((480, 720))
+        game = Game()
+        game._start_game('medium', 8)
+        with patch.object(config, 'game_ticks', return_value=1000):
+            game._level_complete()
+        deadline = game.level_transition_end
+        with patch.object(config, 'game_ticks', return_value=deadline - 1), \
+                patch.object(game, '_draw_scrim') as scrim, \
+                patch.object(game, '_draw_text_fit') as draw_text:
+            game.draw()
+            self.assertGreater(scrim.call_args.args[0], 240)
+            self.assertNotIn('关卡通过', [call.args[0] for call in draw_text.call_args_list])
+        with patch.object(config, 'game_ticks', return_value=deadline):
+            game.update()
+            self.assertEqual(game.current_level, 9)
+            self.assertGreater(game.level_title_until, deadline)
+            with patch.object(game, '_draw_scrim') as scrim:
+                game.draw()
+                scrim.assert_called_with(255, (0, 0, 0))
+
     def test_enemy_entry_halves_direct_and_burn_damage(self):
         pygame.init()
         self.addCleanup(pygame.quit)
@@ -304,6 +561,7 @@ class DesktopGameTests(unittest.TestCase):
         game = Game(desktop_controls=True)
         game._start_game('medium')
         game._start_level(6)
+        game._trigger_boss()
         now = config.game_ticks()
         game.last_spawn_time = now
         boss = game.boss
@@ -334,7 +592,6 @@ class DesktopGameTests(unittest.TestCase):
             event = pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)
             self.assertTrue(game.handle_events([event]))
 
-        press(pygame.K_RETURN)
         press(pygame.K_4)
         self.assertTrue(game.infinite_mode)
         press(pygame.K_F2)
@@ -494,6 +751,7 @@ class DesktopGameTests(unittest.TestCase):
             with self.subTest(boss_fight=boss_fight):
                 if boss_fight:
                     game._start_level(6)
+                    game._trigger_boss()
                     self.assertEqual(game.state, GameState.BOSS_FIGHT)
                 now = config.game_ticks() + 1000
                 update = game._update_boss_fight if boss_fight else game._update_playing
@@ -537,6 +795,7 @@ class DesktopGameTests(unittest.TestCase):
                 game._start_game('medium')
                 if boss_fight:
                     game._start_level(6)
+                    game._trigger_boss()
                 game.player.character = 'radiation'
                 game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_l, mod=0)])
                 self.assertTrue(game.magnetic_storms)
@@ -562,16 +821,23 @@ class DesktopGameTests(unittest.TestCase):
 
     def test_desktop_entry_opens_home_then_campaign_with_one_player(self):
         frames = []
+        selections = []
+        started_levels = []
         draw = Game.draw
         def record_frame(game, *args, **kwargs):
             frames.append((game.state, len(game.players), game.desktop_controls))
+            if game.state == GameState.DIFFICULTY_SELECT:
+                selections.append(game.selected_level)
+            elif game.state == GameState.PLAYING:
+                started_levels.append(game.current_level)
             self.assertIsInstance(config.SCR, RenderSurface)
             return draw(game, *args, **kwargs)
 
         events = [
             [],
-            [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)],
             [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_2, mod=0)],
+            [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT, mod=0)],
+            [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_s, mod=0)],
             [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)],
             [pygame.event.Event(pygame.QUIT)],
         ]
@@ -582,4 +848,6 @@ class DesktopGameTests(unittest.TestCase):
 
         self.assertEqual([frame[0] for frame in frames[:3]],
                          [GameState.MENU, GameState.DIFFICULTY_SELECT, GameState.DIFFICULTY_SELECT])
-        self.assertEqual(frames[3], (GameState.PLAYING, 1, True))
+        self.assertEqual(selections, [1, 2, 5])
+        self.assertEqual(started_levels[0], 5)
+        self.assertEqual(frames[4], (GameState.PLAYING, 1, True))

@@ -444,7 +444,7 @@ class NiuBoss(Boss):
         pose = self._attack_pose(now)
         if pose is not None:
             if pose in ('axes', 'slam'):
-                sheet = image_asset('bosses/boss_niu_axe_sequence.png')
+                sheet = image_asset('animations/bosses/boss_niu_axe_sequence.png')
                 if sheet is not None:
                     if self.axe_slam_start is not None and 0 <= now - self.axe_slam_start < self.axe_slam_duration:
                         age = (now - self.axe_slam_start) % self.AXE_SLAM_CYCLE_MS
@@ -452,12 +452,12 @@ class NiuBoss(Boss):
                     else:
                         index = min(3, max(0, now - self.animation_attack_at) // 150)
                     return self._axe_frame(sheet, index)
-            sheet = image_asset('bosses/boss_niu_actions.png')
+            sheet = image_asset('animations/bosses/boss_niu_actions.png')
             if sheet is not None:
                 return self._action_frame(sheet, pose)
             return None
         if self.entered:
-            sprite = image_asset('bosses/boss_niu_scooter.png')
+            sprite = image_asset('animations/bosses/boss_niu_scooter.png')
             if sprite is not None:
                 lean = round(2 * math.sin(now * math.tau / 1200))
                 return self._scooter_frame(sprite, lean, self.running_left)

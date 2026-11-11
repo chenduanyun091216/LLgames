@@ -6,6 +6,10 @@ export const weaponImage = (id, group = 'weapons') => group + '/weapon_' + weapo
 const fxColors = {fire: 0xff6335, ice: 0x71e6ff, water: 0x67dbf8, energy: 0xc387ff};
 const bulletColors = {pistol: 0xffe76a, rifle: 0x63ccff, shotgun: 0xff8750, sniper: 0xcf9cff};
 const soundKeys = ['pistol', 'rifle', 'shotgun', 'sniper', 'hit', 'hurt', 'coin', 'skill', 'boss', 'clear'];
+const niuArt = 'animations/bosses/boss_niu_';
+const niuPoses = new Map([['回旋战斧', 0], ['巨斧震地', 1], ['三重雷击', 2], ['六向弹幕', 3]]);
+const bossAnimation = (key, level) => 'animations/bosses/anim_' + key +
+    (level === 11 ? '_idle' : level >= 9 ? '' : '_attack');
 
 export class OceanScene extends Phaser.Scene {
     constructor() {
@@ -19,6 +23,7 @@ export class OceanScene extends Phaser.Scene {
         this.background = this.add.image(0, 0, '__WHITE').setOrigin(.5, 0).setDepth(-10).setVisible(false);
         this.floor = this.add.graphics().setDepth(-5);
         this.zones = this.add.graphics().setDepth(1);
+        this.missileTrails = this.add.graphics().setDepth(2);
         this.effects = this.add.graphics().setDepth(6);
         this.playerSprite = this.add.image(0, 0, '__WHITE').setDepth(4).setVisible(false);
         this.weaponSprite = this.add.image(0, 0, '__WHITE').setDepth(5).setVisible(false);
@@ -27,17 +32,23 @@ export class OceanScene extends Phaser.Scene {
 
     loadLevel(world, manifest) {
         const boss = world.data.bosses[world.stage.boss_idx].key;
-        const enemies = new Set(world.stage.enemy_pool.map(key => 'enemies/enemy_' + key));
+        const enemies = new Set(world.stage.enemy_pool);
+        if (world.level === 10) {
+            enemies.add('ancient_rift');
+            enemies.add('ancient_worm');
+        }
+        const enemyArt = new Set([...enemies].flatMap(key =>
+            ['enemies/enemy_' + key, 'animations/enemies/enemy_' + key + '_action']));
         const keys = Object.keys(manifest).filter(key =>
-            key === 'backgrounds/bg' + world.level || key === 'bosses/' + boss ||
+            key === 'backgrounds/bg' + world.level ||
+            key === 'bosses/' + (world.level === 8 ? 'zongzong' : boss) ||
             (world.stage.enemy_pool.includes('zongzong') && key === 'bosses/zongzong') ||
-            (world.level === 9 && key === 'animations/bosses/anim_boss_mecha_lizard') ||
-            (world.level === 10 && /^enemies\/enemy_ancient_(rift|worm)/.test(key)) ||
-            (world.level === 11 && key.startsWith('bosses/boss_orochi_')) ||
-            key.startsWith('animations/bosses/anim_' + boss) ||
-            key.startsWith('players/') || key.startsWith('animations/players/') ||
+            (world.level === 11 && key === 'animations/bosses/anim_boss_orochi_split') ||
+            (boss === 'boss_niu' && key.startsWith(niuArt)) ||
+            key === bossAnimation(boss, world.level) ||
+            key.startsWith('players/') || /^animations\/players\/anim_.+_(idle|run|attack)$/.test(key) ||
             key.startsWith('effects/') || key.startsWith('weapons/') ||
-            enemies.has(key.replace(/_action$/, '')) || ['ui/coin', 'ui/gift_box'].includes(key));
+            enemyArt.has(key) || ['ui/coin', 'ui/gift_box'].includes(key));
         const soundNames = [...soundKeys, 'music-0', 'music-' + world.level, 'music-' + world.level + '-boss'];
         this.nextAssets = new Set(keys);
         this.nextAudio = new Set(soundNames);
@@ -88,6 +99,7 @@ export class OceanScene extends Phaser.Scene {
         this.background.setVisible(false);
         this.floor.clear();
         this.zones.clear();
+        this.missileTrails.clear();
         this.effects.clear();
     }
 
@@ -109,7 +121,7 @@ export class OceanScene extends Phaser.Scene {
         this.music = null;
         this.musicKey = key;
         if (key && this.cache.audio.exists(key)) {
-            this.music = this.sound.add(key, {volume: .27, loop: true});
+            this.music = this.sound.add(key, {volume: .35, loop: true});
             this.music.play();
         }
     }
@@ -177,12 +189,26 @@ export class OceanScene extends Phaser.Scene {
         this.background.setPosition(w.width / 2, (w.view.height - this.background.displayHeight) * (1 - progress));
         this.live = new Set();
         this.zones.clear();
+        this.missileTrails.clear();
         this.effects.clear();
         this.drawPlayer(w, p, t);
         for (const e of w.enemies) this.drawEnemy(e, t);
         if (w.boss) this.drawBoss(w.boss, t);
         for (const b of w.bullets) {
             const color = fxColors[b.element] ?? bulletColors[b.weapon];
+            if (b.guided) {
+                const scale = b.missile ? .7 : .35;
+                const trail = b.trail ?? [];
+                for (let i = 1; i < trail.length; i++) {
+                    const strength = i / (trail.length - 1);
+                    this.missileTrails.lineStyle(Math.max(1, (b.missile ? 9 : 6) * strength),
+                        0xff0000 | (Math.round(100 + 125 * strength) << 8) | 65, .75 * strength)
+                        .lineBetween(...trail[i - 1], ...trail[i]);
+                }
+                this.sprite(b.id, 'effects/sniper_upgrade_missile', b.x, b.y, 108 * scale, 36 * scale, 3)
+                    ?.setRotation(b.angle - Math.PI / 2);
+                continue;
+            }
             if (b.art) {
                 this.sprite(b.id, 'effects/' + b.art, b.x, b.y, b.w * 1.5, b.h * 1.5, 3);
                 continue;
@@ -229,8 +255,9 @@ export class OceanScene extends Phaser.Scene {
     drawPlayer(world, player, time) {
         const hero = world.character === 'player1' ? 'player1' : 'player_' + world.character;
         const action = world.lastFire + 165 > time ? 'attack' : player.moving ? 'run' : 'idle';
-        const key = 'animations/players/anim_' + hero + '_' + action;
-        const frame = this.animated(key, time, 100);
+        const prefix = 'animations/players/anim_' + hero + '_';
+        const key = prefix + (action === 'idle' && this.textures.exists(prefix + 'run') ? 'run' : action);
+        const frame = this.animated(key, time, action === 'idle' ? 400 : 100);
         this.playerSprite.setTexture(frame === null ? 'players/' + hero : key, frame ?? '__BASE')
             .setPosition(player.x, player.y).setDisplaySize(player.w, player.h)
             .setAlpha(world.invulnerable > time && Math.floor(time / 70) % 2 ? .5 : 1);
@@ -241,7 +268,8 @@ export class OceanScene extends Phaser.Scene {
     drawEnemy(e, t) {
         let key = 'enemies/enemy_' + e.kind, frame = '__BASE';
         if (e.kind === 'zongzong') key = 'bosses/zongzong';
-        if (e.shotAt > t - 480 && this.textures.exists(key + '_action')) key += '_action';
+        const action = 'animations/enemies/enemy_' + e.kind + '_action';
+        if (e.shotAt > t - 480 && this.textures.exists(action)) key = action;
         if (e.kind === 'orochi_bubble') key = 'effects/orochi_bubble_' + bubbleColors[e.index];
         if (e.kind === 'orochi_head') {
             key = 'animations/bosses/anim_boss_orochi_split';
@@ -262,12 +290,25 @@ export class OceanScene extends Phaser.Scene {
 
     drawBoss(b, t) {
         let key = 'bosses/' + (b.level === 8 ? 'zongzong' : b.def.key), frame = '__BASE';
+        let flipX = false;
         const attacking = b.skillUntil > t;
-        const animation = 'animations/bosses/anim_' + b.def.key + (
-            b.level === 11 ? '_idle' : b.level >= 9 ? '' : '_attack');
+        const animation = bossAnimation(b.def.key, b.level);
         if (b.level >= 9 || attacking) {
             const current = this.animated(animation, t, b.level === 11 ? 80 : 130);
             if (current !== null) { key = animation; frame = current; }
+        }
+        if (b.def.key === 'boss_niu') {
+            const pose = attacking ? niuPoses.get(b.skill) : undefined;
+            if (pose === 0 || pose === 1) {
+                key = niuArt + 'axe_sequence';
+                frame = Math.min(3, Math.floor((t - b.skillStarted) / (pose === 0 ? 150 : 300)));
+            } else if (pose !== undefined) {
+                key = niuArt + 'actions';
+                frame = pose;
+            } else if (b.y >= 40) {
+                key = niuArt + 'scooter';
+                flipX = b.direction < 0;
+            }
         }
         if (b.rush) {
             const age = t - b.rush.start;
@@ -280,7 +321,7 @@ export class OceanScene extends Phaser.Scene {
         for (const box of bossBoxes(b, t)) {
             this.sprite(box.index == null ? b.id : b.id + ':' + box.index, key, box.x, box.y,
                 box.w * breathe, box.h * breathe, 2, frame)
-                ?.setTint(b.hitAt > t - 125 ? 0xffa198 : box.index === 1 ? 0xdbb6ff : 0xffffff);
+                ?.setFlipX(flipX).setTint(b.hitAt > t - 125 ? 0xffa198 : box.index === 1 ? 0xdbb6ff : 0xffffff);
         }
         if (b.shieldUntil > t) {
             this.effects.lineStyle(5, 0x80f4ff, .72).strokeEllipse(b.x, b.y, b.w * 1.25, b.h * 1.13);

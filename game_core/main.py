@@ -13,9 +13,10 @@ from .render import RenderSurface
 
 FRAME_TIMING_TOLERANCE = 0.002
 RENDER_TIMING_TOLERANCE = 0.006
-DEFAULT_BROWSER_RENDER_DENSITY = 1.15
-DEFAULT_MAX_VIEW = (1800, 960)
+STANDARD_BROWSER_RENDER_DENSITY = 1.15
+STANDARD_MAX_VIEW = (1800, 960)
 HD_MAX_VIEW = (2560, 1080)
+BROWSER_QUALITIES = (1.5, 1.75, 2)
 
 
 def _draw_scaled(window, scaled):
@@ -31,20 +32,15 @@ def _draw_scaled(window, scaled):
     return scaled
 
 
-def _browser_size(window, viewport):
-    hd = getattr(window, 'ttgamesRenderDensity', None) == 2
+def _browser_size(viewport, quality):
     short, long = sorted(viewport)
     if short <= 0:
         return viewport
-    max_long, max_short = HD_MAX_VIEW if hd else DEFAULT_MAX_VIEW
-    density = min(max_short / short, max_long / long)
-    if not hd:
-        density = min(density, DEFAULT_BROWSER_RENDER_DENSITY)
+    standard = min(STANDARD_MAX_VIEW[1] / short, STANDARD_MAX_VIEW[0] / long,
+                   STANDARD_BROWSER_RENDER_DENSITY)
+    hd = min(HD_MAX_VIEW[1] / short, HD_MAX_VIEW[0] / long)
+    density = {1.5: standard, 1.75: (standard + hd) / 2, 2: hd}[quality]
     return tuple(round(value * density) for value in viewport)
-
-
-def _browser_render_step(hd):
-    return (2 if hd else 1) / FPS
 
 
 def _browser_frame_deadline(now, deadline, step):
@@ -63,12 +59,14 @@ async def main():
         pass
     browser_window = getattr(platform, 'window', None)
     viewport = None
-    hd = False
     if browser_window is not None:
-        hd = getattr(browser_window, 'ttgamesRenderDensity', None) == 2
-        asset_loader.web_hd_assets = hd
+        quality = getattr(browser_window, 'ttgamesRenderDensity', 1.75)
+        asset_loader.web_hd_assets = quality != 1.5
         viewport = (max(1, int(browser_window.innerWidth)), max(1, int(browser_window.innerHeight)))
-        window_size = _browser_size(browser_window, viewport)
+        window_size = _browser_size(viewport, quality)
+        show_resolutions = getattr(browser_window, 'ttgamesShowResolutions', None)
+        if show_resolutions:
+            show_resolutions(*(value for q in BROWSER_QUALITIES for value in _browser_size(viewport, q)))
     else:
         try:
             window_size = pygame.display.get_desktop_sizes()[0]
@@ -85,7 +83,9 @@ async def main():
     from .sounds import advance_music, make_sound, start_music
 
     start_music()
-    game = Game(desktop_controls=browser_window is None, scroll_campaign_backgrounds=True)
+    mobile_web = browser_window is not None and bool(browser_window.matchMedia('(pointer: coarse)').matches)
+    game = Game(desktop_controls=browser_window is None, scroll_campaign_backgrounds=True,
+                web=browser_window is not None, mobile_web=mobile_web, campaign_ending=True)
     for filename in SKILL_IMAGES:
         image_asset(filename)
     for sound in ('boss_appear', 'boss_hit', 'kill', 'level_up', 'player_hit'):
@@ -116,19 +116,18 @@ async def main():
     was_hidden = False
     advancing_states = (GameState.PLAYING, GameState.BOSS_FIGHT,
                         GameState.LEVEL_TRANSITION, GameState.VICTORY)
+    cutscene_states = (GameState.OPENING, GameState.ENDING)
 
     while running:
-        render_step = step
         quality_changed = False
         if browser_window is not None:
             now = perf_counter()
-            new_hd = getattr(browser_window, 'ttgamesRenderDensity', None) == 2
-            quality_changed = new_hd != hd
+            new_quality = getattr(browser_window, 'ttgamesRenderDensity', 1.75)
+            quality_changed = new_quality != quality
             if quality_changed:
-                hd = new_hd
+                quality = new_quality
                 next_frame = now
-            render_step = _browser_render_step(hd)
-            deadline = _browser_frame_deadline(now, next_frame, render_step)
+            deadline = _browser_frame_deadline(now, next_frame, step)
             if deadline is None:
                 await asyncio.sleep(0)
                 continue
@@ -144,13 +143,14 @@ async def main():
         resized = False
         events = pygame.event.get()
         if browser_window is not None:
-            if quality_changed:
-                asset_loader.web_hd_assets = hd
+            hd_assets = quality != 1.5
+            if hd_assets != asset_loader.web_hd_assets:
+                asset_loader.web_hd_assets = hd_assets
                 clear_background_cache()
                 game.bg = game._load_bg()
                 warmed_background = warmed_panorama = warmed_boss = None
             new_viewport = (int(browser_window.innerWidth), int(browser_window.innerHeight))
-            size = _browser_size(browser_window, new_viewport)
+            size = _browser_size(new_viewport, quality)
             if min(size) > 0 and (size != window_size or new_viewport != viewport or quality_changed):
                 layout_changed = new_viewport != viewport
                 viewport = new_viewport
@@ -158,6 +158,8 @@ async def main():
                 window = pygame.display.set_mode(size, pygame.RESIZABLE)
                 config.update_mobile_view(window.get_size(), viewport)
                 if layout_changed:
+                    if show_resolutions:
+                        show_resolutions(*(value for q in BROWSER_QUALITIES for value in _browser_size(viewport, q)))
                     game.resize_view(previous_area)
                 resized = True
         elif any(event.type in resize_events for event in events):
@@ -166,7 +168,17 @@ async def main():
             resized = True
         was_advancing = game.state in advancing_states
         running = game.handle_events(events)
-        if game.exit_confirmation:
+        if not running:
+            break
+        if game.state in cutscene_states:
+            accumulator = 0.0
+            game.update()
+        elif game.web_level_intro_active():
+            if config.campaign_time_ms is None and game.difficulty is not None:
+                campaign_seconds = pygame.time.get_ticks() / 1000
+                config.campaign_time_ms = round(campaign_seconds * 1000)
+            accumulator = 0.0
+        elif game.exit_confirmation:
             accumulator = 0.0
         elif game.difficulty is None:
             config.campaign_time_ms = None
@@ -178,7 +190,8 @@ async def main():
                 config.campaign_time_ms = round(campaign_seconds * 1000)
             if not hidden and not resized and was_advancing and game.state in advancing_states:
                 accumulator += elapsed
-                while accumulator + update_tolerance >= step and game.state in advancing_states:
+                while (accumulator + update_tolerance >= step and game.state in advancing_states
+                       and not game.web_level_intro_active()):
                     accumulator -= step
                     campaign_seconds += step
                     config.campaign_time_ms = round(campaign_seconds * 1000)
@@ -187,11 +200,30 @@ async def main():
                 accumulator = 0.0
                 if not hidden and game.state == GameState.INFINITE_COUNTDOWN:
                     game.update()
+        if game.state in cutscene_states:
+            if game.state == GameState.OPENING:
+                game.draw_opening(window)
+            else:
+                game.draw_ending(window)
+            if game.state in cutscene_states:
+                previous_background = None
+                pygame.display.flip()
+                cutscene = 'opening' if game.state == GameState.OPENING else 'ending'
+                cutscene_ui = ([], config.SCREEN_WIDTH, config.SCREEN_HEIGHT, False, False, cutscene)
+                if draw_ui and cutscene_ui != previous_ui:
+                    draw_ui('[]', *cutscene_ui[1:])
+                    previous_ui = cutscene_ui
+                if game.state == GameState.OPENING:
+                    advance_music()
+                game.clock.tick(0 if browser_window is not None else FPS)
+                await asyncio.sleep(0)
+                continue
         if show_timings:
             draw_started = perf_counter()
         labels = [] if draw_ui else None
         level = game.infinite_background_level if game.infinite_mode else game.current_level
-        use_hd = game.state in (GameState.PLAYING, GameState.BOSS_FIGHT, GameState.LEVEL_TRANSITION)
+        use_hd = game.state in (GameState.MENU, GameState.DIFFICULTY_SELECT, GameState.PLAYING,
+                                GameState.BOSS_FIGHT, GameState.LEVEL_TRANSITION)
         scene = config.SCR
         try:
             if use_hd or browser_window is None:
@@ -231,7 +263,8 @@ async def main():
             submit_started = perf_counter()
         pygame.display.flip()
         if draw_ui:
-            in_battle = game.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
+            in_battle = (game.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
+                         and not game.web_level_intro_active())
             if in_battle and not hidden:
                 submitted_at = perf_counter()
                 if fps_started is None or resized:
@@ -278,9 +311,7 @@ async def main():
         next_index = level % level_count
         next_level = next_index + 1
         background_key = (next_level, scene.get_size(), config.VIEW_SIZE)
-        # Let the victory cue play before decoding the next stage behind the clear panel.
-        warm_campaign = (game.state == GameState.LEVEL_TRANSITION
-                         and game.level_transition_end - config.game_ticks() <= 1100)
+        warm_campaign = game.state == GameState.LEVEL_TRANSITION
         warm_infinite = (game.infinite_mode and use_hd and game.bg_transition_prev is None)
         warm_scroll = browser_window is not None and warm_campaign and not game.infinite_mode
         if (not hidden and game.difficulty and background_key != warmed_background
@@ -299,7 +330,7 @@ async def main():
         else:
             if browser_window is not None:
                 # Keep track generation from consuming the next display slot.
-                remaining = render_step - (perf_counter() - frame_time) - 0.001
+                remaining = step - (perf_counter() - frame_time) - 0.001
                 advance_music(max(0.00025, min(0.004, remaining)))
             else:
                 advance_music()

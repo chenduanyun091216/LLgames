@@ -88,6 +88,39 @@ class CampaignAdapterTests(unittest.TestCase):
         game.all_players[0].alive = False
         self.assertIs(game._nearest_player(a.x, a.y), game.all_players[1])
 
+    def test_crab_summon_cooldown_starts_when_last_summon_dies(self):
+        game = self.boss_game(2)
+        self.assertTrue(game._try_boss_signature(0, opening=True))
+        game._update_boss_signature(game.boss.signature.end_at)
+        first, last = game.enemies
+        self.assertEqual(game.boss.next_signature_time, 0)
+        self.assertFalse(game._try_boss_signature(12000))
+
+        with patch.object(config, 'game_ticks', return_value=12000):
+            game._kill_enemy(first)
+        self.assertEqual(game.boss.next_signature_time, 0)
+        self.assertFalse(game._try_boss_signature(24000))
+
+        with patch.object(config, 'game_ticks', return_value=24000):
+            game._kill_enemy(last)
+        self.assertEqual(game.boss.next_signature_time, 34000)
+        self.assertFalse(game._try_boss_signature(33999))
+        self.assertTrue(game._try_boss_signature(34000))
+
+    def test_crab_summon_cooldown_waits_for_unpopped_second_bubble(self):
+        game = self.boss_game(2)
+        self.assertTrue(game._try_boss_signature(0, opening=True))
+        game._release_crab_bubble(0, 200)
+        with patch.object(config, 'game_ticks', return_value=400):
+            game._kill_enemy(game.enemies[0])
+        self.assertEqual(game.boss.next_signature_time, 0)
+
+        game._update_boss_signature(900)
+        last, = game.enemies
+        with patch.object(config, 'game_ticks', return_value=1000):
+            game._kill_enemy(last)
+        self.assertEqual(game.boss.next_signature_time, 11000)
+
     def test_dragon_signature_emits_original_fireballs_once_per_tick(self):
         game = self.boss_game(5)
         game._try_boss_signature(0, opening=True)
@@ -396,6 +429,8 @@ class CampaignAdapterTests(unittest.TestCase):
         x = p1.x
         for _ in range(120):
             game.step()
+            if game.current_level == 2:
+                break
         self.assertEqual(game.current_level, 2)
         self.assertEqual(game.gold, 123 + config.CAMPAIGN_REWARDS[0])
         self.assertEqual(game.lives, 0)

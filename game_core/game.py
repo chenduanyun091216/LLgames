@@ -24,6 +24,8 @@ from .sprites import (
     make_weapon_icon, make_coin_surface,
 )
 from .mobile_controls import MobileControls
+from .ending import Ending
+from .opening import CUTS as OPENING_CUTS, Opening
 from .visuals import blit_label, draw_electric_arc, draw_glow, draw_water_drift, panel_surface, small_desktop_label
 from .sounds import play_sound, start_music
 from .entities import (
@@ -41,8 +43,10 @@ class GameState:
     DIFFICULTY_SELECT = 0; MENU = 1; PLAYING = 2; SHOP = 3
     BOSS_FIGHT = 4; LEVEL_TRANSITION = 5; GAME_OVER = 6; VICTORY = 7
     PAUSED = 8; CUSTOM_DIFFICULTY = 9; INFINITE_CONTINUE = 11
-    INFINITE_COUNTDOWN = 12; KEY_SETTINGS = 13; PAID_REVIVE = 14
+    INFINITE_COUNTDOWN = 12; KEY_SETTINGS = 13; PAID_REVIVE = 14; OPENING = 15; ENDING = 16
 
+
+LEVEL_TITLE_DURATION_MS = 3000
 
 # Representative enemies and accent colors for each campaign backdrop.
 LEVEL_TITLE_ART = (
@@ -81,6 +85,7 @@ GIFT_DROP_MAX_MS = 15000
 GIFT_BUFF_MS = 10000
 GIFT_LIGHTNING_DAMAGE = 5.0
 BG_FADE_MS = 900
+LEVEL_FADE_MS = 450
 BACKGROUND_SCROLL_TICKS = 40 * config.FPS
 INFINITE_BOSS_CYCLE_HP_GROWTH = 0.10
 INFINITE_BOSS_STEP_HP_GROWTH = 0.02
@@ -111,13 +116,19 @@ DESKTOP_WEAPON_KEYS = dict(zip(_WEAPON_KEYS_ORDERED, (
     pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4,
 )))
 DESKTOP_BATTLE_KEYS = {'shop': pygame.K_b, 'pause': pygame.K_h, 'auto_fire': pygame.K_t}
+SHOP_KEYPAD_KEYS = (pygame.K_KP1, pygame.K_KP2, pygame.K_KP3, pygame.K_KP4,
+                    pygame.K_KP5, pygame.K_KP6, pygame.K_KP7, pygame.K_KP8)
 DESKTOP_HUD_KEYS = (pygame.K_LEFTBRACKET, pygame.K_p, pygame.K_RIGHTBRACKET)
 
 
 class Game:
-    def __init__(self, *, desktop_controls=False, scroll_campaign_backgrounds=False):
+    def __init__(self, *, desktop_controls=False, scroll_campaign_backgrounds=False, web=False,
+                 mobile_web=False, campaign_ending=False):
+        self.web = web
+        self.mobile_web = mobile_web
         self.scroll_campaign_backgrounds = scroll_campaign_backgrounds
         self.desktop_controls = desktop_controls
+        self.campaign_ending = campaign_ending
         self.exit_confirmation = False
         self.clock = pygame.time.Clock()
         self.font_large = make_font(48, bold=True)
@@ -162,6 +173,12 @@ class Game:
         self.reset()
 
     def reset(self):
+        if getattr(self, 'opening', None) is not None:
+            self.opening.close()
+        if getattr(self, 'ending', None) is not None:
+            self.ending.close()
+        self.opening = None
+        self.ending = None
         self.state = GameState.MENU
         self.selected_difficulty = 'easy'
         self.selected_level = 1
@@ -207,6 +224,7 @@ class Game:
         self.chapter = 1
         self.lives = 3
         self.revive_count = 0
+        self._reset_campaign_totals(1)
         self.spawn_interval = 2000; self.min_spawn_interval = 800; self.spawn_decrease = 5
         self.last_spawn_time = 0; self.last_switch_time = -9999
         self.game_over_reason = ''
@@ -227,6 +245,7 @@ class Game:
         self.gift_fire_until = 0; self.gift_ice_until = 0; self.gift_lightning_remaining = 0; self.gift_lightning_next = 0; self.gift_lightning_icon_until = 0
         self.rage_banner_until = 0; self.next_gift_time = 0
         self.level_transition_end = 0
+        self.level_fade_in_until = 0
         self.victory_end = 0
         self.level_title_until = 0
         self.bg_transition_until = 0
@@ -369,12 +388,30 @@ class Game:
     # ═══ Events ═══════════════════════════════════════════════════════════════
     def handle_events(self, events=None):
         for event in pygame.event.get() if events is None else events:
-            if event.type == pygame.QUIT: return False
+            if event.type == pygame.QUIT:
+                if self.opening is not None:
+                    self.opening.close()
+                if self.ending is not None:
+                    self.ending.close()
+                return False
             if event.type in (
                     getattr(pygame, 'WINDOWFOCUSLOST', -1),
                     getattr(pygame, 'WINDOWHIDDEN', -2),
                     getattr(pygame, 'WINDOWMINIMIZED', -3)):
                 self.mobile_controls.reset()
+                continue
+            if self.state in (GameState.OPENING, GameState.ENDING):
+                if (event.type == pygame.KEYDOWN and event.key in
+                        (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE)
+                        or event.type == pygame.FINGERDOWN
+                        or (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                            and not getattr(event, 'touch', False))):
+                    if self.state == GameState.OPENING:
+                        self._finish_opening()
+                    else:
+                        self.ending.skip()
+                continue
+            if self.web_level_intro_active() or self.campaign_boss_intro_active():
                 continue
             if self.exit_confirmation:
                 if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_RETURN):
@@ -534,9 +571,9 @@ class Game:
             self.state = GameState.GAME_OVER
         elif self.state == GameState.KEY_SETTINGS:
             self.setting_key_action = None
-            self.state = GameState.DIFFICULTY_SELECT
+            self.state = GameState.MENU
         elif self.state == GameState.CUSTOM_DIFFICULTY:
-            self.state = GameState.DIFFICULTY_SELECT
+            self.state = GameState.MENU
         elif self.state == GameState.SHOP:
             self._close_shop()
         elif self.state in (GameState.PLAYING, GameState.BOSS_FIGHT, GameState.LEVEL_TRANSITION):
@@ -572,36 +609,37 @@ class Game:
                     self._handle_mobile_action(f'weapon:{weapon}')
                     return
         if s == GameState.DIFFICULTY_SELECT:
-            if pygame.K_1 <= k <= pygame.K_3:
-                self.selected_difficulty = menu_ui.DIFFICULTIES[k - pygame.K_1][0]
-            elif k in (pygame.K_RETURN, pygame.K_SPACE):
+            if k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
                 self._start_selected_campaign()
-            elif k == pygame.K_LEFT:
+            elif k in (pygame.K_LEFT, pygame.K_a):
                 self.selected_level = max(1, self.selected_level - 1)
-            elif k == pygame.K_RIGHT:
+            elif k in (pygame.K_RIGHT, pygame.K_d):
                 self.selected_level = min(len(LEVEL_CONFIGS), self.selected_level + 1)
-            elif k == pygame.K_4: self._start_infinite_game()
-            elif k == pygame.K_c: self.state = GameState.CUSTOM_DIFFICULTY
-            elif k == pygame.K_b: self._open_shop()
+            elif k in (pygame.K_UP, pygame.K_w) and self.selected_level > 3:
+                self.selected_level -= 3
+            elif k in (pygame.K_DOWN, pygame.K_s) and self.selected_level + 3 <= len(LEVEL_CONFIGS):
+                self.selected_level += 3
         elif s == GameState.CUSTOM_DIFFICULTY:
-            if k in (pygame.K_RETURN, pygame.K_SPACE): self._start_custom_game()
-            elif self.desktop_controls:
-                if k in (pygame.K_UP, pygame.K_DOWN):
-                    self.custom_row = (self.custom_row + (1 if k == pygame.K_DOWN else -1)) % len(self.custom_fields)
-                elif k in (pygame.K_LEFT, pygame.K_RIGHT):
-                    self._change_custom_value(self.custom_fields[self.custom_row][0], -1 if k == pygame.K_LEFT else 1)
-                elif k == pygame.K_r:
-                    self.custom_values = self._difficulty_to_values(DIFFICULTY_PRESETS['medium'])
+            if k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE): self._select_campaign('custom')
+            elif k in (pygame.K_UP, pygame.K_DOWN):
+                self.custom_row = (self.custom_row + (1 if k == pygame.K_DOWN else -1)) % len(self.custom_fields)
+            elif k in (pygame.K_LEFT, pygame.K_RIGHT):
+                self._change_custom_value(self.custom_fields[self.custom_row][0], -1 if k == pygame.K_LEFT else 1)
+            elif k == pygame.K_r:
+                self.custom_values = self._difficulty_to_values(DIFFICULTY_PRESETS['medium'])
         elif s == GameState.MENU:
-            if k in (pygame.K_RETURN, pygame.K_SPACE):
-                self.state = GameState.DIFFICULTY_SELECT
+            if not self.web and k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                k = pygame.K_1
+            for action, _, shortcut in menu_ui.HOME_ACTIONS:
+                if k == shortcut:
+                    self._activate_home_action(action)
+                    break
         elif s == GameState.KEY_SETTINGS:
             if k == pygame.K_r: self.controls = DEFAULT_CONTROLS.copy()
-            elif self.desktop_controls:
-                if k in (pygame.K_UP, pygame.K_DOWN):
-                    self.key_settings_row = (self.key_settings_row + (1 if k == pygame.K_DOWN else -1)) % len(CONTROL_DEFS)
-                elif k == pygame.K_RETURN:
-                    self.setting_key_action = CONTROL_DEFS[self.key_settings_row][0]
+            elif k in (pygame.K_UP, pygame.K_DOWN):
+                self.key_settings_row = (self.key_settings_row + (1 if k == pygame.K_DOWN else -1)) % len(CONTROL_DEFS)
+            elif k in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                self.setting_key_action = CONTROL_DEFS[self.key_settings_row][0]
         elif s == GameState.GAME_OVER:
             if k in (pygame.K_RETURN, pygame.K_SPACE): self._retry_level()
             elif k == pygame.K_n: self.reset()
@@ -625,6 +663,8 @@ class Game:
             elif k == pygame.K_b: self._open_shop()
             self._handle_skill_key(self.player, k, self._key('p1_skill1'), self._key('p1_skill2'))
         elif s == GameState.SHOP:
+            if self.desktop_controls and k in SHOP_KEYPAD_KEYS:
+                k = pygame.K_1 + SHOP_KEYPAD_KEYS.index(k)
             if k == pygame.K_b: self._close_shop()
             elif pygame.K_1 <= k <= pygame.K_4:
                 self._buy_or_equip_shop_item('weapon', _WEAPON_KEYS_ORDERED[k - pygame.K_1])
@@ -636,8 +676,10 @@ class Game:
         if s == GameState.DIFFICULTY_SELECT: self._click_difficulty(mx, my)
         elif s == GameState.CUSTOM_DIFFICULTY: self._click_custom_difficulty(mx, my)
         elif s == GameState.MENU:
-            if self._mobile_menu_rects()['start'].collidepoint(mx, my):
-                self.state = GameState.DIFFICULTY_SELECT
+            for action, rect in self._mobile_menu_rects().items():
+                if rect.collidepoint(pos):
+                    self._activate_home_action(action)
+                    break
         elif s == GameState.PLAYING: self.cursor_pos = (mx, my)
         elif s == GameState.SHOP: self._handle_shop_click(mx, my)
         elif s == GameState.PAUSED:
@@ -664,33 +706,41 @@ class Game:
                 continue
             if key.startswith('level:'):
                 self.selected_level = int(key.split(':', 1)[1])
-            elif key in DIFFICULTY_PRESETS:
-                self.selected_difficulty = key
             elif key == 'start':
                 self._start_selected_campaign()
-            elif key == 'infinite':
-                self._start_infinite_game()
-            elif key == 'custom':
-                self.state = GameState.CUSTOM_DIFFICULTY
-            elif key == 'keys':
-                self.state = GameState.KEY_SETTINGS
             elif key == 'home':
                 self.state = GameState.MENU
-            elif key == 'shop':
-                self._open_shop()
             return
 
     def _hit(self, mx, my, rx, ry, rw, rh):
         return rx <= mx <= rx+rw and ry <= my <= ry+rh
 
     # ═══ Game Flow ════════════════════════════════════════════════════════════
-    def _start_selected_campaign(self):
-        self._start_game(self.selected_difficulty, self.selected_level, keep_loadout=True)
+    def _activate_home_action(self, action):
+        if action == 'infinite':
+            self._start_infinite_game()
+        elif action == 'custom':
+            self.state = GameState.CUSTOM_DIFFICULTY
+        elif action == 'keys':
+            self.state = GameState.KEY_SETTINGS
+        elif action in DIFFICULTY_PRESETS:
+            self._select_campaign(action)
 
-    def _start_game(self, diff_key, start_level=1, *, keep_loadout=False):
+    def _select_campaign(self, difficulty):
+        self.selected_difficulty = difficulty
+        self.selected_level = 1
+        self.state = GameState.DIFFICULTY_SELECT
+
+    def _start_selected_campaign(self):
+        if self.selected_difficulty == 'custom':
+            self._start_custom_game()
+        else:
+            self._start_game(self.selected_difficulty, self.selected_level, keep_loadout=True, show_opening=True)
+
+    def _start_game(self, diff_key, start_level=1, *, keep_loadout=False, show_opening=False):
         self.selecting_infinite_mode = False
         self.difficulty = DIFFICULTY_PRESETS[diff_key]
-        self._begin_selected_run(start_level, keep_loadout=keep_loadout)
+        self._begin_selected_run(start_level, keep_loadout=keep_loadout, show_opening=show_opening)
 
     def _start_custom_game(self):
         v = self.custom_values
@@ -713,18 +763,57 @@ class Game:
             float(v['boss_homing_mult']),
         )
         self.selecting_infinite_mode = False
-        self._begin_selected_run(self.selected_level, keep_loadout=True)
+        self._begin_selected_run(self.selected_level, keep_loadout=True, show_opening=True)
 
     def _start_infinite_game(self):
         self.selecting_infinite_mode = True
         self.difficulty = DIFFICULTY_PRESETS['hard']
         self._begin_selected_run()
 
-    def _begin_selected_run(self, start_level=1, *, keep_loadout=False):
+    def _begin_selected_run(self, start_level=1, *, keep_loadout=False, show_opening=False):
         if self.selecting_infinite_mode:
             self._begin_infinite_run()
         else:
+            if show_opening and start_level == 1:
+                try:
+                    self.opening = Opening()
+                except (OSError, pygame.error):
+                    pass
+                else:
+                    self.opening_keep_loadout = keep_loadout
+                    self.state = GameState.OPENING
+                    return
             self._begin_run(start_level, keep_loadout=keep_loadout)
+
+    def _finish_opening(self):
+        self.opening.close()
+        self.opening = None
+        self._begin_run(1, keep_loadout=self.opening_keep_loadout)
+        self.level_fade_in_until = self._level_title_ticks() + LEVEL_FADE_MS
+
+    def draw_opening(self, target):
+        try:
+            self.opening.draw(target)
+        except (OSError, pygame.error):
+            self._finish_opening()
+
+    def draw_ending(self, target):
+        try:
+            self.ending.draw(target)
+        except (OSError, pygame.error):
+            self.ending.close()
+            self.ending = None
+            self.state = GameState.VICTORY
+            self.victory_end = config.game_ticks() + 4000
+
+    def _draw_ending_results(self, target, seconds):
+        screen, labels = config.SCR, self._ui_labels
+        try:
+            config.SCR = RenderSurface(target, (960, 540), target.get_size(), (0, 0), desktop_ui=True)
+            self._ui_labels = None
+            self._draw_victory(seconds=seconds)
+        finally:
+            config.SCR, self._ui_labels = screen, labels
 
     def _jump_to_level(self, level):
         self.setting_key_action = None
@@ -735,7 +824,17 @@ class Game:
             self.difficulty = DIFFICULTY_PRESETS['medium']
         self._begin_run(level)
 
+    def _reset_campaign_totals(self, start_level):
+        self.campaign_start_level = start_level
+        self.campaign_started_at = config.game_ticks()
+        self.campaign_elapsed_ms = 0
+        self.campaign_enemies_defeated = 0
+        self.campaign_bosses_defeated = 0
+        self.campaign_deaths = 0
+        self.campaign_restarts = 0
+
     def _begin_run(self, start_level=1, *, keep_loadout=False):
+        self._reset_campaign_totals(start_level)
         self.player_hit_impact = None
         self.selecting_infinite_mode = False
         self.player.x = config.SCREEN_WIDTH // 2
@@ -820,12 +919,12 @@ class Game:
         self._start_infinite_chapter(now)
 
     def _start_infinite_chapter(self, now):
-        self.level_title_until = now + 2200
         if self._boss_starts_immediately():
             self._trigger_infinite_boss()
         else:
             self.state = GameState.PLAYING
             start_music(self.infinite_background_level, infinite=True, variant=self.infinite_music_variant)
+        self.level_title_until = self._level_title_ticks() + LEVEL_TITLE_DURATION_MS
 
     def _apply_difficulty(self, start_level=1):
         self.spawn_interval = self.difficulty.spawn_interval_start
@@ -873,9 +972,9 @@ class Game:
         if actions['reset'].collidepoint(mx, my):
             self.custom_values = self._difficulty_to_values(DIFFICULTY_PRESETS['medium'])
         elif actions['back'].collidepoint(mx, my):
-            self.state = GameState.DIFFICULTY_SELECT
-        elif actions['start'].collidepoint(mx, my):
-            self._start_custom_game()
+            self.state = GameState.MENU
+        elif actions['select'].collidepoint(mx, my):
+            self._select_campaign('custom')
 
     def _key_settings_rects(self):
         width, height = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
@@ -895,8 +994,9 @@ class Game:
         return pygame.Rect(center - 156, y, 150, 42), pygame.Rect(center + 6, y, 150, 42)
 
     def _handle_key_settings_click(self, mx, my):
-        for action, _, rect in self._key_settings_rects():
+        for index, (action, _, rect) in enumerate(self._key_settings_rects()):
             if rect.collidepoint(mx, my):
+                self.key_settings_row = index
                 self.setting_key_action = action
                 return
         reset, back = self._key_settings_buttons()
@@ -905,7 +1005,7 @@ class Game:
             self.setting_key_action = None
         elif back.collidepoint(mx, my):
             self.setting_key_action = None
-            self.state = GameState.DIFFICULTY_SELECT
+            self.state = GameState.MENU
 
     def _campaign_tier(self):
         if self.difficulty is None and self.state == GameState.SHOP:
@@ -922,10 +1022,11 @@ class Game:
     def _start_level(self, n, *, checkpoint=True):
         for player in self.players:
             player.geyser_lift_until = 0
+        self.state = GameState.PLAYING
+        self.level_transition_end = self.level_fade_in_until = 0
         self.current_level = n; self.level_kills = 0
         self.background_scroll_ticks = 0
         self.bg = self._load_bg()
-        self.level_title_until = config.game_ticks() + 2200
         self.boss = None; self.boss_projectiles.clear()
         self.fire_walls.clear(); self.ice_floors.clear()
         self.skill_projectiles.clear(); self.magnetic_storms.clear(); self.radiation_lasers.clear(); self.lightnings.clear()
@@ -955,10 +1056,9 @@ class Game:
         self.water_passive_kills = 0
         self.next_gift_time = now + 18000
         start_music(n)
-        if LEVEL_CONFIGS[n-1].get('boss_on_start'):
-            self._trigger_boss()
         if checkpoint and not self.infinite_mode:
             self._save_level_checkpoint(now)
+        self.level_title_until = self._level_title_ticks() + LEVEL_TITLE_DURATION_MS
 
     def _save_level_checkpoint(self, now):
         player = {}
@@ -986,6 +1086,7 @@ class Game:
         if self.infinite_mode or checkpoint is None:
             self.reset()
             return
+        self.campaign_restarts += 1
         now = config.game_ticks()
         for key, value in checkpoint['fields'].items():
             setattr(self, key, value)
@@ -1085,6 +1186,7 @@ class Game:
             self.infinite_deaths += 1
             self.state = GameState.INFINITE_CONTINUE
         else:
+            self.campaign_deaths += 1
             self.lives -= 1
             if self.lives > 0:
                 self._resume_after_defeat()
@@ -1156,11 +1258,13 @@ class Game:
         self.player.gold += config.CAMPAIGN_REWARDS[self.current_level - 1]
         play_sound('level_up')
         if self.current_level >= len(LEVEL_CONFIGS):
+            now = config.game_ticks()
+            self.campaign_elapsed_ms = max(0, now - self.campaign_started_at)
             self.state = GameState.VICTORY
-            self.victory_end = config.game_ticks() + 4000
+            self.victory_end = now + 4000
         else:
             self.state = GameState.LEVEL_TRANSITION
-            self.level_transition_end = config.game_ticks() + 2000
+            self.level_transition_end = config.game_ticks() + LEVEL_FADE_MS
 
     # ═══ Weapons & Skills ═════════════════════════════════════════════════════
     def _equipped_by_other(self, player, attr, key):
@@ -1311,6 +1415,28 @@ class Game:
         if self.difficulty and self.difficulty.name == '自定义':
             price *= self.difficulty.weapon_cost_mult
         return math.ceil(price)
+
+    def _weapon_upgrade_cost(self, key):
+        level = self.player.weapon_upgrades.get(key, 0)
+        if key == 'pistol' or key not in self.player.owned_weapons or level >= config.WEAPON_UPGRADE_LIMIT:
+            return None
+        return self._weapon_cost(key) * (level + 1)
+
+    def _upgrade_weapon(self, key):
+        cost = self._weapon_upgrade_cost(key)
+        if cost is None:
+            return
+        self.shop_category = 'weapon'
+        self.shop_weapon = key
+        if self.player.gold < cost:
+            self.shop_notice = f'金币不足，还差 {cost - self.player.gold}'
+            play_sound('error')
+            return
+        self.player.gold -= cost
+        level = self.player.weapon_upgrades.get(key, 0) + 1
+        self.player.weapon_upgrades[key] = level
+        self.shop_notice = f'已加强至 Lv.{level}'
+        play_sound('buy')
 
     def _player_speed(self, player, now):
         speed = Player.SPEED
@@ -1777,6 +1903,15 @@ class Game:
     # ═══ Update ═══════════════════════════════════════════════════════════════
     def update(self):
         now = config.game_ticks()
+        if self.state == GameState.OPENING:
+            if self.opening.elapsed() >= OPENING_CUTS[-1]:
+                self._finish_opening()
+            return
+        if self.state == GameState.ENDING:
+            if self.ending.elapsed() >= self.ending.duration:
+                self.reset()
+                start_music()
+            return
         if self.state == GameState.VICTORY:
             self._update_combat_effects()
             if now >= self.victory_end:
@@ -1788,6 +1923,10 @@ class Game:
                 self.player_invincible_until = now + REVIVE_INVINCIBILITY_MS
                 self.state = self.infinite_resume_state
             return
+        if self.state == GameState.PLAYING and not self.infinite_mode and self._boss_starts_immediately():
+            if not self.campaign_boss_intro_active():
+                self._trigger_boss()
+            return
         if self.state in (GameState.PLAYING, GameState.BOSS_FIGHT) and not self._whale_is_swallowing():
             for player in self.players:
                 player.update_geyser_lift(now)
@@ -1798,12 +1937,8 @@ class Game:
         if self.state == GameState.LEVEL_TRANSITION:
             self._update_combat_effects()
             if now >= self.level_transition_end:
-                background = self.scrolling_background(self.bg.get_size())
-                self.bg_transition_prev = (background if background is not None else self.bg).copy()
-                self.bg_transition_until = now + BG_FADE_MS
-                self._start_level(self.current_level+1)
-                if self.state != GameState.BOSS_FIGHT:
-                    self.state = GameState.PLAYING
+                self._start_level(self.current_level + 1)
+                self.level_fade_in_until = self._level_title_ticks() + LEVEL_FADE_MS
             return
         if self.state == GameState.PLAYING and self.difficulty and not self._boss_starts_immediately():
             self.background_scroll_ticks += 1
@@ -1933,10 +2068,12 @@ class Game:
         sp.damage *= 0.7
         self._settle_boss_if_killed()
 
-    def _explode_fire_rocket(self, sp, now, include_boss=False):
-        radius = 44
+    def _explode_fire_rocket(self, sp, now, include_boss=False, *, radius=44):
         damage = sp.damage * self._gift_damage_mult(now)
-        self.explosions.append(Explosion(sp.x, sp.y, (255, 123, 36), 16, element='fire'))
+        explosion = Explosion(sp.x, sp.y, (255, 123, 36), 16, element='fire')
+        if radius != 44:
+            explosion.shockwave_radius = radius
+        self.explosions.append(explosion)
         for enemy in self.enemies[:]:
             rect = enemy.rect()
             x = max(rect.left, min(sp.x, rect.right))
@@ -2089,6 +2226,11 @@ class Game:
             return False
         self.player.gold -= cost
         shots = player.shoot(now)
+        level = player.weapon_upgrades.get(wkey, 0)
+        missile = False
+        if wkey == 'sniper' and level:
+            player.sniper_shots = (player.sniper_shots + 1) % 4
+            missile = player.sniper_shots == 0
         for b in shots:
             b.source_player = player
             if not self.infinite_mode:
@@ -2103,10 +2245,77 @@ class Game:
                 b.radius = 6
                 if self.infinite_mode:
                     b.damage = 2.2
+            if wkey == 'rifle':
+                b.damage *= 1 + 0.1 * level
+            elif wkey == 'shotgun':
+                b.damage *= 1 + 0.2 * level
+            elif missile:
+                b.sniper_missile = True
+                b.split_count = level
+                b.speed = 7
+                b.radius = 12
+                b.angle = 28 if b.x < config.SCREEN_WIDTH / 2 else -28
+                b.max_lifetime = 4500
+                b.damage = 0.5 * (1 + level)
         self.bullets.extend(shots)
         self.muzzle_flashes.append((player, now, wkey))
         play_sound(f'shoot_{wkey}')
         return True
+
+    def _advance_bullet(self, bullet, now):
+        guided = getattr(bullet, 'sniper_missile', False) or getattr(bullet, 'sniper_submissile', False)
+        if guided and now >= getattr(bullet, 'guide_at', 0):
+            original = getattr(bullet, 'sniper_original_target', None)
+            targets = [box.rect() for box in self.gift_boxes
+                       if box.y + box.radius > 0 and not box.is_offscreen()]
+            if not targets:
+                targets = [e.rect() for e in self.enemies if e is not original and e.y + e.h > 0
+                           and not (self.infinite_mode and self._is_zongzong(e))]
+                if self.boss and self.boss is not original and self.boss.hp > 0:
+                    targets.extend(box for box in self.boss.hitboxes() if box.bottom > 0)
+            if original is not None:
+                if original is self.boss and original.hp > 0:
+                    original_boxes = original.hitboxes()
+                elif original in self.enemies and not (self.infinite_mode and self._is_zongzong(original)):
+                    original_boxes = [original.rect()]
+                else:
+                    original_boxes = []
+                bullet.sniper_left_original |= bullet.rect().collidelist(original_boxes) == -1
+                bullet.sniper_can_hit_original = bool(original_boxes) and bullet.sniper_left_original and not targets
+                if bullet.sniper_can_hit_original:
+                    targets = [box for box in original_boxes if box.bottom > 0]
+            nearest = min(targets, key=lambda r: (r.centerx - bullet.x) ** 2
+                          + (r.centery - bullet.y) ** 2, default=None)
+            if nearest:
+                desired = math.degrees(math.atan2(nearest.centerx - bullet.x, bullet.y - nearest.centery))
+                turn = (desired - bullet.angle + 180) % 360 - 180
+                max_turn = 18 if original is not None and bullet.sniper_can_hit_original else 7
+                bullet.angle += max(-max_turn, min(max_turn, turn))
+        bullet.update()
+
+    def _detonate_sniper_missile(self, bullet, now, target=None):
+        self.bullets.remove(bullet)
+        launch_angle = bullet.angle + (180 if target is not None else 0)
+        for i in range(bullet.split_count):
+            angle = launch_angle + (i - (bullet.split_count - 1) / 2) * 48
+            child = Bullet(bullet.x, bullet.y, WEAPON_DEFS['sniper'], 'sniper', bullet.character, angle)
+            child.sniper_submissile = True
+            child.sniper_original_target = target
+            child.sniper_left_original = child.sniper_can_hit_original = False
+            child.guide_at = now + 100
+            child.spawn_time = now
+            child.source_player = bullet.source_player
+            child.gift_kind = bullet.gift_kind
+            child.damage = bullet.damage * 0.5
+            child.radius = 6
+            child.speed = 7
+            self.bullets.append(child)
+        if bullet.character == 'fire':
+            bullet.damage *= 1.5 if self.infinite_mode else 1.2
+        if self.infinite_mode and now < bullet.source_player.water_boost_until:
+            bullet.damage *= 1.5
+        self._explode_fire_rocket(bullet, now, self.state == GameState.BOSS_FIGHT,
+                                  radius=config.SNIPER_MISSILE_RADIUS)
 
     def _apply_bullet_passive(self, e, b, now):
         damage = b.damage
@@ -2178,7 +2387,7 @@ class Game:
             self._start_factory_link(now)
         fire_wall_rects = [fw.rect() for fw in self.fire_walls]
         for b in self.bullets[:]:
-            b.update()
+            self._advance_bullet(b, now)
             if b.is_offscreen(): self.bullets.remove(b)
         self._update_temple_enemies(now)
         speed_multiplier = self._enemy_speed_multiplier()
@@ -2218,21 +2427,28 @@ class Game:
                 self.enemy_projectiles.remove(ep)
                 if self._damage_player(now, 1, '被怪物子弹击败！', hit_feedback=True): return
         for b in self.bullets[:]:
+            if now < getattr(b, 'guide_at', 0):
+                continue
             br = b.rect()
             if self._handle_bullet_gift_hit(b, now):
                 continue
             for e in self.enemies[:]:
+                if e is getattr(b, 'sniper_original_target', None) and not b.sniper_can_hit_original:
+                    continue
                 if (e.y + e.h <= 0 or br.right < e.x - e.w // 2 or br.left > e.x + e.w // 2 or
                         br.bottom < e.y or br.top > e.y + e.h):
                     continue
                 if id(e) not in b.hit_targets and br.colliderect(e.rect()):
+                    if getattr(b, 'sniper_missile', False):
+                        self._detonate_sniper_missile(b, now, e)
+                        break
                     self._apply_bullet_passive(e, b, now); b.hit_targets.add(id(e)); play_sound('hit')
                     self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), e.is_large, element=b.gift_kind or b.character)
                     if e.is_killed(b.weapon_name):
                         self._kill_enemy(e)
                         if self.state != GameState.PLAYING:
                             break
-                    if b.weapon_name == 'sniper':
+                    if b.weapon_name == 'sniper' and not getattr(b, 'sniper_submissile', False):
                         b.damage *= 0.7 if self.infinite_mode else 0.65
                     else:
                         if b in self.bullets: self.bullets.remove(b)
@@ -2494,16 +2710,22 @@ class Game:
         key = boss.bdef.get('key')
         if key not in SIGNATURES or boss.signature is not None:
             return False
+        half_health = (not self.infinite_mode and not opening and not boss.signature_half_health_cast
+                       and 0 < boss.hp < boss.max_hp * .5)
+        if key == 'boss_crab' and not half_health and any(enemy.chase_color is not None for enemy in self.enemies):
+            return False
         if (key == 'boss'
                 and (boss.laser_warning_start or now < boss.laser_active_until)):
             return False
-        if not opening and now < boss.next_signature_time:
+        if not (opening or half_health) and now < boss.next_signature_time:
             return False
         boss.signature = BossSignature(boss, self.player, now, 0, campaign=True)
-        if key != 'boss':
+        if key not in ('boss', 'boss_crab'):
             boss.next_signature_time = now + 10000
         boss.animation_attack_at = now
         boss.signature_opening_pending = False
+        if half_health:
+            boss.signature_half_health_cast = True
         return True
 
     def _update_boss_signature(self, now):
@@ -2545,7 +2767,7 @@ class Game:
         crab.chase_color = CRAB_BUBBLE_COLORS[index]
         crab.chase_side = (-1, 1)[index]
         crab.max_hp = self.boss.max_hp * (.15, .20, .25)[self._campaign_tier()]
-        crab.speed = 1.9
+        crab.speed = 1.9 * .70
         crab.x = x
         crab.y = max(Enemy.ENTRY_DAMAGE_Y, y - crab.h / 2)
         crab.last_contact_damage_time = now - CONTACT_DAMAGE_COOLDOWN + 450
@@ -2827,34 +3049,55 @@ class Game:
                 and self.player.can_shoot(now, self._player_fire_interval_multiplier(now))):
             self._shoot(now, self.player)
         for b in self.bullets[:]:
-            b.update()
+            self._advance_bullet(b, now)
             if b.is_offscreen(): self.bullets.remove(b)
-            else:
+            elif now >= getattr(b, 'guide_at', 0):
                 if self._handle_bullet_gift_hit(b, now):
+                    if self.state != GameState.BOSS_FIGHT:
+                        return
                     continue
                 br = b.rect()
                 if self._hit_crab_bubble(br, now):
+                    if getattr(b, 'sniper_missile', False):
+                        self._detonate_sniper_missile(b, now)
+                        if self.state != GameState.BOSS_FIGHT:
+                            return
+                        continue
                     play_sound('hit')
                     self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), False, element=b.gift_kind or b.character)
                     self.bullets.remove(b)
                     continue
                 hit_enemy = False
                 for e in self.enemies[:]:
+                    if e is getattr(b, 'sniper_original_target', None) and not b.sniper_can_hit_original:
+                        continue
                     if (e.y + e.h <= 0 or br.right < e.x - e.w // 2 or br.left > e.x + e.w // 2 or
                             br.bottom < e.y or br.top > e.y + e.h):
                         continue
                     if id(e) not in b.hit_targets and br.colliderect(e.rect()):
                         hit_enemy = True
+                        if getattr(b, 'sniper_missile', False):
+                            self._detonate_sniper_missile(b, now, e)
+                            if self.state != GameState.BOSS_FIGHT:
+                                return
+                            break
                         self._apply_bullet_passive(e, b, now); b.hit_targets.add(id(e)); play_sound('hit')
                         self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), e.is_large, element=b.gift_kind or b.character)
                         if e.is_killed(b.weapon_name):
                             self._kill_enemy(e)
-                        if b.weapon_name == 'sniper':
+                        if b.weapon_name == 'sniper' and not getattr(b, 'sniper_submissile', False):
                             b.damage *= 0.7 if self.infinite_mode else 0.65
                         else:
                             if b in self.bullets: self.bullets.remove(b)
                             break
                 if (not hit_enemy) and self.boss and b in self.bullets and self.boss.collides(br):
+                    if self.boss is getattr(b, 'sniper_original_target', None) and not b.sniper_can_hit_original:
+                        continue
+                    if getattr(b, 'sniper_missile', False):
+                        self._detonate_sniper_missile(b, now, self.boss)
+                        if self.state != GameState.BOSS_FIGHT:
+                            return
+                        continue
                     damage = b.damage
                     if b.character == 'fire':
                         damage *= 1.5 if self.infinite_mode else 1.2
@@ -3084,8 +3327,15 @@ class Game:
             play_sound('kill')
             self._start_infinite_chapter(now)
             return
+        self.campaign_bosses_defeated += 1
         self._heal_player((2, 2, 1)[self._campaign_tier()])
         play_sound('kill'); self.boss = None; self._level_complete()
+        if self.campaign_ending and self.state == GameState.VICTORY and isinstance(b, OrochiBoss):
+            try:
+                self.ending = Ending(self._draw_ending_results)
+            except (OSError, pygame.error):
+                return
+            self.state = GameState.ENDING
 
     def _try_boss_absorb_minions(self, now):
         if self.infinite_mode or self.current_level != 6 or not self.boss.entered:
@@ -3437,6 +3687,13 @@ class Game:
             e.chase_partner = None
         credit = 0 if e.temple_kind or e.factory_kind == 'fragment' else 3 if e.factory_kind == 'mini_boss' else 1
         self.enemies.remove(e); self.kill_count += credit; self.level_kills += credit
+        if e.chase_color is not None and self.boss and self.boss.bdef['key'] == 'boss_crab':
+            signature = self.boss.signature
+            if ((signature is None or all(signature.bubble_released))
+                    and not any(enemy.chase_color is not None for enemy in self.enemies)):
+                self.boss.next_signature_time = config.game_ticks() + 10000
+        if not self.infinite_mode:
+            self.campaign_enemies_defeated += 1
         if credit and any(player.character == 'water' for player in self.players):
             self.water_passive_kills += 1
             if self.infinite_mode and self.water_passive_kills % 10 == 0:
@@ -3565,21 +3822,34 @@ class Game:
                 continue
             if target == 'close':
                 self._close_shop()
-            elif target in ('weapon', 'character'):
-                self.shop_category = target
-                self.shop_notice = ''
             else:
                 category, key = target.split(':', 1)
                 if category == 'skills':
+                    self.shop_category = 'character'
                     self.shop_character = key
                     self.shop_notice = ''
+                elif category == 'upgrade':
+                    self._upgrade_weapon(key)
                 else:
                     self._buy_or_equip_shop_item(category, key)
             return
 
     # ═══ Draw ═════════════════════════════════════════════════════════════════
     def draw(self, ui_labels=None, draw_background=True):
-        self._ui_labels = ui_labels
+        s = self.state
+        fade = 0
+        if s == GameState.LEVEL_TRANSITION:
+            remaining = self.level_transition_end - config.game_ticks()
+            fade = 1 - remaining / LEVEL_FADE_MS
+        elif s in (GameState.PLAYING, GameState.BOSS_FIGHT):
+            fade = (self.level_fade_in_until - self._level_title_ticks()) / LEVEL_FADE_MS
+        self._ui_labels = None if fade > 0 else ui_labels
+        if s == GameState.OPENING:
+            self.draw_opening(config.SCR)
+            return
+        if s == GameState.ENDING:
+            self.draw_ending(config.SCR)
+            return
         if draw_background:
             background = self.scrolling_background(self.bg.get_size())
             config.SCR.blit(background if background is not None else self.bg, (0, 0))
@@ -3593,8 +3863,10 @@ class Game:
                 config.SCR.blit(prev, (0, 0))
             else:
                 self.bg_transition_prev = None
-        s = self.state
-        if s == GameState.DIFFICULTY_SELECT: self._draw_difficulty_select()
+        if self.web_level_intro_active() or self.campaign_boss_intro_active():
+            self._draw_scrim(100)
+            self._draw_level_title()
+        elif s == GameState.DIFFICULTY_SELECT: self._draw_difficulty_select()
         elif s == GameState.CUSTOM_DIFFICULTY: self._draw_custom_difficulty()
         elif s == GameState.MENU: self._draw_menu()
         elif s == GameState.KEY_SETTINGS: self._draw_key_settings()
@@ -3603,7 +3875,7 @@ class Game:
             if self.shop_prev_state in (GameState.PLAYING, GameState.BOSS_FIGHT) and self.difficulty is not None:
                 self._draw_game()
             self._draw_shop_overlay()
-        elif s == GameState.LEVEL_TRANSITION: self._draw_game(); self._draw_level_transition()
+        elif s == GameState.LEVEL_TRANSITION: self._draw_game()
         elif s == GameState.GAME_OVER: self._draw_game(); self._draw_game_over()
         elif s == GameState.INFINITE_CONTINUE: self._draw_game(); self._draw_infinite_continue()
         elif s == GameState.INFINITE_COUNTDOWN: self._draw_game(); self._draw_infinite_countdown()
@@ -3612,6 +3884,8 @@ class Game:
         elif s == GameState.PAID_REVIVE: self._draw_game(); self._draw_pause_overlay()
         if self.player_hit_impact is not None:
             self._draw_player_hit_impact()
+        if fade > 0:
+            self._draw_scrim(round(255 * min(1, fade)), (0, 0, 0))
         if self.exit_confirmation:
             self._draw_pause_overlay()
         self._ui_labels = None
@@ -3675,7 +3949,7 @@ class Game:
         return {
             'reset': pygame.Rect(16, y, width, 48),
             'back': pygame.Rect(config.SCREEN_WIDTH // 2 - width // 2, y, width, 48),
-            'start': pygame.Rect(config.SCREEN_WIDTH - width - 16, y, width, 48),
+            'select': pygame.Rect(config.SCREEN_WIDTH - width - 16, y, width, 48),
         }
 
     def _mobile_menu_rects(self):
@@ -3689,11 +3963,11 @@ class Game:
         ov.fill((3, 12, 28, 185))
         config.SCR.blit(ov, (0, 0))
         self._draw_title_text('自定义难度', pygame.Rect(16, 18, config.SCREEN_WIDTH - 32, 48), accent=(110, 210, 255))
-        if self.desktop_controls:
-            self._draw_text_fit('↑ ↓ 选择项目', self.font_tiny, (190, 225, 245),
-                                pygame.Rect(16, 66, config.SCREEN_WIDTH - 32, 20), align='center')
+        self._draw_text_fit('↑ ↓ 选项  ·  ← → 调整  ·  Enter 选关  ·  R 重置  ·  Esc 返回',
+                            self.font_tiny, (190, 225, 245),
+                            pygame.Rect(16, 62, config.SCREEN_WIDTH - 32, 20), align='center')
         for index, (key, row, minus, plus) in enumerate(self._mobile_custom_rows()):
-            focused = self.desktop_controls and index == self.custom_row
+            focused = index == self.custom_row
             self._draw_panel(*row, accent=(130, 218, 237) if focused else (76, 139, 160),
                              fill=(16, 47, 64) if focused else (7, 21, 34), r=7)
             label = next(item[1] for item in self.custom_fields if item[0] == key)
@@ -3715,7 +3989,7 @@ class Game:
         actions = self._mobile_custom_action_rects()
         self._draw_button('重置', actions['reset'].x, actions['reset'].y, actions['reset'].w, actions['reset'].h, (40, 120, 60), key=pygame.K_r)
         self._draw_button('返回', actions['back'].x, actions['back'].y, actions['back'].w, actions['back'].h, key=pygame.K_ESCAPE)
-        self._draw_button('开始', actions['start'].x, actions['start'].y, actions['start'].w, actions['start'].h, (40, 120, 60), key=pygame.K_RETURN)
+        self._draw_button('选关', *actions['select'], (40, 120, 60), key=pygame.K_RETURN)
 
     def _draw_step_button(self, text, x, y, size=(34, 30)):
         w, h = size
@@ -3728,17 +4002,15 @@ class Game:
         self._draw_scrim(212)
         width = config.SCREEN_WIDTH
         self._draw_title_text('按键设置', pygame.Rect(16, 16, width - 32, 46), font=self.font_med)
-        hint = '点击一项后按新键，Esc 取消或返回'
-        if self.desktop_controls:
-            hint = ('按未占用的新键 · Esc 取消' if self.setting_key_action else
-                    '↑ ↓ 选择 · Enter 修改 · Esc 返回')
+        hint = ('按新键 · Esc 取消' if self.setting_key_action else
+                '↑ ↓ 选择 · Enter 修改 · R 恢复默认 · Esc 返回')
         self._draw_text_fit(hint, self.font_tiny, (190, 225, 245),
                             pygame.Rect(16, 60, width - 32, 20), align='center')
         for index, (action, label, rect) in enumerate(self._key_settings_rects()):
             x, y, w, h = rect
             active = action == self.setting_key_action
             fill = (41, 67, 47) if active else (9, 24, 44)
-            focused = self.desktop_controls and index == self.key_settings_row
+            focused = index == self.key_settings_row
             accent = (255, 230, 120) if active or focused else (70, 155, 210)
             self._draw_panel(*rect, accent=accent, fill=fill, r=7, alpha=220)
             self._draw_text_fit(label.removeprefix('P1 '), self.font_tiny, (225, 240, 255),
@@ -3776,7 +4048,10 @@ class Game:
             for end in linked[index + 1:]:
                 draw_electric_arc(config.SCR, start, end, (110, 230, 255), 235, config.game_ticks(), index)
         for e in self.enemies:
-            e.draw(config.SCR)
+            if self.mobile_web and e.edef['key'] == 'octopus':
+                e.draw(config.SCR, visual_scale=1.10)
+            else:
+                e.draw(config.SCR)
             if not self.infinite_mode:
                 if self.boss and self.boss.absorb_target is e:
                     Draw.rect(config.SCR, (190, 85, 255), e.rect().inflate(12, 12), 2)
@@ -3847,16 +4122,17 @@ class Game:
         self._draw_skill_flash()
         self._draw_hud()
         for i, player in enumerate(self._players_to_draw(), 1):
+            visual_scale = 1.18 if self.mobile_web and player.character in CHARACTER_DEFS else 1
             downed_age = self._player_downed_age(player, now)
             if downed_age is not None and player.character in CHARACTER_DEFS:
-                player.draw(config.SCR, downed_age=downed_age)
+                player.draw(config.SCR, visual_scale=visual_scale, downed_age=downed_age)
                 continue
             if self._whale_is_swallowing():
                 progress = self.boss.swallow_progress(now)
                 if progress < .96:
-                    player.draw(config.SCR, visual_scale=max(.08, 1 - progress ** 2))
+                    player.draw(config.SCR, visual_scale=visual_scale * max(.08, 1 - progress ** 2))
                 continue
-            player.draw(config.SCR)
+            player.draw(config.SCR, visual_scale=visual_scale)
             self._draw_invincible_shield(player)
             self._draw_niu_freeze(player)
             self._draw_player_label(player, f'P{i}')
@@ -3925,47 +4201,39 @@ class Game:
                                 pygame.Rect(x, y + 40, width, 18), align='center')
 
     def _draw_rage_banner(self):
-        """终极狂暴提示：屏幕中间红金大字，持续约 3s。"""
+        """显示熔核破阵提示。"""
         now = config.game_ticks()
         if now >= self.rage_banner_until:
             return
-        rem = self.rage_banner_until - now
-        alpha = min(235, int(rem / 3000 * 235))
-        pulse = 1 + 0.06 * math.sin(now * 0.012)
-        if self.desktop_controls and isinstance(config.SCR, RenderSurface):
-            text = '终极狂暴！'
-            center = (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
-            panel = pygame.Rect(0, 0, *self.font_large.size(text)).inflate(60, 28)
-            panel.center = center
-            Draw.rect(config.SCR, (70, 10, 12, min(210, alpha)), panel, border_radius=14)
-            Draw.rect(config.SCR, (255, 180, 40, min(220, alpha)), panel.inflate(-6, -6), 4, 12)
-            blit_label(config.SCR, self.font_large, text, (255, 60, 40), center,
-                       round(48 * pulse), bold=True, alpha=max(0, alpha - 60))
-            blit_label(config.SCR, self.font_large, text, (255, 220, 80), center, 48, bold=True, alpha=alpha)
-            return
-        surf = self.font_large.render('终极狂暴！', True, (255, 60, 40))
-        surf2 = self.font_large.render('终极狂暴！', True, (255, 220, 80))
-        pad_x, pad_y = 30, 14
-        w = surf.get_width() + pad_x * 2
-        h = surf.get_height() + pad_y * 2
-        x = config.SCREEN_WIDTH // 2 - w // 2
-        y = config.SCREEN_HEIGHT // 2 - h // 2
-        # 背景 + 红金描边
-        bg = pygame.Surface((w, h), pygame.SRCALPHA)
-        _rect(bg, (70, 10, 12, min(210, alpha)), (0, 0, w, h), border_radius=14)
-        _rect(bg, (255, 180, 40, min(220, alpha)), (3, 3, w - 6, h - 6), width=4, border_radius=12)
-        config.SCR.blit(bg, (x, y))
-        # 双层描字（红底金字 + 脉动缩放）
-        sx = config.SCREEN_WIDTH // 2
-        sy = config.SCREEN_HEIGHT // 2
-        tw, th = surf.get_width(), surf.get_height()
-        tx, ty = sx - tw // 2, sy - th // 2
-        glow = pygame.transform.smoothscale(surf, (int(tw * pulse), int(th * pulse)))
-        gw, gh = glow.get_size()
-        glow.set_alpha(max(0, alpha - 60))
-        config.SCR.blit(glow, (sx - gw // 2, sy - gh // 2))
-        surf2.set_alpha(alpha)
-        config.SCR.blit(surf2, (tx, ty))
+        w, h = 408, 96
+        layer = effect_layer(config.SCR, (w, h))
+        outline = ((18, 0), (w - 1, 0), (w - 1, h - 21),
+                   (w - 23, h - 1), (0, h - 1), (0, 20))
+        Draw.polygon(layer, (49, 21, 23), outline)
+        Draw.polygon(layer, (101, 40, 25), ((18, 0), (126, 0), (81, h - 1), (0, h - 1), (0, 20)))
+        Draw.polygon(layer, (255, 171, 87), outline, 2)
+        Draw.line(layer, (137, 71, 48), (320, 22), (320, 74))
+
+        badge = ((32, 23), (60, 23), (74, 48), (60, 73), (32, 73), (18, 48))
+        Draw.polygon(layer, (144, 57, 32), badge)
+        Draw.polygon(layer, (229, 126, 65), badge, 1)
+        flame = ((46, 29), (54, 41), (57, 36), (63, 50), (59, 61),
+                 (51, 66), (40, 65), (33, 58), (31, 49), (37, 39), (40, 46))
+        Draw.polygon(layer, (255, 187, 102), flame)
+        Draw.polygon(layer, (255, 231, 169), ((47, 48), (54, 57), (51, 63), (43, 63), (40, 57)))
+
+        title, detail = '终极狂暴', '射速与移速提升'
+        blit_label(layer, self.font_large, title, (255, 232, 181),
+                   (95 + self.font_large.size(title)[0] // 2, 35), 48, bold=True)
+        blit_label(layer, self.font_small, detail, (255, 205, 160),
+                   (97 + self.font_small.size(detail)[0] // 2, 70), 20)
+        blit_label(layer, self.font_med, '20', (255, 193, 112), (351, 47), 28, bold=True)
+        blit_label(layer, self.font_tiny, '秒', (255, 193, 112), (378, 51), 16)
+
+        canvas = layer.surface if isinstance(layer, RenderSurface) else layer
+        canvas.set_alpha(min(255, round((self.rage_banner_until - now) * 255 / 650)))
+        blit_effect(config.SCR, layer, ((config.SCREEN_WIDTH - w) // 2, (config.SCREEN_HEIGHT - h) // 2))
+        canvas.set_alpha(255)
 
     def _draw_gift_lightning_icon(self):
         """闪电礼包激活期间在屏幕正中心显示脉动反应堆。"""
@@ -4050,61 +4318,95 @@ class Game:
             dx, dy = math.cos(rad) * 29, math.sin(rad) * 29
             _line(config.SCR, (205, 250, 255), (cx - dx, cy - dy), (cx + dx, cy + dy), 3)
 
+    def _level_title_ticks(self):
+        return pygame.time.get_ticks() if self.web else config.game_ticks()
+
+    def campaign_boss_intro_active(self):
+        return (not self.infinite_mode and self.state == GameState.PLAYING
+                and self._boss_starts_immediately()
+                and self._level_title_ticks() < self.level_title_until)
+
+    def web_level_intro_active(self):
+        return (self.web and self.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
+                and self._level_title_ticks() < self.level_title_until)
+
     def _draw_level_title(self):
-        if config.game_ticks() >= self.level_title_until:
+        if self._level_title_ticks() >= self.level_title_until:
             return
         level = self.infinite_background_level if self.infinite_mode else self.current_level
         lcfg = LEVEL_CONFIGS[level - 1]
-        _, accent = LEVEL_TITLE_ART[level - 1]
         label = f'第{self.chapter}章' if self.infinite_mode else f'第{level}关'
-        prefix, separator, title = lcfg['title'].partition(' 之 ')
-        extra = 16 if separator else 0
         top = 68 if config.MOBILE_LANDSCAPE_VIEW and config.SCREEN_HEIGHT < 480 else 102
         if self.infinite_mode and not config.MOBILE_LANDSCAPE_VIEW:
             top = self.hud_diagnostics_y + 4
-        # Leave room on the right for the portrait touch character buttons.
-        width = 176 if not config.MOBILE_LANDSCAPE_VIEW and not self.desktop_controls else 292
-        plaque = pygame.Rect(0, top, width, 114 + extra)
-        plaque.centerx = config.SCREEN_WIDTH // 2
-        self._draw_panel(*plaque, accent=accent, fill=(7, 25, 36), r=10, alpha=230)
-        center = plaque.centerx
-        for x in (center - 80, center + 54):
-            Draw.line(config.SCR, accent, (x, top + 15), (x + 26, top + 15))
-        self._draw_text_fit(label, self.font_tiny, accent,
-                            pygame.Rect(center - 52, top + 5, 104, 20), align='center')
-        if separator:
-            self._draw_text_fit(prefix + ' 之', self.font_tiny, accent,
-                                pygame.Rect(plaque.x + 10, top + 24, plaque.w - 20, 17), align='center')
-        self._draw_title_text(title if separator else prefix,
-                              pygame.Rect(plaque.x + 10, top + 22 + extra, plaque.w - 20, 48),
-                              accent=accent)
-        self._draw_level_title_art(level, BOSS_DEFS[lcfg['boss_idx']], (center, plaque.bottom - 23))
+        compact = not config.MOBILE_LANDSCAPE_VIEW and not self.desktop_controls
+        width = 224 if compact else 354
+        plaque = pygame.Rect(0, top, width, 106)
+        if self.web:
+            plaque.center = (config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2)
+            top = plaque.top
+        else:
+            plaque.centerx = config.SCREEN_WIDTH // 2 - (26 if compact else 0)
+        target = config.SCR
+        self._draw_panel(*plaque, accent=(49, 68, 82), fill=(12, 23, 33), r=6, alpha=246)
+        Draw.rect(target, (219, 234, 246), (plaque.left, top, 3, plaque.height))
 
-    def _draw_level_title_art(self, level, boss, center):
+        boss = BOSS_DEFS[lcfg['boss_idx']]
+        boss_width = 104 if compact else 132
+        boss_x = plaque.right - boss_width // 2 + (0 if compact else 7)
+        text_left = plaque.left + (10 if compact else 16)
+        text_width = plaque.width - boss_width - (14 if compact else 20)
+        if compact:
+            label_rect = pygame.Rect(text_left, top + 9, text_width, 19)
+            title_rect = pygame.Rect(text_left, top + 28, text_width, 33)
+        else:
+            label_rect = pygame.Rect(text_left, top + 20, 50, 32)
+            divider_x = label_rect.right + 6
+            Draw.line(target, (76, 101, 120), (divider_x, top + 20), (divider_x, top + 52))
+            title_rect = pygame.Rect(divider_x + 8, top + 12, text_width - 64, 48)
+        self._draw_text_fit(label, self.font_tiny, (178, 202, 220), label_rect, align='center')
+        self._draw_text_fit(lcfg['title'], self.font_large, (245, 249, 255), title_rect, align='center')
+        name_rect = pygame.Rect(boss_x - boss_width // 2 + 2, top + 81, boss_width - 5, 21)
+        if compact:
+            name_rect.x -= 10
+            name_rect.w += 10
+        self._draw_text_fit(boss['name'], self.font_small if compact else self.font_tiny,
+                            (225, 237, 247), name_rect, align='center')
+        enemy_center = (text_left + text_width // 2, top + 80)
+        if not lcfg['enemy_pool']:
+            self._draw_text_fit('直接挑战', self.font_tiny, (178, 202, 220),
+                                pygame.Rect(text_left, top + 68, text_width, 24), align='center')
+        boss_slot = pygame.Rect(boss_x - boss_width // 2, top - (28 if compact else 67),
+                                boss_width + (12 if compact else 20), 100 if compact else 146)
+        self._draw_level_title_art(level, boss, enemy_center, boss_slot, compact)
+
+    def _draw_level_title_art(self, level, boss, center, boss_slot, compact):
         enemies, _ = LEVEL_TITLE_ART[level - 1]
         art = [image_asset(f'enemies/enemy_{key}.png') for key in enemies]
-        if boss['key'] == 'boss_orochi':
-            sheet = image_asset('animations/bosses/anim_boss_orochi_split.png')
-            if sheet is not None:
-                art.append(OrochiBoss._slice_sheet(sheet, OrochiBoss.SPLIT_COLUMNS, OrochiBoss.SPLIT_ROWS)[1])
-        slots = [(image, 30, 28) for image in art if image is not None]
+        icon_width = 28 if compact else 30
+        step = icon_width + 5
+        art = [image for image in art if image is not None]
+        x = center[0] - (len(art) * step - 5) // 2
+        slots = [(image, pygame.Rect(x + i * step, center[1] - 14, icon_width, 28))
+                 for i, image in enumerate(art)]
         boss_art = image_asset(boss.get('sprite_asset', f"bosses/{boss['key']}.png"))
         if boss_art is not None:
-            slots.append((boss_art, 48, 36))
-        x = center[0] - (sum(width + 6 for _, width, _ in slots) - 6) // 2
+            slots.append((boss_art, boss_slot))
+
         target = config.SCR
-        for image, width, height in slots:
-            if image is boss_art and len(slots) > 1:
-                Draw.line(target, (62, 97, 110), (x - 3, center[1] - 14), (x - 3, center[1] + 14))
+        for image, slot in slots:
+            is_boss = image is boss_art
             image = trim_transparent(image)[0]
             if image.get_width() and image.get_height():
-                slot = pygame.Rect(x, center[1] - height // 2, width, height)
                 rect = image.get_rect().fit(slot)
+                if is_boss:
+                    shadow = pygame.Rect(0, 0, max(1, rect.w * 3 // 4), 12)
+                    shadow.center = (rect.centerx, rect.bottom - 2)
+                    Draw.ellipse(target, (5, 10, 16), shadow)
                 if isinstance(target, RenderSurface):
                     target.blit(image, rect.topleft, logical_size=rect.size, static=True)
                 else:
                     target.blit(scale_surface_cached(image, rect.size), rect.topleft)
-            x += width + 6
 
     def _draw_laser_impacts(self):
         """激光命中 Boss 的灼烧冲击动画：扩散双环 + 放射火花 + 灼烧亮点。"""
@@ -4240,7 +4542,7 @@ class Game:
 
     @property
     def hud_diagnostics_y(self):
-        return 119 if self.infinite_mode else 97
+        return 141 if self.infinite_mode else 119
 
     def _draw_gift_hud(self, now, right, y):
         effects = (
@@ -4285,6 +4587,10 @@ class Game:
         else:
             self._draw_text_fit(f'第 {self.current_level} 关  ·  生命 {self.lives}', self.font_tiny,
                                 (180, 220, 232), pygame.Rect(17, 66, 90, 21))
+        if self.difficulty:
+            y = 110 if self.infinite_mode else 88
+            self._draw_text_fit(f'难度 {self.difficulty.name}', self.font_tiny,
+                                (180, 220, 232), pygame.Rect(17, y, 143, 21))
         left, health, right = self._hud_controls()
         labels = self._ui_labels
         # Keep the bottom controls and their text behind the player on every frame.
@@ -4308,26 +4614,11 @@ class Game:
                 Draw.line(config.SCR, (166, 255, 216),
                                  (fill.left + 2, fill.top + 1), (fill.right - 3, fill.top + 1))
         self._draw_text_fit(f'HP {self.player_hp}/{self.max_player_hp}', self.font_tiny, WHITE,
-                            pygame.Rect(x, y, width, 16), align='center')
+                            pygame.Rect(x, y, width, 16), align='center', native_pixels=self.web)
         self._ui_labels = labels
 
     def _draw_shop_overlay(self):
         menu_ui.draw_shop(self)
-
-    def _draw_level_transition(self):
-        # 暗色叠加
-        ov = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
-        ov.fill((0, 5, 20, 140))
-        config.SCR.blit(ov, (0, 0))
-        # 中心面板
-        pw, ph = 360, 120
-        px, py = config.SCREEN_WIDTH // 2 - pw // 2, config.SCREEN_HEIGHT // 2 - ph // 2
-        self._draw_panel(px, py, pw, ph, accent=(90, 230, 120), fill=(14, 48, 36), r=16, alpha=226)
-        # 关卡文本
-        self._draw_title_text(f'第{self.current_level}关 通过!', pygame.Rect(px+20, py+20, pw-40, 50), color=(120, 255, 130), accent=(90, 230, 120))
-        # 奖励
-        rw = config.CAMPAIGN_REWARDS[self.current_level - 1]
-        self._draw_text_fit(f'奖励: {rw} 金币', self.font_med, GOLD_COLOR, pygame.Rect(px+40, py+72, pw-80, 34), align='center')
 
     def _choice_rects(self):
         x, y = config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2 + 19
@@ -4404,28 +4695,51 @@ class Game:
         self._draw_title_text(str(num), pygame.Rect(config.SCREEN_WIDTH//2-80, config.SCREEN_HEIGHT//2-92, 160, 120), color=(255, 245, 180), accent=(255, 130, 80), font=self.font_large)
         self._draw_text_fit('准备继续', self.font_med, (220, 240, 255), pygame.Rect(config.SCREEN_WIDTH//2-110, config.SCREEN_HEIGHT//2+18, 220, 36), align='center')
 
-    def _draw_victory(self):
-        # 金色渐变叠加
-        ov = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
-        for y_off in range(config.SCREEN_HEIGHT):
-            a = int(180 + 30 * (1 - y_off / config.SCREEN_HEIGHT))
-            _rect(ov, (5, 20, 5, a), (0, y_off, config.SCREEN_WIDTH, 1))
-        config.SCR.blit(ov, (0, 0))
-        # 中心面板
-        pw, ph = 380, 300
-        px, py = config.SCREEN_WIDTH // 2 - pw // 2, config.SCREEN_HEIGHT // 2 - ph // 2 - 30
-        self._draw_panel(px, py, pw, ph, accent=(245, 205, 70), fill=(18, 48, 30), r=16, alpha=226)
-        # 胜利标题
-        self._draw_title_text('胜利', pygame.Rect(px+50, py+28, pw-100, 58), color=GOLD_COLOR, accent=(245, 205, 70))
-        self._draw_text_fit('恭喜完成全部关卡！', self.font_med, WHITE, pygame.Rect(px+40, py+96, pw-80, 34), align='center')
-        # 帝冠装饰
-        self._draw_text_fit('★', self.font_large, GOLD_COLOR, pygame.Rect(px+150, py+132, pw-300, 48), align='center')
-        # 统计
-        self._draw_text_fit(f'总击杀: {self.kill_count}', self.font_med, WHITE, pygame.Rect(px+80, py+188, pw-160, 30), align='center')
-        self._draw_text_fit(f'金币: {self.player.gold}', self.font_med, GOLD_COLOR, pygame.Rect(px+80, py+228, pw-160, 30), align='center')
-        seconds = max(0, (self.victory_end - config.game_ticks() + 999) // 1000)
-        self._draw_text_fit(f'{seconds} 秒后返回首页', self.font_small, (190, 230, 205),
-                            pygame.Rect(px+25, py+266, pw-50, 28), align='center')
+    def _draw_victory(self, *, seconds=None):
+        self._draw_scrim(196)
+        gold = (255, 222, 145)
+        muted = (178, 208, 213)
+        width, height = config.SCR.get_size()
+        panel = pygame.Rect(0, 0, min(540, width - 24), min(366, height - 16))
+        panel.center = (width // 2, height // 2)
+        self._draw_panel(*panel, accent=gold, fill=(10, 32, 41), r=20, alpha=250)
+        title = pygame.Rect(panel.x + 20, panel.y + 12, panel.w - 40, panel.h * 13 // 100)
+        self._draw_title_text('战役通关', title, color=gold, accent=(185, 121, 54))
+        subtitle = ('恭喜完成全部关卡！' if self.campaign_start_level == 1
+                    else f'从第 {self.campaign_start_level} 关开始')
+        self._draw_text_fit(subtitle, self.font_small, muted,
+                            pygame.Rect(title.x, title.bottom, title.w, panel.h * 8 // 100),
+                            align='center')
+
+        minutes, elapsed_seconds = divmod(self.campaign_elapsed_ms // 1000, 60)
+        stats = (
+            ('总共耗时', f'{minutes:02d}:{elapsed_seconds:02d}'),
+            ('总共消灭怪物', self.campaign_enemies_defeated),
+            ('死亡次数', self.campaign_deaths),
+            ('重启次数', self.campaign_restarts),
+            ('击败首领', self.campaign_bosses_defeated),
+            ('剩余金币', self.player.gold),
+        )
+        card_w = (panel.w - 52) // 2
+        card_h = (panel.h - panel.h * 38 // 100 - 16) // 3
+        for i, (label, value) in enumerate(stats):
+            row, col = divmod(i, 2)
+            card = pygame.Rect(panel.x + 20 + col * (card_w + 12),
+                               panel.y + panel.h * 27 // 100 + row * (card_h + 8),
+                               card_w, card_h)
+            self._draw_panel(*card, accent=(83, 133, 144), fill=(14, 41, 52), r=9, alpha=248)
+            self._draw_text_fit(label, self.font_small, muted,
+                                pygame.Rect(card.x + 8, card.y + 3, card.w - 16, card.h * 2 // 5),
+                                align='center')
+            self._draw_text_fit(str(value), self.font_med, gold,
+                                pygame.Rect(card.x + 8, card.centery, card.w - 16, card.h // 2 - 3),
+                                align='center')
+        if seconds is None:
+            seconds = max(0, (self.victory_end - config.game_ticks() + 999) // 1000)
+        footer_h = panel.h * 8 // 100
+        self._draw_text_fit(f'{seconds} 秒后返回首页', self.font_small, muted,
+                            pygame.Rect(title.x, panel.bottom - footer_h - 5, title.w, footer_h),
+                            align='center')
 
     def queue_ui_text(self, text, font, color, rect, align='left'):
         style = self._ui_font_styles.get(font)
@@ -4435,11 +4749,11 @@ class Game:
             self._ui_labels.append((str(text), *style, tuple(color[:3]), *rect, align))
         return True
 
-    def _draw_text_fit(self, text, font, color, rect, align='left'):
+    def _draw_text_fit(self, text, font, color, rect, align='left', *, native_pixels=False):
         if not text or self.queue_ui_text(text, font, color, rect, align):
             return
         target = config.SCR
-        native = self.desktop_controls and isinstance(target, RenderSurface)
+        native = (self.desktop_controls or native_pixels) and isinstance(target, RenderSurface)
         blit = target.blit
         shadow_offset = 2
         text = str(text)
@@ -4493,7 +4807,7 @@ class Game:
         font = font or self.font_large
         if self.queue_ui_text(text, font, color, rect, 'center'):
             return
-        if self.desktop_controls and isinstance(config.SCR, RenderSurface):
+        if isinstance(config.SCR, RenderSurface) and (self.desktop_controls or config.SCR.desktop_ui):
             self._draw_text_fit(text, font, color, rect, align='center')
             return
         for dx, dy, alpha in ((0, 4, 120), (0, -2, 80), (3, 0, 80), (-3, 0, 80)):
@@ -4502,14 +4816,21 @@ class Game:
         self._draw_text_fit(text, font, color, rect, align='center')
 
     def _draw_scrim(self, alpha, color=(2, 16, 25)):
-        size = config.SCR.get_size()
-        key = size, color
+        target = config.SCR
+        size = target.get_size()
+        transparent_layer = self.web and isinstance(target, RenderSurface)
+        if transparent_layer:
+            size = tuple(target.length(value) for value in size)
+        key = size, color, transparent_layer
         if getattr(self, '_scrim_key', None) != key:
             self._scrim_key = key
-            self._scrim = pygame.Surface(size).convert()
+            self._scrim = pygame.Surface(size, pygame.SRCALPHA) if transparent_layer else pygame.Surface(size).convert()
             self._scrim.fill(color)
         self._scrim.set_alpha(alpha)
-        config.SCR.blit(self._scrim, (0, 0))
+        if transparent_layer:
+            target.blit_pixels(self._scrim, target.offset)
+        else:
+            target.blit(self._scrim, (0, 0))
 
     def _draw_panel(self, x, y, w, h, accent=(90, 210, 255), fill=(10, 26, 48), r=12, alpha=214):
         target = config.SCR

@@ -146,9 +146,9 @@ def player_frame(player, name, now, downed_age=None):
             if sprite is not None:
                 return sprite
         if not moving:
-            sprite = frame(name + '_idle', now // 240 % 4)
-            if sprite is not None or custom:
-                return sprite or frame(name + '_back', 0)
+            return (frame(name + '_run', now // 400 % 4)
+                    or frame(name + '_idle', now // 240 % 4)
+                    or frame(name + '_back', 0))
 
     frame_ms = 120 if moving else 480
     return frame(name + '_run', now // frame_ms % 4) or frame(name + '_back', 0)

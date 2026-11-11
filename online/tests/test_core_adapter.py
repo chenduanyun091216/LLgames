@@ -257,6 +257,9 @@ class CoOpRulesTests(unittest.TestCase):
             self.assertTrue(self.g.particles)
             if level < len(config.LEVEL_CONFIGS):
                 self.assertEqual(self.g.state, GameState.LEVEL_TRANSITION)
+                snapshot = self.g.snapshot()
+                self.assertEqual(snapshot['transition_reward'], config.CAMPAIGN_REWARDS[level - 1])
+                self.assertEqual(snapshot['next_level_title'], config.LEVEL_CONFIGS[level]['title'])
                 for _ in range(120):
                     self.g.step()
             else:

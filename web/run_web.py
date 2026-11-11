@@ -42,6 +42,7 @@ FONT_LICENSE_URL = 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sa
 WEB_SOURCE = ROOT / 'web'
 GAME_SOURCE = ROOT / 'game_core'
 IMAGE_SOURCE = ROOT / 'assets' / 'images'
+CUTSCENE_SOURCES = tuple(ROOT / 'assets' / name for name in ('opening', 'ending'))
 SOURCE_FILES = tuple(sorted(GAME_SOURCE.glob('*.py')))
 SHELL_FILES = tuple(WEB_SOURCE / name for name in ('shell.css', 'shell.js', 'sw.js'))
 PYGAME_WHEEL = 'cp312/pygame_ce-2.5.7-cp312-cp312-wasm32_bi_emscripten.whl'
@@ -65,6 +66,8 @@ def source_manifest():
     entries = []
     paths = [*SOURCE_FILES, *SHELL_FILES, Path(__file__), ROOT / 'requirements.txt']
     paths.extend(sorted(IMAGE_SOURCE.rglob('*.png')))
+    for source in CUTSCENE_SOURCES:
+        paths.extend(sorted(path for path in source.iterdir() if path.is_file()))
     for path in paths:
         stat = path.stat()
         entries.append([str(path.relative_to(ROOT)), stat.st_size, stat.st_mtime_ns])
@@ -176,8 +179,15 @@ def prepare_image(path, target_images, hd_images):
 
 
 def prepare_sources():
-    shutil.rmtree(STAGING, ignore_errors=True)
-    STAGING.mkdir(parents=True)
+    # Windows can keep the staging directory open even when its contents can be removed.
+    if STAGING.is_symlink() or STAGING.is_junction():
+        raise RuntimeError(f'构建暂存目录不能是链接：{STAGING}')
+    STAGING.mkdir(parents=True, exist_ok=True)
+    for path in STAGING.iterdir():
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
     package = STAGING / GAME_SOURCE.name
     package.mkdir()
     for source in SOURCE_FILES:
@@ -193,6 +203,8 @@ def prepare_sources():
             continue  # The web UI does not load these desktop assets.
         category = path.parent.relative_to(IMAGE_SOURCE)
         prepare_image(path, target_images / category, hd_images / category)
+    for source in CUTSCENE_SOURCES:
+        shutil.copytree(source, STAGING / 'assets' / source.name)
     font_dir = STAGING / 'assets' / 'fonts'
     cached_font_dir = RESOURCE_CACHE / 'fonts'
     download(FONT_URL, cached_font_dir / 'NotoSansCJKsc-Regular.otf', 1_000_000)
@@ -308,8 +320,9 @@ def finalize_webroot(pygbag_output):
                         '<button id="ttgames-fullscreen" type="button" aria-label="进入全屏" title="进入全屏">⛶</button>'
                         '<details id="ttgames-quality" hidden><summary aria-label="画质设置" title="画质设置">⚙</summary>'
                         '<fieldset><legend>画质设置</legend>'
-                        '<label><input type="radio" name="quality" value="1.5" checked>默认 <span>目标 60 FPS</span></label>'
-                        '<label><input type="radio" name="quality" value="2">高清 <span>目标 30 FPS</span></label>'
+                        '<label><input type="radio" name="quality" value="1.5">标准 <span></span></label>'
+                        '<label><input type="radio" name="quality" value="1.75" checked>默认 <span></span></label>'
+                        '<label><input type="radio" name="quality" value="2">高清 <span></span></label>'
                         '</fieldset></details></body>')
     from PIL import Image
     with Image.open(WEBROOT / 'favicon.png') as icon:

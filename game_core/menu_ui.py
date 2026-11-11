@@ -1,5 +1,6 @@
 """Shared title screen, campaign picker and shop presentation for PC and Web."""
 from functools import lru_cache
+from math import cos, tau
 from textwrap import wrap
 
 import pygame
@@ -16,14 +17,18 @@ INK = (235, 253, 255)
 MUTED = (176, 208, 217)
 PAPER = (7, 25, 33)
 SURFACE = (11, 37, 47)
-DIFFICULTIES = (('easy', '简单'), ('medium', '中等'), ('hard', '困难'))
+HOME_ACTIONS = (
+    ('easy', '简单', pygame.K_1), ('medium', '中等', pygame.K_2),
+    ('hard', '困难', pygame.K_3), ('infinite', '无限', pygame.K_4),
+    ('custom', '自定义难度', pygame.K_c), ('keys', '按键设置', pygame.K_k),
+)
 
 # Percentages of the poster area, ordered from the first Boss to the final Boss.
 BOSS_POSTER = (
-    (1, 69, 17, 17), (17, 74, 18, 16), (33, 77, 17, 15),
-    (50, 77, 17, 15), (66, 74, 18, 16), (82, 69, 17, 17),
-    (0, 40, 28, 30), (76, 45, 24, 25),
-    (22, 48, 30, 28), (51, 47, 29, 28), (8, 0, 84, 62),
+    (0, 62, 24, 31), (15, 67, 25, 30), (31, 71, 23, 30),
+    (47, 71, 23, 30), (63, 67, 25, 30), (76, 62, 24, 31),
+    (2, 27, 31, 52), (67, 27, 31, 52),
+    (20, 39, 34, 43), (47, 39, 34, 43), (16, 0, 68, 74),
 )
 SKILL_DESCRIPTIONS = {
     'ice': (
@@ -48,6 +53,10 @@ SKILL_DESCRIPTIONS = {
 WEAPON_DESCRIPTIONS = {
     'pistol': '基础单发', 'rifle': '连续射击', 'shotgun': '扇形散射', 'sniper': '高伤害单发',
 }
+SHOP_SHELVES = (
+    ('weapon', '装备', config._WEAPON_KEYS_ORDERED, _WEAPON_ASSETS, config.WEAPON_DEFS),
+    ('character', '角色', config._CHAR_KEYS_ORDERED, _CHAR_ASSETS, config.CHARACTER_DEFS),
+)
 
 
 def _text(game, value, rect, *, font=None, color=INK, align='left'):
@@ -87,48 +96,114 @@ def _boss_art(level):
     return image_asset(boss.get('sprite_asset', f"bosses/{boss['key']}.png"))
 
 
+@lru_cache(maxsize=2)
+def _boss_poster(width, height, sprites):
+    # The front row extends to 101% of the layout height.
+    layer = pygame.Surface((width, height * 101 // 100), pygame.SRCALPHA)
+    for index in (10, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5):
+        image = sprites[index]
+        if image is None:
+            continue
+        x, y, w, h = BOSS_POSTER[index]
+        box = pygame.Rect(width * x // 100, height * y // 100,
+                          width * w // 100, height * h // 100)
+        trimmed = trim_transparent(image)[0]
+        if trimmed.get_width() and trimmed.get_height() and box.w and box.h:
+            fitted = trimmed.get_rect().fit(box)
+            layer.blit(pygame.transform.smoothscale(trimmed, fitted.size), fitted.topleft)
+    return layer
+
+
 def _home_boxes():
     w, h = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
     if config.MOBILE_LANDSCAPE_VIEW:
-        left = pygame.Rect(38, h // 7, w * 44 // 100 - 48, h * 38 // 100)
-        poster = pygame.Rect(w * 45 // 100, 20, w * 55 // 100 - 22, h - 40)
-        button = pygame.Rect(left.x + 8, left.bottom + 18, min(310, left.w - 8), 50)
+        title = pygame.Rect(0, 0, w // 4, h * 19 // 100)
+        action_height = max(36, h * 6 // 100)
+        actions = pygame.Rect(0, h - action_height - h * 3 // 100, w * 80 // 100, action_height)
+        poster_top = h * 16 // 100
+        poster = pygame.Rect(0, poster_top, w * 70 // 100, actions.top - poster_top - h * 3 // 100)
     else:
-        title_height = min(215, h // 4)
-        left = pygame.Rect(28, max(12, (h - 780) // 2), w - 56, title_height)
-        button = pygame.Rect(56, min(h - 64, left.bottom + min(h * 56 // 100, 480) + 10), w - 112, 50)
-        poster = pygame.Rect(25, left.bottom, w - 50, button.top - left.bottom - 10)
-    return left, poster, button
+        title = pygame.Rect(28, 14, w - 56, min(180, h // 5))
+        action_height = 3 * 44 - 6
+        actions = pygame.Rect(28, h - action_height - 20, w - 56, action_height)
+        poster = pygame.Rect(10, title.bottom, w - 20, actions.top - title.bottom - 12)
+    title.centerx = poster.centerx = actions.centerx = w // 2
+    return title, poster, actions
 
 
 def home_rects():
-    return {'start': _home_boxes()[2]}
+    actions = _home_boxes()[2]
+    columns, gap = (6, 8) if config.MOBILE_LANDSCAPE_VIEW else (2, 6)
+    rows = len(HOME_ACTIONS) // columns
+    width = (actions.w - gap * (columns - 1)) // columns
+    height = (actions.h - gap * (rows - 1)) // rows
+    left = actions.centerx - (width * columns + gap * (columns - 1)) // 2
+    return {
+        key: pygame.Rect(left + index % columns * (width + gap),
+                         actions.y + index // columns * (height + gap), width, height)
+        for index, (key, _, _) in enumerate(HOME_ACTIONS)
+    }
 
 
 def draw_home(game):
-    game._draw_scrim(86)
-    title, poster, start = _home_boxes()
+    game._draw_scrim(70 if game.web else 96)
+    title, poster, _ = _home_boxes()
+    elapsed = pygame.time.get_ticks()
+    title_float = (1 - cos(tau * (elapsed % 4800) / 4800)) / 2
+    title.y += round(title.h * 0.035 * title_float)
     if game.title_image is None:
         _text(game, '海洋生物入侵', title, font=game.font_large, align='center')
     else:
         _art(game.title_image, title)
-    boss_height = poster.h * 74 // 100
-    for index in (10, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5):
-        x, y, width, height = BOSS_POSTER[index]
-        box = pygame.Rect(poster.x + poster.w * x // 100, poster.y + boss_height * y // 100,
-                          poster.w * width // 100, boss_height * height // 100)
-        _art(_boss_art(index + 1), box)
-    team = ('fire', 'ice', None, 'water', 'radiation')
-    cell = poster.w * 16 // 100
+    bosses = pygame.Rect(0, poster.y, round(poster.w * 0.88), round((poster.h * 83 // 100) * 0.88))
+    bosses.centerx = poster.centerx
+    target = config.SCR
+    rendered = isinstance(target, RenderSurface)
+    if rendered:
+        bosses = pygame.Rect(target.rect(bosses))
+    if bosses.w > 0 and bosses.h > 0:
+        sprites = tuple(_boss_art(level) for level in range(1, len(BOSS_POSTER) + 1))
+        layer = _boss_poster(bosses.w, bosses.h, sprites)
+        bounds = layer.get_rect(topleft=bosses.topleft)
+        breath = (1 - cos(tau * (elapsed % 7200) / 7200)) / 2
+        inset = 0.05 * (1 - breath)
+        # Round the inset once per axis so opposite edges move symmetrically.
+        frame = bounds.inflate(-2 * round(bounds.w * inset), -2 * round(bounds.h * inset))
+        image = layer if frame.size == bounds.size else pygame.transform.smoothscale(layer, frame.size)
+        if rendered:
+            target.blit_pixels(image, frame.topleft)
+        else:
+            target.blit(image, frame.topleft)
+    team = ('player_fire', 'player_ice', 'player1', 'player_water', 'player_radiation')
+    cell = poster.w * 10 // 100
     team_left = poster.centerx - cell * len(team) // 2
-    team_height = poster.h - boss_height
+    team_height = poster.h * 24 // 100
     for index, key in enumerate(team):
-        height = team_height if key is None else team_height * 78 // 100
+        height = team_height if key == 'player1' else team_height * 80 // 100
         bottom = poster.bottom - abs(index - 2) * team_height // 12
         rect = pygame.Rect(team_left + index * cell, bottom - height, cell, height)
-        image = animation.frame(f'player_{key}_back', 0) if key else image_asset('players/player1.png')
-        _art(image, rect)
-    _button(game, start, '开始游戏  →', primary=True)
+        step_ms = 240 if key == 'player1' else 360
+        step = (elapsed + index * 80) // step_ms
+        _art(animation.frame(f'{key}_run', step) or animation.frame(f'{key}_back', 0), rect)
+    rects = home_rects()
+    if game.web:
+        actions = _home_boxes()[2].inflate(14, 12)
+        _panel(game, actions, fill=PAPER, radius=12)
+    for key, label, shortcut in HOME_ACTIONS:
+        rect = rects[key]
+        primary = key == 'easy' and not game.web
+        if primary:
+            Draw.rect(config.SCR, ACCENT, rect, border_radius=7)
+        else:
+            _panel(game, rect, radius=7)
+        cap = pygame.Rect(rect.x + 8, rect.centery - 10, 21, 20)
+        Draw.rect(config.SCR, PAPER, cap, border_radius=4)
+        if not primary:
+            Draw.rect(config.SCR, EDGE, cap, width=1, border_radius=4)
+        _text(game, pygame.key.name(shortcut).upper(), cap, font=game.font_tiny, color=ACCENT, align='center')
+        label_rect = pygame.Rect(cap.right + 7, rect.y, rect.right - cap.right - 12, rect.h)
+        _text(game, label, label_rect, font=game.font_small if game.web else game.font_tiny,
+              color=PAPER if primary else INK)
 
 
 def campaign_rects(game):
@@ -137,16 +212,8 @@ def campaign_rects(game):
     margin, gap = (24, 8) if landscape else (16, 7)
     inner = w - margin * 2
     home_x = margin if game.desktop_controls else max(margin, 66)
-    rects = {'home': pygame.Rect(home_x, 12, 82, 40),
-             'shop': pygame.Rect(w - margin - 86, 12, 86, 40)}
-    for index, (key, _) in enumerate(DIFFICULTIES):
-        rects[key] = pygame.Rect(w - margin - 238 + index * 80, 64, 78, 38)
-    footer = ('infinite', 'custom', 'keys') if game.desktop_controls else ('infinite', 'custom')
-    footer_width = min(150, (inner - gap * (len(footer) - 1)) // len(footer))
-    left = (w - footer_width * len(footer) - gap * (len(footer) - 1)) // 2
-    for index, key in enumerate(footer):
-        rects[key] = pygame.Rect(left + index * (footer_width + gap), h - 50, footer_width, 38)
-    area = pygame.Rect(margin, 112, inner, max(1, h - 172))
+    rects = {'home': pygame.Rect(home_x, 12, 108, 40)}
+    area = pygame.Rect(margin, 64, inner, h - 64 - margin)
     if landscape:
         grid = area.copy()
         grid.w = (area.w - gap) * 65 // 100
@@ -188,26 +255,32 @@ def _chapter_scene(atlas, level, size, dark):
 def _scene(rect, level, darkness):
     atlas = image_asset('ui/chapter_scenes.png')
     if atlas is not None and rect.w > 0 and rect.h > 0:
-        _blit(_chapter_scene(atlas, level, rect.size, darkness), rect)
+        target = config.SCR
+        if isinstance(target, RenderSurface):
+            size = (target.length(rect.w), target.length(rect.h))
+            target.blit_pixels(_chapter_scene(atlas, level, size, darkness), target.point(rect.topleft))
+        else:
+            _blit(_chapter_scene(atlas, level, rect.size, darkness), rect)
 
 
 def draw_campaign(game):
     rects = campaign_rects(game)
     w = config.SCREEN_WIDTH
     game._draw_scrim(251, PAPER)
-    _button(game, rects['home'], '← 首页')
-    _button(game, rects['shop'], '商店')
-    margin = rects['detail'].x if not config.MOBILE_LANDSCAPE_VIEW else rects['level:1'].x
-    _text(game, '战役选关', pygame.Rect(margin, 64, w - 280, 38), font=game.font_med)
-    for key, label in DIFFICULTIES:
-        _button(game, rects[key], label, active=game.selected_difficulty == key, radius=19)
+    home = rects['home']
+    _button(game, home, 'Esc · 首页')
+    _text(game, '战役选关  ·  ↑↓←→ / WASD', pygame.Rect(home.right + 14, home.y, w - home.right - 30, home.h),
+          font=game.font_med)
     for level, info in enumerate(config.LEVEL_CONFIGS, 1):
         tile = rects[f'level:{level}']
         selected = level == game.selected_level
         _panel(game, tile, selected=selected)
         _scene(tile.inflate(-4, -4), level, 208)
-        _text(game, f'{level:02}', pygame.Rect(tile.x + 8, tile.y + 3, tile.w - 16, 20),
-              font=game.font_tiny, color=ACCENT)
+        number = pygame.Rect(tile.x + 8, tile.y + 5, 28, 20)
+        if selected:
+            Draw.rect(config.SCR, ACCENT, tile, width=3, border_radius=8)
+            Draw.rect(config.SCR, ACCENT, number, border_radius=4)
+        _text(game, f'{level:02}', number, font=game.font_tiny, color=PAPER if selected else ACCENT, align='center')
         _text(game, info['title'], pygame.Rect(tile.x + 8, tile.bottom - 25, tile.w - 16, 21),
               font=game.font_tiny)
     level = game.selected_level
@@ -223,33 +296,31 @@ def draw_campaign(game):
     description = f'首领 · {boss}' + (f'  /  +{reward} 金币' if reward else '')
     _text(game, description, pygame.Rect(detail.x + 12, detail.bottom - 74, detail.w - 24, 23),
           font=game.font_tiny, color=MUTED)
-    _button(game, rects['start'], '出击  →', primary=True)
-    for key, label in (('infinite', '无限模式'), ('custom', '自定义难度'), ('keys', '按键设置')):
-        if key in rects:
-            _button(game, rects[key], label)
+    _button(game, rects['start'], '出击  ·  Enter', primary=True)
 
 
 def shop_rects(game):
     w, h = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
     width = min(w - 24, 910)
-    height = min(h - 22, 564)
+    height = min(h - 22, 402)
     x, y = (w - width) // 2, (h - height) // 2
     panel = pygame.Rect(x, y, width, height)
     rects = {'panel': panel,
-             'close': pygame.Rect(panel.right - 52, y + 10, 40, 40),
-             'weapon': pygame.Rect(panel.right - 204, y + 10, 68, 40),
-             'character': pygame.Rect(panel.right - 128, y + 10, 68, 40)}
-    cards_y = panel.bottom - 111
-    rects['feature'] = pygame.Rect(x + 10, y + 56, width - 20, cards_y - y - 64)
+             'close': pygame.Rect(panel.right - 48, y + 8, 36, 34)}
     gap = 6
-    card_w = (width - 20 - gap * 3) // 4
-    characters = game.shop_category == 'character'
-    keys = config._CHAR_KEYS_ORDERED if characters else config._WEAPON_KEYS_ORDERED
-    for index, key in enumerate(keys):
-        tile = pygame.Rect(x + 10 + index * (card_w + gap), cards_y, card_w, 70 if characters else 97)
-        rects[f'{game.shop_category}:{key}'] = tile
-        if characters:
-            rects[f'skills:{key}'] = pygame.Rect(tile.x, tile.bottom + 2, tile.w, 26)
+    card_w = (width - 24 - gap * 3) // 4
+    card_h = min(78, max(47, (height - 224) // 2))
+    cards_y = y + 66
+    for category, _, keys, _, _ in SHOP_SHELVES:
+        for index, key in enumerate(keys):
+            tile = pygame.Rect(x + 12 + index * (card_w + gap), cards_y, card_w, card_h)
+            if category == 'weapon' and game._weapon_upgrade_cost(key) is not None:
+                rects[f'upgrade:{key}'] = pygame.Rect(tile.right - 59, tile.y + 4, 55, 20)
+            rects[f'{category}:{key}'] = tile
+            if category == 'character':
+                rects[f'skills:{key}'] = pygame.Rect(tile.x, tile.bottom + 2, tile.w, 24)
+        cards_y += card_h + 28
+    rects['feature'] = pygame.Rect(x + 12, cards_y + 4, width - 24, panel.bottom - cards_y - 14)
     return rects
 
 
@@ -264,24 +335,27 @@ def _shop_status(game, key, characters):
     if equipped:
         return '已装备'
     if owned:
-        return '点击装备'
+        return '已购'
     return f'{cost} 金币'
 
 
 def _draw_skills(game, key, rect):
-    gap = 10
-    cell_w = (rect.w - gap) // 2
-    cell_h = rect.h // 2
-    for index, (name, action, description) in enumerate(SKILL_DESCRIPTIONS[key]):
-        row, col = divmod(index, 2)
-        x, y = rect.x + col * (cell_w + gap), rect.y + row * cell_h
-        thumb = pygame.Rect(x, y, min(56, cell_w // 3), min(57, cell_h - 5))
+    skills = SKILL_DESCRIPTIONS[key]
+    gap = 8
+    cell_w = (rect.w - gap * (len(skills) - 1)) // len(skills)
+    y = rect.y
+    for index, (name, action, description) in enumerate(skills):
+        x = rect.x + index * (cell_w + gap)
+        thumb = pygame.Rect(x, y, min(44, cell_w // 4), min(42, rect.h))
         _panel(game, thumb, fill=PAPER, radius=5)
         _art(animation.frame(f'player_{key}_{action}', 2), thumb.inflate(-6, -6))
-        text_x = thumb.right + 6
+        text_x = thumb.right + 4
         text_w = x + cell_w - text_x
         _text(game, name, pygame.Rect(text_x, y, text_w, 18), font=game.font_tiny, color=ACCENT)
-        for line_index, line in enumerate(wrap(description, width=max(5, text_w // 15))):
+        lines = wrap(description, width=max(1, text_w // game.font_tiny.size('技')[0]))
+        if len(lines) * 16 + 18 > rect.h:
+            lines = [description]
+        for line_index, line in enumerate(lines):
             _text(game, line, pygame.Rect(text_x, y + 18 + line_index * 16, text_w, 15),
                   font=game.font_tiny, color=MUTED)
 
@@ -292,54 +366,69 @@ def draw_shop(game):
     feature = rects['feature']
     game._draw_scrim(231)
     _panel(game, panel, fill=PAPER, radius=12)
-    _text(game, '商店', pygame.Rect(panel.x + 16, panel.y + 10, 61, 40), font=game.font_med)
-    _art(image_asset('ui/coin.png'), pygame.Rect(panel.x + 80, panel.y + 21, 19, 19))
-    _text(game, str(game.player.gold), pygame.Rect(panel.x + 104, panel.y + 11, 72, 38),
+    _text(game, '商店', pygame.Rect(panel.x + 12, panel.y + 6, 61, 36), font=game.font_med)
+    _art(image_asset('ui/coin.png'), pygame.Rect(panel.x + 78, panel.y + 15, 19, 19))
+    _text(game, str(game.player.gold), pygame.Rect(panel.x + 102, panel.y + 6, 72, 36),
           color=config.GOLD_COLOR)
-    for tab, label in (('weapon', '武器'), ('character', '角色'), ('close', '×')):
-        _button(game, rects[tab], label, active=tab == game.shop_category)
+    _button(game, rects['close'], '×')
+
+    for category, heading, keys, assets, definitions in SHOP_SHELVES:
+        characters = category == 'character'
+        first = rects[f'{category}:{keys[0]}']
+        _text(game, heading, pygame.Rect(first.x, first.y - 22, 92, 20))
+        for index, key in enumerate(keys):
+            tile = rects[f'{category}:{key}']
+            status = _shop_status(game, key, characters)
+            equipped = status == '已装备'
+            _panel(game, tile, selected=equipped, fill=(21, 61, 66) if equipped else SURFACE)
+            upgrade = rects.get(f'upgrade:{key}')
+            art = pygame.Rect(tile.x + 8, tile.y + 3, tile.w - 16, tile.h - 37)
+            if upgrade:
+                art.w = upgrade.left - art.x - 3
+                if game.desktop_controls:
+                    art.x += 14
+                    art.w -= 14
+            _art(image_asset(assets[key]), art)
+            if game.desktop_controls:
+                number = index + (5 if characters else 1)
+                _text(game, str(number), pygame.Rect(tile.x + 5, tile.y + 3, 18, 16),
+                      font=game.font_tiny, color=ACCENT, align='center')
+            level = game.player.weapon_upgrades.get(key, 0) if not characters else 0
+            name = f'{definitions[key].name} Lv.{level}' if level else definitions[key].name
+            _text(game, name, pygame.Rect(tile.x + 4, tile.bottom - 34, tile.w - 8, 16),
+                  font=game.font_tiny, align='center')
+            if upgrade:
+                _panel(game, upgrade, selected=True, fill=(28, 74, 74), radius=4)
+                _text(game, f'加强 {game._weapon_upgrade_cost(key)}', upgrade.inflate(-4, -2),
+                      font=game.font_tiny, align='center')
+            badge = pygame.Rect(tile.centerx - 28, tile.bottom - 17, 56, 15)
+            color = config.GOLD_COLOR
+            if status in ('已购', '已装备'):
+                color = ACCENT if equipped else (169, 215, 255)
+                fill = (22, 80, 72) if equipped else (34, 65, 91)
+                Draw.rect(config.SCR, fill, badge, border_radius=5)
+            _text(game, status, badge, font=game.font_tiny, color=color, align='center')
+            if characters:
+                _button(game, rects[f'skills:{key}'], '看技能',
+                        active=game.shop_category == category and game.shop_character == key)
 
     characters = game.shop_category == 'character'
     selected = game.shop_character if characters else game.shop_weapon
-    assets = _CHAR_ASSETS if characters else _WEAPON_ASSETS
     definitions = config.CHARACTER_DEFS if characters else config.WEAPON_DEFS
     _panel(game, feature)
-    text_x = feature.x + 16
-    half = feature.w // 2
-    if characters:
-        portrait = not config.MOBILE_LANDSCAPE_VIEW
-        art = pygame.Rect(feature.x + (half if portrait else feature.w * 58 // 100),
-                          feature.y + 10, half - 19 if portrait else feature.w * 40 // 100,
-                          min(140, feature.h - 160) if portrait else feature.h - 20)
-        skills = pygame.Rect(text_x, feature.y + (158 if portrait else 83),
-                             feature.w - 32 if portrait else feature.w * 57 // 100 - 16,
-                             feature.h - (166 if portrait else 89))
-        title_y = feature.y + (35 if portrait else 9)
-        _art(image_asset(assets[selected]), art)
-        _draw_skills(game, selected, skills)
-    else:
-        title_y = feature.centery - 57
-        art = pygame.Rect(feature.x + feature.w * 40 // 100, feature.y + 15,
-                          feature.w * 57 // 100, feature.h - 30)
-        filename = assets[selected].rsplit('/', 1)[1]
-        _art(image_asset(f'ui/weapon_showcase/{filename}') or image_asset(assets[selected]), art)
-        _text(game, WEAPON_DESCRIPTIONS[selected], pygame.Rect(text_x, title_y + 49, half - 23, 21),
-              font=game.font_tiny, color=MUTED)
-    _text(game, definitions[selected].name, pygame.Rect(text_x, title_y, half - 15, 43),
-          font=game.font_large)
-    status_y = title_y + (46 if characters else 76)
+    text_x = feature.x + 10
+    _text(game, definitions[selected].name, pygame.Rect(text_x, feature.y + 4, feature.w // 2 - 10, 24),
+          font=game.font_med)
     _text(game, game.shop_notice or _shop_status(game, selected, characters),
-          pygame.Rect(text_x, status_y, half - 20, 23), font=game.font_tiny, color=config.GOLD_COLOR)
-
-    for key, path in assets.items():
-        tile = rects[f'{game.shop_category}:{key}']
-        _panel(game, tile, selected=key == selected, fill=(21, 61, 66) if key == selected else SURFACE)
-        image_box = pygame.Rect(tile.x + 7, tile.y + 4, tile.w - 14, tile.h - 41)
-        _art(image_asset(path), image_box)
-        _text(game, definitions[key].name, pygame.Rect(tile.x + 4, tile.bottom - 37, tile.w - 8, 20),
-              font=game.font_tiny, align='center')
-        _text(game, _shop_status(game, key, characters),
-              pygame.Rect(tile.x + 4, tile.bottom - 18, tile.w - 8, 15),
-              font=game.font_tiny, color=MUTED, align='center')
-        if characters:
-            _button(game, rects[f'skills:{key}'], '看技能', active=key == selected)
+          pygame.Rect(feature.centerx, feature.y + 5, feature.w // 2 - 10, 22),
+          font=game.font_tiny, color=config.GOLD_COLOR, align='right')
+    if characters:
+        _draw_skills(game, selected,
+                     pygame.Rect(text_x, feature.y + 29, feature.w - 20, feature.h - 34))
+    else:
+        path = _WEAPON_ASSETS[selected]
+        filename = path.rsplit('/', 1)[1]
+        _art(image_asset(f'ui/weapon_showcase/{filename}') or image_asset(path),
+             pygame.Rect(feature.centerx, feature.y + 31, feature.w // 2 - 10, feature.h - 36))
+        _text(game, WEAPON_DESCRIPTIONS[selected], pygame.Rect(text_x, feature.y + 32, feature.w // 2 - 10, 20),
+              font=game.font_tiny, color=MUTED)

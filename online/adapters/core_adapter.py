@@ -195,7 +195,8 @@ class OnlineGame(Game):
             self._update_combat_effects()
             self._expire_visuals(now)
             return
-        accepting_input = self.state != GameState.LEVEL_TRANSITION and not self._whale_is_swallowing()
+        accepting_input = (self.state != GameState.LEVEL_TRANSITION
+                           and not self.campaign_boss_intro_active() and not self._whale_is_swallowing())
         for p in self.players if accepting_input else ():
             dx, dy, shooting = self._inputs[p.slot]
             if now >= max(p.niu_freeze_until, p.geyser_lift_until):
@@ -612,7 +613,7 @@ class OnlineGame(Game):
                 # Purchase is atomic; equip is not delayed by prior weapon key.
                 p.last_switch_at = -9999
             return None if switch(key, p) else '切换冷却中或技能仍在持续'
-        if self.state == GameState.LEVEL_TRANSITION:
+        if self.state == GameState.LEVEL_TRANSITION or self.campaign_boss_intro_active():
             return '等待进入下一关'
         if self.paused:
             return '等待双方关闭商店后继续'
@@ -644,6 +645,8 @@ class OnlineGame(Game):
                 'orientation': self.orientation, 'world_size': list(self.world_size),
                 'current_level': self.current_level, 'total_levels': len(core_game.LEVEL_CONFIGS), 'stage': stage,
                 'level_title': core_game.LEVEL_CONFIGS[self.current_level - 1]['title'],
+                'transition_reward': config.CAMPAIGN_REWARDS[self.current_level - 1] if stage == 'transition' else None,
+                'next_level_title': core_game.LEVEL_CONFIGS[self.current_level]['title'] if stage == 'transition' else None,
                 'transition_remaining_ms': max(0, self.level_transition_end - config.game_ticks()) if stage == 'transition' else 0,
                 'pause_reason': self.pause_reason, 'players': players, 'gold': self.gold,
                 'lives': self.lives, 'difficulty': self.difficulty_key,

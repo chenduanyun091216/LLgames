@@ -191,7 +191,10 @@ class Presentation:
         self.view.all_players = tuple(live[p['id']] for p in snap['players'])
         if self.view.all_players: self.view.player = next((p for p in self.view.all_players if getattr(p,'slot',1)==local_slot),self.view.all_players[0])
         self.view.boss = live.get(snap.get('boss'))
-        self.view.state = GameState.BOSS_FIGHT if self.view.boss else GameState.PLAYING
+        if self.time_ms < snap['game'].get('level_transition_end', 0):
+            self.view.state = GameState.LEVEL_TRANSITION
+        else:
+            self.view.state = GameState.BOSS_FIGHT if self.view.boss else GameState.PLAYING
         level = self.view.current_level
         if level != self._background_level:
             self.view.bg = make_background(level)

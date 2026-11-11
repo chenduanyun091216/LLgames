@@ -40,10 +40,11 @@ def image_asset(source):
     key = relative.with_suffix('').as_posix()
     destination = DIST / 'art' / relative.with_suffix('.webp')
     destination.parent.mkdir(parents=True, exist_ok=True)
-    folder = relative.parts[0]
+    folder = 'enemies' if relative.parts[:2] == ('animations', 'enemies') else relative.parts[0]
     with Image.open(source) as image:
         frame = None
-        grids = {'anim_boss_orochi_idle': (6, 4), 'anim_boss_orochi_split': (4, 3),
+        grids = {'boss_niu_actions': (2, 2), 'boss_niu_axe_sequence': (2, 2),
+                 'anim_boss_orochi_idle': (6, 4), 'anim_boss_orochi_split': (4, 3),
                  'anim_boss_ancient_whale': (8, 6)}
         grid = grids.get(source.stem)
         if not grid and folder == 'animations' and image.width % image.height == 0:
@@ -89,6 +90,10 @@ def build():
     images = sorted((ROOT / 'assets' / 'images').rglob('*.png'))
     with ThreadPoolExecutor(max_workers=4) as pool:
         manifest = dict(pool.map(image_asset, images))
+    current_art = {DIST / asset['url'] for asset in manifest.values()}
+    for path in (DIST / 'art').rglob('*.webp'):
+        if path not in current_art:
+            path.unlink()
     (DIST / 'assets.json').write_text(json.dumps(manifest), encoding='utf-8')
     (DIST / 'campaign.json').write_text(json.dumps(campaign_data(), ensure_ascii=False), encoding='utf-8')
     (DIST / 'audio').mkdir(exist_ok=True)

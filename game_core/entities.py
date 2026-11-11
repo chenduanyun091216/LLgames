@@ -67,6 +67,8 @@ class Player:
         self.x = config.SCREEN_WIDTH // 2
         self.y = config.GAME_AREA_BOTTOM - 14
         self.owned_weapons = ['pistol']
+        self.weapon_upgrades = {}
+        self.sniper_shots = 0
         self.current_weapon = 'pistol'
         self.gold = 0
         self.last_shot_time = 0
@@ -134,8 +136,10 @@ class Player:
         if now < self.geyser_lift_until:
             return False
         w = WEAPON_DEFS[self.current_weapon]
-        rate = 520 if self.campaign and self.current_weapon == 'sniper' else w.fire_rate
+        rate = w.fire_rate
+        upgrade_speed = 1 + 0.1 * self.weapon_upgrades.get('rifle', 0) if self.current_weapon == 'rifle' else 1
         if self.campaign:
+            rate = config.CAMPAIGN_WEAPON_FIRE_RATES.get(self.current_weapon, rate)
             boost = 1.30 if now < self.water_boost_until else 1.0
             haste = 2.0 if now < self.gift_speed_until else 1.0
             rate = round(rate / max(boost, haste))
@@ -143,7 +147,7 @@ class Player:
                 rate = min(rate, 120)
             if now < max(self.snow_slow_until, self.niu_slow_until):
                 rate = round(rate / getattr(self, 'hazard_slow', 0.8))
-            return now >= self.niu_freeze_until and now - self.last_shot_time >= math.ceil(rate / .70) * interval_multiplier
+            return now >= self.niu_freeze_until and now - self.last_shot_time >= math.ceil(rate / .70) * interval_multiplier / upgrade_speed
         if now < getattr(self, 'water_boost_until', 0):
             rate = int(rate / 2.0)
         if now < getattr(self, 'water_haste_until', 0):
@@ -158,7 +162,7 @@ class Player:
             rate *= 2
         if now < self.niu_freeze_until:
             return False
-        return now - self.last_shot_time >= math.ceil(rate / .70) * interval_multiplier
+        return now - self.last_shot_time >= math.ceil(rate / .70) * interval_multiplier / upgrade_speed
 
     def shoot(self, now):
         self.last_shot_time = now
@@ -508,7 +512,7 @@ class Enemy:
     def reached_bottom(self):
         return not self.temple_kind and not self.factory_link_until and self.chase_color is None and self.y > config.GAME_AREA_BOTTOM + 20
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         if self.temple_kind == 'rift':
             age = max(0, config.game_ticks() - self.breath_start_time)
             opening = min(1, age / 420)
@@ -586,14 +590,14 @@ class Enemy:
                 self._breath_src = self.surface
             sw, sh = self.breath_base.get_size()
             age = max(0, now - self.breath_start_time)
-            scale = _breathing_scale(age, 0.30, 2000) / 1.3
+            scale = _breathing_scale(age, 0.30, 2000) / 1.3 * visual_scale
             breathing_surface = scale_surface_cached(
                 self.breath_base, (round(sw * scale), round(sh * scale))
             )
             bsw, bsh = breathing_surface.get_size()
             sprite_asset = self.sprite_asset
             if self.edef['key'] in config.ENEMY_ACTION_KEYS and not self.frozen and age % 3600 >= 3100:
-                action_asset = f'enemies/enemy_{self.edef["key"]}_action.png'
+                action_asset = f'animations/enemies/enemy_{self.edef["key"]}_action.png'
                 action = image_asset(action_asset, (bsw, bsh))
                 if action is not None:
                     breathing_surface = action
@@ -733,16 +737,55 @@ class Bullet:
         rad = math.radians(self.angle)
         self.x += math.sin(rad) * self.speed
         self.y -= math.cos(rad) * self.speed
+        sub = getattr(self, 'sniper_submissile', False)
+        if sub or getattr(self, 'sniper_missile', False):
+            if not hasattr(self, 'sniper_trail'):
+                self.sniper_trail = []
+            rear = 16 if sub else 32
+            self.sniper_trail.append((round(self.x - math.sin(rad) * rear),
+                                      round(self.y + math.cos(rad) * rear)))
+            limit = 17 if sub else 23
+            if len(self.sniper_trail) > limit:
+                del self.sniper_trail[0]
 
     def is_offscreen(self):
         return (config.game_ticks() - self.spawn_time >= self.max_lifetime or
                 self.y < -20 or self.y > config.SCREEN_HEIGHT + 20 or
                 self.x < -20 or self.x > config.SCREEN_WIDTH + 20)
 
+    def _draw_sniper_trail(self, surf):
+        trail = getattr(self, 'sniper_trail', ())
+        if len(trail) < 2:
+            return
+        xs, ys = zip(*trail)
+        left, top = min(xs) - 5, min(ys) - 5
+        layer = effect_layer(surf, (max(xs) - left + 6, max(ys) - top + 6))
+        width = 6 if getattr(self, 'sniper_submissile', False) else 9
+        for i, ((x1, y1), (x2, y2)) in enumerate(zip(trail, trail[1:]), 1):
+            strength = i / (len(trail) - 1)
+            _line(layer, (255, round(100 + 125 * strength), 65, round(190 * strength)),
+                  (x1 - left, y1 - top), (x2 - left, y2 - top),
+                  max(1, round(width * strength)))
+        blit_effect(surf, layer, (left, top))
+
     def draw(self, surf):
         rad = math.radians(self.angle)
         dx, dy = -math.sin(rad), math.cos(rad)
         head = (int(self.x), int(self.y))
+        if getattr(self, 'sniper_missile', False) or getattr(self, 'sniper_submissile', False):
+            self._draw_sniper_trail(surf)
+            size = (54, 18) if getattr(self, 'sniper_submissile', False) else (108, 36)
+            high_res = isinstance(surf, RenderSurface)
+            pixel_length = surf.length if high_res else round
+            size = tuple(pixel_length(length * 0.7) for length in size)
+            image = image_asset('effects/sniper_upgrade_missile.png', size)
+            if image is not None:
+                rotated = pygame.transform.rotozoom(image, 90 - self.angle, 1)
+                if high_res:
+                    surf.blit_pixels(rotated, rotated.get_rect(center=surf.point(head)))
+                else:
+                    surf.blit(rotated, rotated.get_rect(center=head))
+                return
         if self.gift_kind:
             now = config.game_ticks()
             color = (255, 105, 35) if self.gift_kind == 'fire' else (65, 155, 255)
@@ -1925,6 +1968,7 @@ class Boss:
         self.signature = None
         self.next_signature_time = 0
         self.signature_opening_pending = bdef['key'] in SIGNATURES
+        self.signature_half_health_cast = False
         self.last_attack_time = 0
         self.base_w, self.base_h = bdef.get('size', (130, 120))
         self.size_scale = (config.MOBILE_LANDSCAPE_BOSS_SCALE if config.MOBILE_LANDSCAPE_VIEW

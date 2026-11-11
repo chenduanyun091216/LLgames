@@ -29,7 +29,7 @@ const context2d = {
     clearRect(...rect) { cleared.push(rect); },
     fillText() {},
 };
-const canvas = {clientWidth: 480, clientHeight: 850, getContext: () => context2d};
+const canvas = {clientWidth: 480, clientHeight: 850, style: {}, getContext: () => context2d};
 const offlineStatus = {};
 const workerEvents = {};
 const worker = {state: 'installing', addEventListener: (event, callback) => { workerEvents[event] = callback; }};
@@ -90,6 +90,13 @@ canvas.clientHeight = 390;
 context.window.ttgamesDrawUI('[]', 960, 444, false, true);
 assert.strictEqual(quality.style['--pause-right'], `${844 / 2 + 160 * 844 / 960}px`);
 assert(qualityAttributes.has('data-side'));
+context.window.ttgamesDrawUI('[]', 960, 444, false, false, 'opening');
+assert.strictEqual(canvas.style.opacity, '0');
+assert.strictEqual(canvas.style.transition, '');
+context.window.ttgamesDrawUI('[]', 960, 444, false, false, 'ending');
+assert.strictEqual(canvas.style.transition, 'opacity 460ms ease-out');
+context.window.ttgamesDrawUI('[]', 960, 444, false, false);
+assert.strictEqual(canvas.style.opacity, '1');
 
 assert.match(offlineStatus.textContent, /正在自动保存/);
 setImmediate(() => {

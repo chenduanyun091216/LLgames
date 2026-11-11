@@ -68,10 +68,24 @@ def _glow(radius, color):
     return glow
 
 
+@lru_cache(maxsize=16)
+def _scaled_glow(glow, diameter):
+    return pygame.transform.smoothscale(glow, (diameter, diameter))
+
+
 def draw_glow(surface, center, radius, color, opacity=255):
     glow = _glow(radius, tuple(color[:3]))
-    glow.set_alpha(max(0, min(255, opacity)))
-    surface.blit(glow, glow.get_rect(center=center))
+    position = glow.get_rect(center=center)
+    alpha = max(0, min(255, opacity))
+    if isinstance(surface, RenderSurface):
+        diameter = surface.length(glow.get_width())
+        if diameter != glow.get_width():
+            glow = _scaled_glow(glow, diameter)
+        glow.set_alpha(alpha)
+        surface.blit_pixels(glow, surface.point(position.topleft))
+    else:
+        glow.set_alpha(alpha)
+        surface.blit(glow, position)
 
 
 @lru_cache(maxsize=48)

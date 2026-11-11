@@ -69,6 +69,12 @@
 
     const quality = document.getElementById('ttgames-quality');
     const qualityChoices = [...quality.querySelectorAll('input')];
+    const resolutions = quality.querySelectorAll('label span');
+    window.ttgamesShowResolutions = (...sizes) => {
+        resolutions.forEach((label, i) => {
+            label.textContent = `${sizes[2 * i]} × ${sizes[2 * i + 1]}`;
+        });
+    };
     const qualityKey = 'ttgames-render-density';
     let savedQuality;
     try {
@@ -157,9 +163,10 @@
     let previousLayout = '';
     let previousLabels = [];
     // The scene keeps its logical resolution; this separate layer draws glyphs at device resolution.
-    window.ttgamesDrawUI = (frame, width, height, inBattle, paused) => {
+    window.ttgamesDrawUI = (frame, width, height, inBattle, paused, cutscene = '') => {
         if (!finished) finishProgress();
         loading.hidden = true;
+        button.hidden = Boolean(cutscene) || !request;
         button.toggleAttribute('data-menu', !inBattle);
         quality.hidden = !paused;
         if (paused) {
@@ -177,6 +184,9 @@
         } else {
             quality.open = false;
         }
+        canvas.style.transition = cutscene === 'ending' ? 'opacity 460ms ease-out' : '';
+        canvas.style.opacity = cutscene ? '0' : '1';
+        if (cutscene) return;
         if (!ctx) return;
         prepareCache();
         const dpr = Math.min(3, window.devicePixelRatio || 1);

@@ -78,7 +78,7 @@ class CampaignParityTests(unittest.TestCase):
                             self.assertEqual(view.view.boss.hp, online.boss.hp)
                             self.assertEqual(view.view.player.rect().size, single.player.rect().size)
 
-    def test_final_stage_is_boss_immediately_and_new_stages_have_waves(self):
+    def test_final_stage_starts_boss_after_card_and_new_stages_have_waves(self):
         game = OnlineGame()
         self.assertEqual(len(config.LEVEL_CONFIGS), 11)
         for level in (9, 10):
@@ -87,6 +87,11 @@ class CampaignParityTests(unittest.TestCase):
             self.assertEqual(game.state, GameState.PLAYING)
             self.assertEqual(len(game.level_enemy_defs), 6)
         game._start_level(11)
+        self.assertIsNone(game.boss)
+        for _ in range(179):
+            game.step()
+        self.assertIsNone(game.boss)
+        game.step()
         self.assertEqual(game.state, GameState.BOSS_FIGHT)
         self.assertEqual(game.boss.bdef['key'], 'boss_orochi')
         self.assertEqual(game.snapshot()['total_levels'], 11)

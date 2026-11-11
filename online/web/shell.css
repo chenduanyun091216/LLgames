@@ -8,7 +8,6 @@
 
 #infobox{z-index:40!important;pointer-events:auto} #recovery{z-index:35} #reset-token{font-size:12px}
 
-#transition-info{position:fixed;z-index:11;top:20%;left:50%;transform:translateX(-50%);text-align:center;max-width:90vw;padding:14px 20px;background:#0c344ddd;border:1px solid #6fc9dc;border-radius:12px;pointer-events:none}
 
 :root[data-orientation="portrait"] #canvas{width:min(100vw,66.667dvh)!important;height:min(150vw,100dvh)!important}
 #orientation-warning{position:fixed;z-index:32;left:50%;top:18%;transform:translateX(-50%);width:min(420px,92vw);padding:14px;background:#613d19f2;border:1px solid #ffd18a;border-radius:12px;text-align:center;pointer-events:none}

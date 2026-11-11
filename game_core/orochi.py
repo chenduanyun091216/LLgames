@@ -146,8 +146,8 @@ class OrochiBoss(Boss):
     def _load_artwork(self):
         self._hd_artwork = asset_loader.web_hd_assets
         self.idle_frames = self._load_idle_frames()
-        self.slam_art = _load_art('bosses/boss_orochi_slam.png')
-        self.laser_art = _load_art('bosses/boss_orochi_laser.png')
+        self.slam_art = _load_art('animations/bosses/boss_orochi_slam.png')
+        self.laser_art = _load_art('animations/bosses/boss_orochi_laser.png')
         split_sheet = image_asset('animations/bosses/anim_boss_orochi_split.png')
         self.split_frames = self._slice_sheet(split_sheet, self.SPLIT_COLUMNS, self.SPLIT_ROWS) if split_sheet else ()
         self.bubble_art = tuple(image_asset(f'effects/orochi_bubble_{name}.png') for name in self.BUBBLE_NAMES)

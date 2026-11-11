@@ -47,13 +47,13 @@ class DesktopHDAssetsTests(unittest.TestCase):
                 self.assertTrue(sheet.get_masks()[-1])
         for name in ('boss_niu_actions', 'boss_niu_axe_sequence'):
             with self.subTest(sheet=name):
-                sheet = asset_loader.image_asset(f'bosses/{name}.png')
+                sheet = asset_loader.image_asset(f'animations/bosses/{name}.png')
                 self.assertEqual(sheet.get_size(), (1312, 1199))
                 self.assertTrue(sheet.get_masks()[-1])
         self.assertGreaterEqual(asset_loader.image_asset('ui/title.png').get_width(), 1595)
         self.assertEqual(asset_loader.image_asset('effects/boss_claw.png').get_size(), (426, 640))
 
-    def test_desktop_home_title_does_not_overlap_start_button(self):
+    def test_desktop_home_title_does_not_overlap_mode_buttons(self):
         from game_core import menu_ui
         from game_core.game import Game
 
@@ -66,7 +66,7 @@ class DesktopHDAssetsTests(unittest.TestCase):
             game._draw_menu()
         title, box = art.call_args_list[0].args
         self.assertIs(title, game.title_image)
-        self.assertLessEqual(box.bottom, game._mobile_menu_rects()['start'].top)
+        self.assertTrue(all(box.bottom <= rect.top for rect in game._mobile_menu_rects().values()))
         self.assertEqual(len(art.call_args_list), 17)
 
     def test_orochi_idle_art_has_headroom_at_1440p(self):

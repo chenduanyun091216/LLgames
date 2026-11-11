@@ -1,4 +1,5 @@
 import gzip
+import os
 import socket
 import ssl
 import struct
@@ -11,10 +12,33 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServe
 from pathlib import Path
 from unittest.mock import patch
 
+from web import run_web
 from web.run_web import OfflineHandler, SetupHandler, prepare_image
 
 
 class WebServerTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows locks the current directory')
+    def test_prepare_sources_reuses_staging_held_open_on_windows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory).resolve()
+            stale = staging / 'stale'
+            stale.mkdir()
+            (stale / 'asset.png').touch()
+            (staging / 'stale.txt').touch()
+            previous_directory = Path.cwd()
+            os.chdir(staging)
+            try:
+                with patch.multiple(run_web, STAGING=staging, IMAGE_SOURCE=staging / 'images',
+                                    SOURCE_FILES=(), CUTSCENE_SOURCES=()), \
+                        patch.object(run_web, 'download', side_effect=RuntimeError('stop before download')):
+                    with self.assertRaisesRegex(RuntimeError, 'stop before download'):
+                        run_web.prepare_sources()
+                self.assertFalse(stale.exists())
+                self.assertFalse((staging / 'stale.txt').exists())
+                self.assertTrue((staging / 'main.py').is_file())
+            finally:
+                os.chdir(previous_directory)
+
     def test_tls_certificate_rejection_logs_without_traceback(self):
         handler = OfflineHandler.__new__(OfflineHandler)
         error = ssl.SSLError('certificate unknown')

@@ -52,7 +52,8 @@ function panel(html, state, small = false) {
     page = state;
     screen.hidden = false;
     screen.classList.toggle('menu', ['menu', 'select', 'custom'].includes(state));
-    screen.innerHTML = '<section class="panel' + (small ? ' narrow' : '') + '">' + html + '</section>';
+    screen.innerHTML = '<section class="panel' + (small ? ' narrow' : '')
+        + (state === 'clear' ? ' stage-clear' : '') + '">' + html + '</section>';
     controls.hidden = true;
     clearInput();
     screen.querySelector('.primary, button')?.focus({preventScroll: true});
@@ -99,10 +100,11 @@ function updateHUD() {
         : b?.skillUntil > world.time ? b.skill : '';
     const hp = b ? Math.ceil(b.hp) : 0;
     const key = JSON.stringify([world.level, world.hp, world.gold, world.lives, world.kills, world.score, world.weapon,
-        world.character, b?.id, hp, text, auto, muted, cooldowns, world.round]);
+        world.character, b?.id, hp, text, auto, muted, cooldowns, world.round, world.weaponUpgrades]);
     if (key === hudKey) return;
     hudKey = key;
     const chapter = world.mode === 'endless' ? '无限 ' + (world.round * 11 + world.level) : '第 ' + world.level + ' 关';
+    const difficulty = world.custom.ammo ? '自定义' : data.difficulty[world.tier].name;
     const boss = b ? '<div class="boss-card"><strong>' + b.def.name + ' · ' + hp + '/' + b.maxHp
         + '</strong><progress aria-label="Boss 生命" value="' + hp + '" max="' + b.maxHp + '"></progress><small>' + text + '</small></div>' : '';
     if (!hud.firstElementChild) {
@@ -110,7 +112,7 @@ function updateHUD() {
             + button('auto', '自动') + button('shop', '商店') + button('pause', '暂停')
             + '</div><div class="hud-boss"></div>';
     }
-    hud.querySelector('.hud-card').innerHTML = '<strong>' + chapter + ' · ' + world.stage.title + '</strong><span class="hp">生命 '
+    hud.querySelector('.hud-card').innerHTML = '<strong>' + chapter + ' · ' + world.stage.title + '</strong>难度 ' + difficulty + '<br><span class="hp">生命 '
         + world.hp + '/' + world.maxHp + '</span> · 金币 ' + world.gold + ' · 续关 ' + world.lives + '<br>'
         + data.weapons[world.weapon].name + ' · 击败 ' + world.kills + ' · ' + (b ? '得分 ' + world.score : text);
     hud.querySelector('[data-action="auto"]').textContent = '自动' + (auto ? '开' : '关');
@@ -128,6 +130,11 @@ function updateHUD() {
         node.disabled = !world[type === 'weapon' ? 'weapons' : 'characters'].has(key)
             || (world.mode === 'endless' && key === 'pistol');
         node.setAttribute('aria-pressed', String(world[type] === key));
+        if (type === 'weapon') {
+            const level = world.weaponUpgrades[key];
+            if (level) node.dataset.upgradeLevel = level;
+            else delete node.dataset.upgradeLevel;
+        }
     });
 }
 
@@ -173,6 +180,7 @@ function newRun(mode = 'campaign', settings = false) {
         next.weapon = menuLoadout.weapon;
         next.character = menuLoadout.character;
         next.weapons = new Set(menuLoadout.weapons);
+        next.weaponUpgrades = {...menuLoadout.weaponUpgrades};
         next.characters = new Set(menuLoadout.characters);
         next.startLevel(next.level);
     }
@@ -189,7 +197,8 @@ const skillDescriptions = {
     ice: ['拦截敌弹，破碎时减速周围敌人。', '扇形发射冰球，冻结小怪、减速首领。'],
     water: ['恢复生命。', '短时间提高移动速度和射速。'],
     fire: ['挡住敌人与可拦截的子弹。', '发射火球和会爆炸的火箭。'],
-    radiation: ['电击附近多个目标。', '吸附弹幕并爆发范围伤害。'],
+    radiation: ['电击附近多个目标。', '吸附弹幕并爆发范围伤害。',
+        '发射持续光束，再次触发可横扫。', '飞镖环绕拦截子弹，结束后向外飞出。'],
 };
 
 function shop(returnTo = 'playing', message = '') {
@@ -198,24 +207,41 @@ function shop(returnTo = 'playing', message = '') {
     const definitions = isWeapon ? data.weapons : data.characters;
     const owned = isWeapon ? world.weapons : world.characters;
     if (!keys.includes(shopPreview)) shopPreview = keys[0];
-    const status = key => key === world[shopTab] ? '已装备' : owned.has(key) ? '切换装备' : world.price(shopTab, key) + ' 金币';
+    const status = key => key === world[shopTab] ? '已装备' : owned.has(key) ? '已购' : world.price(shopTab, key) + ' 金币';
     const image = key => isWeapon ? weaponImage(key, 'ui/weapon_showcase') : 'players/player_' + key;
     const selected = definitions[shopPreview];
+    const skillLabels = isWeapon ? [] : selected.skills.map(skill => skill.name);
+    if (shopPreview === 'radiation') skillLabels.push('辐射激光', '飞镖护盾');
     const description = isWeapon ? '<p>' + weaponDescriptions[shopPreview] + '</p>' : '<ul>'
-        + selected.skills.map((skill, index) => '<li><strong>' + skill.name + '</strong> '
+        + skillLabels.map((name, index) => '<li><strong>' + name + '</strong>'
             + skillDescriptions[shopPreview][index] + '</li>').join('') + '</ul>';
-    const items = keys.map(key => '<div><button type="button" data-action="equip-' + shopTab + '-' + key
-        + '" data-return="' + returnTo + '" aria-pressed="' + (key === shopPreview) + '"><img alt="" src="./art/'
-        + image(key) + '.webp"><strong>' + definitions[key].name + '</strong><small>' + status(key) + '</small></button>'
-        + (isWeapon ? '' : '<button type="button" data-action="preview-' + key + '" data-return="' + returnTo + '">看技能</button>') + '</div>').join('');
-    const tabs = ['weapon', 'character'].map(type => '<button type="button" data-action="shop-tab-' + type
-        + '" data-return="' + returnTo + '" aria-pressed="' + (type === shopTab) + '">' + (type === 'weapon' ? '武器' : '角色') + '</button>').join('');
+    const shelves = ['weapon', 'character'].map(type => {
+        const gear = type === 'weapon';
+        const items = (gear ? weapons : characters).map(key => {
+            const equipped = key === world[type];
+            const purchased = (gear ? world.weapons : world.characters).has(key);
+            const label = equipped ? '已装备' : purchased ? '已购' : world.price(type, key) + ' 金币';
+            const sprite = gear ? weaponImage(key) : 'players/player_' + key;
+            const item = (gear ? data.weapons : data.characters)[key];
+            const level = gear ? world.weaponUpgrades[key] ?? 0 : 0;
+            const upgrade = gear ? world.upgradePrice(key) : null;
+            return '<div><button type="button" data-action="equip-' + type + '-' + key
+                + '" data-return="' + returnTo + '" aria-pressed="' + equipped + '"><img alt="" src="./art/'
+                + sprite + '.webp"><strong>' + item.name + (level ? ' Lv.' + level : '') + '</strong><small class="'
+                + (equipped ? 'equipped' : purchased ? 'owned' : '') + '">' + label + '</small></button>'
+                + (upgrade === null ? '' : '<button class="shop-upgrade" type="button" data-action="upgrade-' + key
+                    + '" data-return="' + returnTo + '">加强 ' + upgrade + '</button>')
+                + (gear ? '' : '<button type="button" data-action="preview-' + key
+                    + '" data-return="' + returnTo + '">看技能</button>') + '</div>';
+        }).join('');
+        return '<section class="shop-shelf"><h3>' + (gear ? '装备' : '角色') + '</h3><div class="shop">' + items + '</div></section>';
+    }).join('');
     const back = returnTo === 'clear' ? 'clear' : returnTo === 'select' ? 'shop-menu-close' : 'resume';
     panel('<div class="bar"><h2>商店</h2><span class="shop-gold"><img src="./art/ui/coin.webp" alt="金币">' + world.gold + '</span>'
-        + '<div class="shop-tabs">' + tabs + button(back, '×') + '</div></div>'
+        + button(back, '×') + '</div>' + shelves
         + '<div class="shop-feature"><div><h3>' + selected.name + '</h3>' + description
         + '<p class="shop-price" role="status">' + (message || status(shopPreview)) + '</p></div>'
-        + '<img alt="" src="./art/' + image(shopPreview) + '.webp"></div><div class="shop">' + items + '</div>', 'shop');
+        + '<img alt="" src="./art/' + image(shopPreview) + '.webp"></div>', 'shop');
 }
 
 function results() {
@@ -227,10 +253,20 @@ function results() {
     } else {
         const completed = world;
         const finished = phase === 'victory';
-        panel('<h2>' + (finished ? '战役胜利' : '第 ' + world.level + ' 关完成')
-            + '</h2><p>得分 ' + world.score + ' · 金币 ' + world.gold + '</p><div class="row">'
-            + (finished ? button('menu', '返回首页') : button('next', '下一关', true) + button('shop-clear', '装备商店'))
-            + '</div>', phase, true);
+        if (finished) {
+            panel('<h2>战役胜利</h2><p>得分 ' + world.score + ' · 金币 ' + world.gold + '</p><div class="row">'
+                + button('menu', '返回首页') + '</div>', phase, true);
+        } else {
+            const next = world.level % world.data.levels.length;
+            const reward = world.data.CAMPAIGN_REWARDS[world.level - 1];
+            panel('<div class="clear-readout"><span class="clear-radar" aria-hidden="true">✓</span><div>'
+                + '<p>第 ' + world.level + ' 关 · ' + escapeText(world.stage.title) + '</p><h2>关卡通过</h2>'
+                + '<p>奖励 <strong>+' + reward + '</strong> 金币</p></div></div>'
+                + '<p class="clear-next">' + (world.mode === 'campaign' ? '即将进入' : '下一关') + '第 ' + (next + 1)
+                + ' 关 · ' + escapeText(world.data.levels[next].title) + '</p>'
+                + '<p>得分 ' + world.score + ' · 金币 ' + world.gold + '</p><div class="row">'
+                + button('next', '下一关', true) + button('shop-clear', '装备商店') + '</div>', phase, true);
+        }
         if (world.mode === 'campaign') setTimeout(() => {
             if (world !== completed || page !== phase) return;
             if (finished) menu();
@@ -297,18 +333,22 @@ $('#app').addEventListener('click', event => {
         screen.querySelector('[data-action="' + action + '"]')?.focus();
         return;
     }
-    if (action.startsWith('shop-tab-')) {
-        shopTab = action.slice(9);
-        shop(node.dataset.return);
-        return;
-    }
     if (action.startsWith('preview-')) {
+        shopTab = 'character';
         shopPreview = action.slice(8);
         shop(node.dataset.return);
         return;
     }
+    if (action.startsWith('upgrade-')) {
+        shopTab = 'weapon';
+        shopPreview = action.slice(8);
+        const success = world.upgradeWeapon(shopPreview);
+        shop(node.dataset.return, success ? '已加强至 Lv.' + world.weaponUpgrades[shopPreview] : '金币不足');
+        return;
+    }
     if (action.startsWith('equip-')) {
         const [, type, id] = action.split('-');
+        shopTab = type;
         shopPreview = id;
         shop(node.dataset.return, world.equip(type, id) ? '已装备' : '金币不足');
         if (page === 'shop' && node.dataset.return !== 'select') updateHUD();

@@ -24,6 +24,7 @@ class OrochiTests(unittest.TestCase):
         game = Game()
         game.difficulty = config.DIFFICULTY_PRESETS['medium']
         game._start_level(11)
+        game._trigger_boss()
         self.assertEqual(game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(game.boss, OrochiBoss)
         self.game = game
@@ -275,7 +276,7 @@ class OrochiTests(unittest.TestCase):
         self.boss.hit_by('pistol')
         self.assertEqual(self.boss.hp, self.boss.max_hp * .90 - 1)
 
-    def test_level_ten_transitions_directly_to_orochi(self):
+    def test_level_ten_transitions_to_orochi_after_level_card(self):
         self.game._start_level(10)
         self.game._trigger_boss()
         self.game.boss.hp = 0
@@ -284,6 +285,9 @@ class OrochiTests(unittest.TestCase):
         config.campaign_time_ms = self.game.level_transition_end
         self.game.update()
         self.assertEqual(self.game.current_level, 11)
+        self.assertIsNone(self.game.boss)
+        config.campaign_time_ms = self.game.level_title_until
+        self.game.update()
         self.assertEqual(self.game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(self.game.boss, OrochiBoss)
         self.assertFalse(self.game.enemies)
@@ -293,6 +297,9 @@ class OrochiTests(unittest.TestCase):
         event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_MINUS, mod=pygame.KMOD_SHIFT)
         self.game.handle_events([event])
         self.assertEqual(self.game.current_level, 11)
+        self.assertIsNone(self.game.boss)
+        config.campaign_time_ms = self.game.level_title_until
+        self.game.update()
         self.assertEqual(self.game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(self.game.boss, OrochiBoss)
 
@@ -301,6 +308,9 @@ class OrochiTests(unittest.TestCase):
         _, _, next_level = self.game._hud_controls()
         self.game._handle_hud_click(next_level.center)
         self.assertEqual(self.game.current_level, 11)
+        self.assertIsNone(self.game.boss)
+        config.campaign_time_ms = self.game.level_title_until
+        self.game.update()
         self.assertEqual(self.game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(self.game.boss, OrochiBoss)
 

@@ -130,8 +130,8 @@ class WeaponDef:
 WEAPON_DEFS = {
     'pistol':  WeaponDef('手枪',  0,  3, 10, '手枪', (255, 220, 80),  300, 10),
     'rifle':   WeaponDef('步枪', 10,  2,  5, '步枪', (100, 180, 255), 200, 14),
-    'shotgun': WeaponDef('散弹枪', 15, 2, 5, '散弹', (110, 235, 180), 360, 12),
-    'sniper':  WeaponDef('狙击枪', 20,  1,  3, '狙击枪', (255, 100, 100), 480, 20),
+    'shotgun': WeaponDef('散弹枪', 15, 2, 5, '散弹', (110, 235, 180), round(360 / 1.10), 12),
+    'sniper':  WeaponDef('狙击枪', 20,  1,  3, '狙击枪', (255, 100, 100), round(480 / 1.30), 20),
 }
 _WEAPON_KEYS_ORDERED = ['pistol', 'rifle', 'shotgun', 'sniper']
 
@@ -286,27 +286,27 @@ DIFFICULTY_PRESETS = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 BOSS_DEFS = [
-    {'key': 'boss_lobster',  'name': '巨型龙虾', 'enemy_key': 'lobster',
+    {'key': 'boss_lobster',  'name': '赤甲龙虾·断钳', 'enemy_key': 'lobster',
      'base_hp': 10, 'speed': 0.6,  'attack_interval': 3300, 'projectile_count': 2, 'homing_chance': 0.16},
-    {'key': 'boss_crab',     'name': '巨型螃蟹', 'enemy_key': 'crab',
+    {'key': 'boss_crab',     'name': '铁甲巨蟹·镇城', 'enemy_key': 'crab',
      'base_hp': 15, 'speed': 0.68, 'attack_interval': 3150, 'projectile_count': 3, 'homing_chance': 0.18,
      'laser_chance': 0.012},
-    {'key': 'boss_octopus',  'name': '巨型章鱼', 'enemy_key': 'octopus',
+    {'key': 'boss_octopus',  'name': '深海章王·墨潮', 'enemy_key': 'octopus',
      'base_hp': 23, 'speed': 0.5,  'attack_interval': 2950, 'projectile_count': 3, 'homing_chance': 0.20,
      'laser_chance': 0.015},
-    {'key': 'boss_shark',    'name': '巨型鲨鱼', 'enemy_key': 'shark',
+    {'key': 'boss_shark',    'name': '裂浪巨鲨·碎礁', 'enemy_key': 'shark',
      'base_hp': 34, 'speed': 0.76, 'attack_interval': 2650, 'projectile_count': 4, 'homing_chance': 0.23,
      'laser_chance': 0.018},
-    {'key': 'boss_dragon',   'name': '海龙',     'enemy_key': 'shark',
+    {'key': 'boss_dragon',   'name': '覆海蛟龙·沉舟', 'enemy_key': 'shark',
      'base_hp': 50, 'speed': 0.92, 'attack_interval': 2350, 'projectile_count': 4, 'homing_chance': 0.25,
      'laser_chance': 0.022},
-    {'key': 'boss',          'name': '深渊之主', 'enemy_key': 'shark',
+    {'key': 'boss',          'name': '深渊之主·蚀夜', 'enemy_key': 'shark',
      'base_hp': 78, 'speed': 1.08, 'attack_interval': 1900, 'projectile_count': 6,
      'homing_chance': 0.28, 'laser_chance': 0.035, 'final_boss': True, 'size': (180, 160)},
-    {'key': 'boss_niu',      'name': '牛魔王', 'enemy_key': 'shark',
+    {'key': 'boss_niu',      'name': '烈焰牛魔·焚岳', 'enemy_key': 'shark',
      'base_hp': 105, 'fixed_hp': 300, 'speed': 1.65, 'attack_interval': 3000, 'projectile_count': 6,
      'size': (168, 150)},
-    {'key': 'boss_zongzong', 'name': '小粽粽', 'enemy_key': 'zongzong',
+    {'key': 'boss_zongzong', 'name': '双粽统帅·粽粽', 'enemy_key': 'zongzong',
      'base_hp': 150, 'fixed_hp': 400, 'speed': 1.18, 'attack_interval': 1900, 'projectile_count': 6,
      'size': (128, 118), 'sprite_asset': 'bosses/zongzong.png', 'sprite_key': 'zongzong'},
     {'key': 'boss_mecha_lizard', 'name': '机械蜥蜴·熔芯', 'enemy_key': 'mecha_crab',
@@ -315,7 +315,7 @@ BOSS_DEFS = [
     {'key': 'boss_ancient_whale', 'name': '远古巨鲸·溯潮', 'enemy_key': 'ancient_ray',
      'base_hp': 170, 'speed': 0.52, 'attack_interval': 3600, 'projectile_count': 5,
      'size': (340, 230)},
-    {'key': 'boss_orochi', 'name': '八岐大蛇', 'enemy_key': 'shark',
+    {'key': 'boss_orochi', 'name': '八岐大蛇·祸津', 'enemy_key': 'shark',
      'base_hp': 175, 'speed': 0.65, 'attack_interval': 3400, 'projectile_count': 8,
      'size': (360, 240)},
 ]
@@ -340,9 +340,9 @@ LEVEL_CONFIGS = [
      'enemy_pool': ['crab', 'goldfish', 'octopus', 'shark'] + NEW_ENEMY_KEYS + SPECIAL_ENEMY_KEYS, 'boss_on_start': True},
     {'level': 7, 'title': '死亡火山', 'kills_needed': 36, 'boss_idx': 6, 'gold_reward': 85,
      'enemy_pool': ['crab', 'octopus', 'shark'] + NEW_ENEMY_KEYS + SPECIAL_ENEMY_KEYS},
-    {'level': 8, 'title': '粽子星球', 'kills_needed': 42, 'boss_idx': 7, 'gold_reward': 110,
+    {'level': 8, 'title': '粽子基地', 'kills_needed': 42, 'boss_idx': 7, 'gold_reward': 110,
      'enemy_pool': ['lobster', 'goldfish', 'octopus', 'shark'] + NEW_ENEMY_KEYS + SPECIAL_ENEMY_KEYS},
-    {'level': 9, 'title': '机房重地 之 废弃工厂', 'kills_needed': 32, 'boss_idx': 8, 'gold_reward': 34,
+    {'level': 9, 'title': '机房重地', 'kills_needed': 32, 'boss_idx': 8, 'gold_reward': 34,
      'enemy_pool': FACTORY_ENEMY_KEYS},
     {'level': 10, 'title': '远古神庙', 'kills_needed': 34, 'boss_idx': 9, 'gold_reward': 38,
      'enemy_pool': TEMPLE_ENEMY_KEYS},
@@ -409,7 +409,10 @@ CAMPAIGN_WEAPON_PRICES = {'pistol': (0, 0, 0), 'rifle': (8, 10, 12),
                           'shotgun': (12, 14, 16), 'sniper': (16, 18, 20)}
 CAMPAIGN_CHARACTER_PRICES = {'ice': (22, 26, 30), 'fire': (26, 30, 34),
                              'water': (28, 32, 36), 'radiation': (30, 34, 38)}
-CAMPAIGN_BULLET_DAMAGE = {'pistol': 1.0, 'rifle': 1.35, 'shotgun': 0.85, 'sniper': 3.0}
+CAMPAIGN_BULLET_DAMAGE = {'pistol': 1.0, 'rifle': 1.5, 'shotgun': 0.85, 'sniper': 2.0}
+WEAPON_UPGRADE_LIMIT = 3
+CAMPAIGN_WEAPON_FIRE_RATES = {'pistol': 280, 'shotgun': 280, 'sniper': 466}
+SNIPER_MISSILE_RADIUS = 64
 
 # 无限模式 Boss 首轮参数，按 BOSS_DEFS 顺序排列。
 INFINITE_BOSS_HP = (30, 46, 66, 90, 116, 144, 170, 184, 192, 202, 220)

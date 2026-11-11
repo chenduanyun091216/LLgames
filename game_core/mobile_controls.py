@@ -27,7 +27,7 @@ _WEAPON_ASSETS = {
 }
 
 
-# Each path is drawn in a 20px square above the skill name.
+# Each path is drawn in a 20px square.
 _SKILL_GLYPHS = {
     'fisher_grenade': (((6, 6), (13, 6), (16, 10), (15, 16), (6, 17), (3, 12), (6, 6)),
                        ((8, 6), (8, 2), (13, 2), (15, 4))),
@@ -122,6 +122,7 @@ class MobileControls:
         self.fingers = {}
         self.joystick_id = None
         self.joystick_origin = None
+        self._joystick_anchor = None
         self.axis = (0.0, 0.0)
         self.auto_fire = True
 
@@ -139,9 +140,13 @@ class MobileControls:
         width, height = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
         compact = height < 500
         gap = 70 if compact else 76
-        right = width - (42 if compact else 48)
+        inset = width // 50 if not game.desktop_controls else 0
+        right = width - (42 if compact else 48) - inset
         left = right - gap
         fire_y = height - (72 if compact else 80)
+        auto_x = right if game.desktop_controls else right - 78
+        if not config.MOBILE_LANDSCAPE_VIEW:
+            auto_x += inset  # Keep clear of the portrait health controls.
         # Mirror the offsets so both skills sit on the same arc around attack.
         arc_long, arc_short = (88, 32) if compact else (96, 35)
         utility_y = 40 if compact else 48
@@ -159,8 +164,10 @@ class MobileControls:
                 char_y = 145 if config.MOBILE_LANDSCAPE_VIEW else 222
                 char_gap, char_radius = 67, 25
                 weapon_y, weapon_x, weapon_radius, weapon_gap = height - 270, (56, 136), 30, 78
-            char_positions = ((left, char_y), (right, char_y),
-                              (left, char_y + char_gap), (right, char_y + char_gap))
+            char_right = right if config.MOBILE_LANDSCAPE_VIEW else right + inset - inset // 3
+            char_left = char_right - gap
+            char_positions = ((char_left, char_y), (char_right, char_y),
+                              (char_left, char_y + char_gap), (char_right, char_y + char_gap))
             weapon_positions = [(x, y) for y in (weapon_y - weapon_gap, weapon_y) for x in weapon_x]
         skill_radius = 24 if compact else 28
         button_rows = [
@@ -169,14 +176,15 @@ class MobileControls:
             ('skill1', (right - arc_long, fire_y - arc_short), skill_radius, 'S1', (115, 205, 255)),
             ('skill2', (right - arc_short, fire_y - arc_long), skill_radius, 'S2', (115, 205, 255)),
             ('attack', (right, fire_y), 34 if compact else 36, '射击', (255, 125, 95)),
-            ('auto_fire', (right if game.desktop_controls else right - 78, fire_y + 36),
-             24 if compact else 25, '自动', (70, 220, 145)),
+            ('auto_fire', (auto_x, fire_y + 36), 24 if compact else 25, '自动', (70, 220, 145)),
         ]
         for key, center in zip(_WEAPON_KEYS_ORDERED, weapon_positions):
             button_rows.append((f'weapon:{key}', center, weapon_radius,
                                 WEAPON_DEFS[key].name, WEAPON_DEFS[key].color))
         if game.desktop_controls:
             button_rows = [row for row in button_rows if row[0] not in ('attack', 'skill1', 'skill2')]
+        elif game.web and not game.player.character:
+            button_rows = [row for row in button_rows if row[0] != 'skill2']
         elif game.player.character == 'radiation':
             special_x = right - 174
             button_rows.extend([
@@ -249,27 +257,34 @@ class MobileControls:
         if finger_id == self.joystick_id:
             self.joystick_id = None
             self.joystick_origin = None
+            self._joystick_anchor = None
             self.axis = (0.0, 0.0)
 
     def reset(self):
         self.fingers.clear()
         self.joystick_id = None
         self.joystick_origin = None
+        self._joystick_anchor = None
         self.axis = (0.0, 0.0)
 
     def _update_axis(self, position):
         if self.joystick_origin is None:
             return
-        dx = position[0] - self.joystick_origin[0]
-        dy = position[1] - self.joystick_origin[1]
-        radius = (46 if config.SCREEN_HEIGHT < 500 else 64) - 16
+        anchor_x, anchor_y = self._joystick_anchor or self.joystick_origin
+        dx = position[0] - anchor_x
+        dy = position[1] - anchor_y
+        travel = (46 if config.SCREEN_HEIGHT < 500 else 64) / 2 - 8
         distance = math.hypot(dx, dy)
         dead_zone = 2
         if distance <= dead_zone:
             self.axis = (0.0, 0.0)
             return
-        scale = min(1.0, (distance - dead_zone) / (radius * 0.5 - dead_zone))
-        self.axis = (dx / distance * scale, dy / distance * scale)
+        ux, uy = dx / distance, dy / distance
+        if distance > travel:
+            # Discard movement beyond full tilt so reversing needs only a short drag.
+            self._joystick_anchor = (position[0] - ux * travel, position[1] - uy * travel)
+        scale = min(1.0, (distance - dead_zone) / (travel - dead_zone))
+        self.axis = (ux * scale, uy * scale)
 
     def _skill_timing(self, game, skill_type, now):
         player = game.player
@@ -342,12 +357,14 @@ class MobileControls:
             source = None
             icon_box = None
             selected = False
+            upgrade_level = 0
             if action.startswith('weapon:'):
                 key = action.split(':', 1)[1]
                 enabled = key in game.player.owned_weapons and not (game.infinite_mode and key == 'pistol')
                 selected = active = key == game.player.current_weapon
                 source = image_asset(_WEAPON_ASSETS[key]) or game.weapon_icons[key]
                 icon_box = (radius * 2 - 8, radius - 4)
+                upgrade_level = game.player.weapon_upgrades.get(key, 0) if enabled else 0
             elif action.startswith('character:'):
                 key = action.split(':', 1)[1]
                 enabled = key in game.player.owned_characters
@@ -364,6 +381,12 @@ class MobileControls:
                                active, action, selected, source, icon_size,
                                max(1, round(scale)) if game.desktop_controls else 1)
             blit_center(art, center)
+            if upgrade_level:
+                cx, cy = center
+                badge = pygame.Rect(cx + radius - 14, cy - radius, 18, 18)
+                Draw.circle(surface, (28, 36, 49), badge.center, 9)
+                game._draw_text_fit(str(upgrade_level), game.font_tiny, (255, 224, 110),
+                                    badge, align='center')
             if game.desktop_controls:
                 key = game.desktop_button_key(action)
                 cx, cy = center
@@ -407,11 +430,18 @@ class MobileControls:
                     Draw.circle(surface, (47, 81, 99), center, radius - 2, 2)
                     sweep = math.tau * min(1, remaining / max(1, duration))
                     Draw.arc(surface, (125, 225, 241), ring, math.pi / 2, math.pi / 2 + sweep, 3)
-                elif not game.desktop_controls:
+                if game.web or (end <= now and not game.desktop_controls):
                     ink = CHARACTER_DEFS[game.player.character].color if game.player.character else (255, 207, 128)
                     cx, cy = center
+                    size = radius * .056 if game.web else 1
+                    if end > now:
+                        ink = tuple(channel * 3 // 5 for channel in ink)
+                    icon_y = cy if game.web else cy - 10
                     for path in _SKILL_GLYPHS[skill_type]:
-                        Draw.lines(surface, ink, False, [(cx + x - 10, cy + y - 20) for x, y in path], 2)
+                        points = [(round(cx + (x - 10) * size), round(icon_y + (y - 10) * size)) for x, y in path]
+                        Draw.lines(surface, ink, False, points, max(2, round(size * 2)))
+                    if game.web:
+                        continue
                     game._draw_text_fit(label, game.font_tiny, (231, 243, 255),
                                         pygame.Rect(cx - radius + 5, cy + 3, radius * 2 - 10, 19),
                                         align='center')
@@ -435,8 +465,8 @@ class MobileControls:
         game._draw_gift_hud(config.game_ticks(), cx + radius, cy + radius + 3)
 
         short = config.SCREEN_HEIGHT < 500
-        center = self.joystick_origin or ((70, config.SCREEN_HEIGHT - 70) if short else
-                                         (96, config.SCREEN_HEIGHT - 108))
+        center = self.joystick_origin or ((70 if short else 96) + config.SCREEN_WIDTH // 50,
+                                         config.SCREEN_HEIGHT - (70 if short else 108))
         radius = 46 if short else 64
         edge = (111, 226, 226) if self.joystick_origin is not None else (106, 172, 192)
         blit_center(_joystick_base(round(radius * scale), edge), center)

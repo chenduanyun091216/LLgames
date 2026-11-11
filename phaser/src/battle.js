@@ -33,6 +33,8 @@ export class Battle {
         this.weapon = 'pistol';
         this.character = 'player1';
         this.weapons = new Set(['pistol']);
+        this.weaponUpgrades = {};
+        this.sniperShots = 0;
         this.characters = new Set(['player1']);
         this.events = [];
         this.round = 0;
@@ -81,7 +83,8 @@ export class Battle {
         this.player.x = this.width / 2;
         this.player.y = this.bottom - 14;
         this.checkpoint = {gold: this.gold, score: this.score, hp: this.hp, weapon: this.weapon,
-            character: this.character, weapons: [...this.weapons], characters: [...this.characters]};
+            character: this.character, weapons: [...this.weapons], characters: [...this.characters],
+            weaponUpgrades: {...this.weaponUpgrades}, sniperShots: this.sniperShots};
         this.event('level', {level});
         if (this.stage.boss_on_start) this.beginBoss();
     }
@@ -134,7 +137,8 @@ export class Battle {
             : this.value('CAMPAIGN_BOSS_ATTACK_MS')) * this.custom.attack;
         this.boss = {id: this.key(), def, level: this.level, x: this.width / 2, y: -h / 2, baseW, baseH,
             w: baseW * this.view.bossScale, h, hp, maxHp: hp, interval, patrol: 0,
-            attackAt: this.time + 3000, direction: 1, pattern: 0, shieldStep: 0, stormStep: 0};
+            attackAt: this.time + 3000, direction: 1, pattern: 0, shieldStep: 0, stormStep: 0,
+            halfHealthCast: false};
         if (this.level === 8) this.boss.bodyHp = [hp / 2, hp / 2];
         this.spawnAt = this.time + this.reinforcement('MS');
         this.event('boss');
@@ -336,11 +340,11 @@ export class Battle {
         }
     }
 
-    hit(entity, amount, shape = null, source = 'skill') {
+    hit(entity, amount, shape = null, source = 'skill', upgradeMultiplier = 1) {
         if (entity === this.boss) {
             if (entity.y < 30 || entity.shieldUntil > this.time || entity.stormUntil > this.time) return;
-            const damage = Math.min(amount, this.mode === 'endless' ? 3 : [1, 2, 2][this.tier])
-                * (entity.resistUntil > this.time ? .5 : 1);
+            const damage = Math.min(amount / upgradeMultiplier, this.mode === 'endless' ? 3 : [1, 2, 2][this.tier])
+                * upgradeMultiplier * (entity.resistUntil > this.time ? .5 : 1);
             if (this.level === 11 && entity.hp - damage <= entity.maxHp * [0.5, 0.01][entity.stormStep]) {
                 entity.hp = entity.maxHp * [0.5, 0.01][entity.stormStep];
                 const final = entity.stormStep++ === 1;
@@ -427,8 +431,9 @@ export class Battle {
     }
 
     retry() {
-        const {weapons, characters, ...saved} = this.checkpoint;
+        const {weapons, characters, weaponUpgrades, ...saved} = this.checkpoint;
         Object.assign(this, saved);
+        this.weaponUpgrades = {...weaponUpgrades};
         this.weapons = new Set(weapons);
         this.characters = new Set(characters);
         this.lives = 3;
@@ -437,9 +442,27 @@ export class Battle {
 
     price(type, id) {
         if (this.mode === 'endless') return 0;
+        return this.basePrice(type, id);
+    }
+
+    basePrice(type, id) {
         const weapon = type === 'weapon';
         const prices = weapon ? this.data.CAMPAIGN_WEAPON_PRICES : this.data.CAMPAIGN_CHARACTER_PRICES;
         return Math.round((prices[id]?.[this.tier] ?? 0) * (this.custom[type + 'Price'] ?? 1));
+    }
+
+    upgradePrice(id) {
+        const level = this.weaponUpgrades[id] ?? 0;
+        if (id === 'pistol' || !this.weapons.has(id) || level >= 3) return null;
+        return this.basePrice('weapon', id) * (level + 1);
+    }
+
+    upgradeWeapon(id) {
+        const price = this.upgradePrice(id);
+        if (price === null || this.gold < price) return false;
+        this.gold -= price;
+        this.weaponUpgrades[id] = (this.weaponUpgrades[id] ?? 0) + 1;
+        return true;
     }
 
     equip(type, id) {
@@ -520,9 +543,13 @@ export class Battle {
             }
         }
         const ready = b.level > 6 || b.y >= 60 + b.h / 2 - .001;
-        if (ready && this.time >= b.attackAt && !b.stormUntil && !b.rush) {
-            const [name, duration] = attack(this, b, b.pattern++);
+        const halfHealth = this.mode !== 'endless' && b.level <= 6 && b.pattern > 0 &&
+            !b.halfHealthCast && b.hp > 0 && b.hp < b.maxHp * .5 && this.time >= b.skillUntil;
+        if (ready && (halfHealth || this.time >= b.attackAt) && !b.stormUntil && !b.rush) {
+            const [name, duration] = attack(this, b, halfHealth ? 0 : b.pattern++);
+            if (halfHealth) b.halfHealthCast = true;
             b.skill = name;
+            b.skillStarted = this.time;
             b.skillUntil = this.time + duration;
             b.attackAt = this.time + duration + b.interval;
         }
@@ -532,11 +559,14 @@ export class Battle {
     fire() {
         const w = this.data.weapons[this.weapon];
         if (this.liftUntil > this.time) return;
-        let rate = this.weapon === 'sniper' && this.mode !== 'endless' ? 520 : w.fire_rate;
+        let rate = this.mode === 'endless' ? w.fire_rate
+            : (this.data.CAMPAIGN_WEAPON_FIRE_RATES[this.weapon] ?? w.fire_rate);
         if (this.hasteUntil > this.time) rate /= 2;
         else if (this.boostUntil > this.time) rate /= this.mode === 'endless' ? 2 : 1.30;
         if (this.slowUntil > this.time) rate /= this.mode === 'endless' ? .5 : .8;
-        const delay = Math.ceil(Math.round(rate) / .70) * (this.boss?.pull ? 2 : 1);
+        const level = this.weaponUpgrades[this.weapon] ?? 0;
+        const speed = this.weapon === 'rifle' ? 1 + .1 * level : 1;
+        const delay = Math.ceil(Math.round(rate) / .70) * (this.boss?.pull ? 2 : 1) / speed;
         if (this.time - this.lastFire < delay) return;
         const cost = this.mode === 'endless' ? 0 : (this.custom.ammo?.[this.weapon] ?? this.data.difficulty[this.tier]['bullet_cost_' + this.weapon] ?? 0);
         if (this.gold < cost) {
@@ -546,15 +576,25 @@ export class Battle {
         }
         this.gold -= cost;
         this.lastFire = this.time;
-        const angles = this.weapon === 'shotgun' ? [-Math.PI / 10, 0, Math.PI / 10] : [0];
+        if (this.weapon === 'sniper' && level) this.sniperShots = (this.sniperShots + 1) % 4;
+        const missile = this.weapon === 'sniper' && level > 0 && this.sniperShots === 0;
+        const multiplier = this.weapon === 'rifle' ? 1 + .1 * level : this.weapon === 'shotgun' ? 1 + .2 * level : 1;
+        const baseDamage = missile ? .5 * (1 + level) : this.data.CAMPAIGN_BULLET_DAMAGE[this.weapon];
+        const damage = baseDamage * multiplier * (this.boostUntil > this.time ? 1.35 : 1);
+        const element = this.gift?.until > this.time ? this.gift.type : null;
+        const fire = this.character === 'fire' ? (this.mode === 'endless' ? 1.5 : 1.2) : 1;
+        const angles = missile ? [this.player.x < this.width / 2 ? .49 : -.49]
+            : this.weapon === 'shotgun' ? [-Math.PI / 10, 0, Math.PI / 10] : [0];
         for (const angle of angles) this.bullets.push({id: this.key(), x: this.player.x, y: this.player.y - 28,
             dx: Math.sin(angle) * w.speed * .8, dy: -Math.cos(angle) * w.speed * .8,
             w: this.weapon === 'sniper' || (this.weapon === 'shotgun' && angle === 0) ? 26 : 20,
             h: this.weapon === 'sniper' || (this.weapon === 'shotgun' && angle === 0) ? 26 : 20,
             angle, weapon: this.weapon,
-            damage: this.data.CAMPAIGN_BULLET_DAMAGE[this.weapon] * (this.boostUntil > this.time ? 1.35 : 1),
-            character: this.character, element: this.gift?.until > this.time ? this.gift.type : null,
-            pierce: this.weapon === 'sniper', hit: new Set()});
+            damage, character: this.character, element, upgradeMultiplier: missile ? 1 + level : multiplier,
+            ...(missile ? {missile: true, guided: true, splitCount: level, explosive: 64,
+                dx: Math.sin(angle) * 7, dy: -Math.cos(angle) * 7, w: 24, h: 24,
+                expires: this.time + 4500, blastDamage: damage * fire * (element === 'fire' ? 1.4 : 1)} : {}),
+            pierce: this.weapon === 'sniper' && !missile, hit: new Set()});
         this.event('shoot', {weapon: this.weapon});
     }
 
@@ -685,36 +725,91 @@ export class Battle {
         this.event('pop', {x: drop.x, y: drop.y});
     }
 
-    detonate(bullet) {
+    detonate(bullet, target = null) {
         const {x, y, explosive: radius, blastDamage} = bullet;
         this.zone(x, Math.max(0, y), radius * 2, radius * 2, -blastDamage, 0, 270, null,
-            {circle: true, effect: 'fire', once: true, bossDamage: radius === 90 && this.mode !== 'endless' ? 2 : blastDamage});
+            {circle: true, effect: 'fire', once: true, missile: bullet.missile,
+                upgradeMultiplier: bullet.upgradeMultiplier, bossDamage: radius === 90 && this.mode !== 'endless' ? 2 : blastDamage});
+        for (let i = 0; i < (bullet.splitCount ?? 0); i++) {
+            const angle = bullet.angle + (target ? Math.PI : 0)
+                + (i - (bullet.splitCount - 1) / 2) * Math.PI * 48 / 180;
+            this.bullets.push({id: this.key(), x, y, angle, dx: Math.sin(angle) * 7, dy: -Math.cos(angle) * 7,
+                w: bullet.w / 2, h: bullet.h / 2, guided: true, guideAt: this.time + 100, originalTarget: target,
+                expires: this.time + 3000, weapon: bullet.weapon, character: bullet.character,
+                element: bullet.element, damage: bullet.damage * .5, hit: new Set()});
+        }
         bullet.y = -100;
     }
 
     updateProjectiles() {
         const targets = [...this.enemies, ...(this.boss ? [this.boss] : [])];
-        for (const b of this.bullets) {
+        const gifts = this.drops.filter(drop => drop.kind === 'gift');
+        for (const b of this.bullets.slice()) {
+            if (b.guided && this.time >= (b.guideAt ?? 0)) {
+                let nearest = null, distance = Infinity;
+                const original = b.originalTarget;
+                if (original && !b.leftOriginal) {
+                    const boxes = original === this.boss ? bossBoxes(original, this.time) : [original];
+                    b.leftOriginal = !boxes.some(box => intersects(b, box));
+                }
+                b.canHitOriginal = false;
+                const visibleGifts = gifts.filter(drop => drop.life > this.time && drop.y + drop.h / 2 > 0);
+                for (const enemy of visibleGifts.length ? visibleGifts : targets) {
+                    const isOriginal = enemy === original;
+                    if (isOriginal && (!b.leftOriginal || (nearest && !b.canHitOriginal))) continue;
+                    if (enemy.hp <= 0 || (this.mode === 'endless' && enemy.def?.zongzong)) continue;
+                    const boxes = enemy === this.boss ? bossBoxes(enemy, this.time) : [enemy];
+                    for (const box of boxes) {
+                        if (box.y + box.h / 2 <= 0) continue;
+                        const squared = (box.x - b.x) ** 2 + (box.y - b.y) ** 2;
+                        if ((!isOriginal && b.canHitOriginal) || squared < distance) {
+                            nearest = box;
+                            distance = squared;
+                            b.canHitOriginal = isOriginal;
+                        }
+                    }
+                }
+                if (nearest) {
+                    const desired = Math.atan2(nearest.x - b.x, b.y - nearest.y);
+                    const maxTurn = b.canHitOriginal ? Math.PI / 10 : .122;
+                    b.angle += clamp(angleDiff(desired, b.angle), -maxTurn, maxTurn);
+                    b.dx = Math.sin(b.angle) * 7;
+                    b.dy = -Math.cos(b.angle) * 7;
+                }
+            }
             b.x += b.dx;
             b.y += b.dy;
+            if (b.guided) {
+                const rear = b.missile ? 32 : 16;
+                b.trail ??= [];
+                b.trail.push([b.x - Math.sin(b.angle) * rear, b.y + Math.cos(b.angle) * rear]);
+                if (b.trail.length > (b.missile ? 23 : 17)) b.trail.shift();
+            }
             if (b.expires && (this.time >= b.expires || b.y < -24)) {
-                if (b.explosive) this.detonate(b);
+                if (b.explosive && !b.guided) this.detonate(b);
                 else b.y = -100;
                 continue;
             }
-            const gift = this.drops.find(drop => drop.kind === 'gift' && drop.life > this.time && intersects(b, drop));
-            if (gift) { this.openGift(gift); b.y = -100; continue; }
+            if (this.time < (b.guideAt ?? 0)) continue;
+            const gift = gifts.find(drop => drop.life > this.time && intersects(b, drop));
+            if (gift) {
+                this.openGift(gift);
+                b.y = -100;
+                continue;
+            }
             for (const e of targets) {
                 if (e.hp <= 0 || b.hit.has(e.id)) continue;
+                if (e === b.originalTarget && !b.canHitOriginal) continue;
                 const boxes = e === this.boss ? bossBoxes(e, this.time) : [e];
                 if (!boxes.some(box => intersects(b, box))) continue;
-                if (b.explosive) { this.detonate(b); break; }
+                if (b.explosive) { this.detonate(b, e); break; }
                 if (e !== this.boss) {
                     if (b.character === 'ice' || b.element === 'ice') e.slowedUntil = this.time + 2500;
                     if (b.element === 'ice' && !e.def.is_large && !e.def.zongzong) e.frozenUntil = this.time + (b.freeze ? 2000 : 800);
                 }
                 const boost = b.character === 'fire' ? (this.mode === 'endless' ? 1.5 : 1.2) : 1;
-                this.hit(e, b.damage * boost * (b.weapon && b.element === 'fire' ? 1.4 : 1), b, b.weapon ? 'bullet' : 'skill');
+                this.hit(e, b.damage * boost * (b.weapon && b.element === 'fire' ? 1.4 : 1), b,
+                    b.weapon ? 'bullet' : 'skill', b.upgradeMultiplier);
                 if (this.phase === 'clear' || this.phase === 'victory') return;
                 b.hit.add(e.id);
                 if (!b.pierce) { b.y = -100; break; }
@@ -803,9 +898,16 @@ export class Battle {
                 z.h = this.player.y;
                 z.y = z.h / 2;
             }
-            const hits = entity => z.circle
-                ? Math.abs(Math.hypot(z.x - entity.x, z.y - entity.y) - (z.ring ? z.w / 2 : 0)) < (z.ring ? 25 : z.w / 2) + 15
-                : intersects({...z, x: zoneX(z, this.time)}, entity);
+            const hits = entity => {
+                if (z.missile) {
+                    const x = Math.max(0, Math.abs(z.x - entity.x) - entity.w / 2);
+                    const y = Math.max(0, Math.abs(z.y - entity.y) - entity.h / 2);
+                    return Math.hypot(x, y) <= z.w / 2;
+                }
+                return z.circle
+                    ? Math.abs(Math.hypot(z.x - entity.x, z.y - entity.y) - (z.ring ? z.w / 2 : 0)) < (z.ring ? 25 : z.w / 2) + 15
+                    : intersects({...z, x: zoneX(z, this.time)}, entity);
+            };
             if (z.damage > 0 && this.time >= z.impact + (z.safeFor ?? 0) && !z.hit && hits(this.player)) {
                 z.hit = true;
                 this.hurt(z.damage, '被 Boss 技能击败');
@@ -817,7 +919,8 @@ export class Battle {
                     const boxes = e === this.boss ? bossBoxes(e, this.time) : [e];
                     const box = boxes.find(hits);
                     if (e.hp <= 0 || !box) continue;
-                    this.hit(e, e === this.boss && z.bossDamage != null ? z.bossDamage : -z.damage, box);
+                    this.hit(e, e === this.boss && z.bossDamage != null ? z.bossDamage : -z.damage, box,
+                        'skill', z.upgradeMultiplier);
                     if (this.phase === 'clear' || this.phase === 'victory') return;
                     if (z.freeze) e.frozenUntil = this.time + 720;
                 }

@@ -13,6 +13,116 @@ function stepFor(battle, ms, input = {}) {
     }
 }
 
+test('campaign weapons use the configured base firing intervals and damage', () => {
+    for (const [weapon, interval, damage, count] of [
+        ['pistol', 400, 1, 1], ['rifle', 286, 1.5, 1],
+        ['shotgun', 400, .85, 3], ['sniper', 666, 2, 1],
+    ]) {
+        const battle = new Battle(data);
+        battle.gold = 100;
+        assert.ok(battle.equip('weapon', weapon));
+        battle.time = 1000;
+        battle.fire();
+        assert.deepEqual(battle.bullets.map(b => b.damage), Array(count).fill(damage));
+        battle.time += interval - 1;
+        battle.fire();
+        assert.equal(battle.bullets.length, count);
+        battle.time++;
+        battle.fire();
+        assert.equal(battle.bullets.length, count * 2);
+    }
+});
+
+test('weapon upgrades cost consecutive multiples and sniper missiles fire every fourth shot', () => {
+    const battle = new Battle(data);
+    battle.gold = 200;
+    assert.equal(battle.upgradeWeapon('pistol'), false);
+    assert.equal(battle.upgradeWeapon('shotgun'), false);
+    assert.ok(battle.equip('weapon', 'shotgun'));
+    for (const cost of [12, 24, 36]) {
+        const gold = battle.gold;
+        assert.equal(battle.upgradePrice('shotgun'), cost);
+        assert.ok(battle.upgradeWeapon('shotgun'));
+        assert.equal(battle.gold, gold - cost);
+    }
+    assert.equal(battle.upgradePrice('shotgun'), null);
+    assert.ok(battle.equip('weapon', 'sniper'));
+    assert.ok(battle.upgradeWeapon('sniper'));
+    for (let i = 0; i < 4; i++) {
+        battle.time += 1000;
+        battle.fire();
+    }
+    assert.deepEqual(battle.bullets.map(b => b.blastDamage ?? b.damage), [2, 2, 2, 1]);
+    const missile = battle.bullets[3];
+    assert.ok(missile.explosive);
+    const targets = [0, 45, 200].map((offset, id) => ({
+        id, x: missile.x + offset, y: missile.y + missile.dy, w: 24, h: 24, hp: 20, def: {},
+    }));
+    battle.bullets = [missile];
+    battle.enemies = targets;
+    battle.updateProjectiles();
+    assert.deepEqual(targets.map(enemy => enemy.hp), [19, 19, 20]);
+    assert.equal(battle.bullets.length, 1);
+    assert.ok(battle.bullets.every(b => b.guided && b.w === missile.w / 2 && b.damage === .5));
+    const followup = {id: 4, x: missile.x + 120, y: targets[0].y - 95, w: 38, h: 38, hp: 20, def: {}};
+    battle.enemies = [followup];
+    for (let i = 0; i < 90 && battle.bullets.length; i++) {
+        battle.time += STEP;
+        battle.updateProjectiles();
+    }
+    assert.equal(followup.hp, 19.5);
+    assert.equal(battle.bullets.length, 0);
+    battle.gold = 0;
+    assert.equal(battle.upgradeWeapon('sniper'), false);
+    assert.equal(battle.weaponUpgrades.sniper, 1);
+});
+
+test('a split missile flies away before returning to its original target', () => {
+    const battle = new Battle(data);
+    const original = {id: 1, x: 240, y: 260, w: 40, h: 40, hp: 20, def: {}};
+    const other = {...original, id: 2, x: 360, y: 300};
+    battle.enemies = [original, other];
+    battle.detonate({x: 240, y: 280, angle: 0, w: 24, h: 24, explosive: 64,
+        blastDamage: 1, missile: true, splitCount: 1, weapon: 'sniper', damage: 1}, original);
+    const child = battle.bullets[0];
+    battle.time = child.guideAt;
+    battle.updateProjectiles();
+    assert.ok(child.y > 280);
+    assert.equal(original.hp, 19);
+    battle.time += STEP;
+    battle.updateProjectiles();
+    assert.ok(child.leftOriginal);
+    assert.equal(child.canHitOriginal, false);
+    battle.enemies = [original];
+    for (let i = 0; i < 150 && battle.bullets.length; i++) {
+        battle.time += STEP;
+        battle.updateProjectiles();
+    }
+    assert.equal(original.hp, 18.5);
+});
+
+test('guided sniper rounds prioritize and open the nearest live gift', () => {
+    for (const missile of [true, false]) {
+        const battle = new Battle(data, {}, () => .7);
+        const round = {x: 240, y: 350, angle: 0, w: 12, h: 12, guided: true, missile, hit: new Set()};
+        battle.bullets = [round];
+        battle.enemies = [{id: 1, x: 220, y: 310, w: 12, h: 12, hp: 10}];
+        const near = {kind: 'gift', x: 300, y: 270, w: 44, h: 44, life: 10000};
+        const far = {...near, x: 110};
+        const expired = {...near, x: 220, y: 325, life: 0};
+        battle.drops = [expired, far, near];
+        battle.updateProjectiles();
+        assert.ok(round.angle > 0);
+        round.x = near.x;
+        round.y = near.y;
+        battle.updateProjectiles();
+        assert.equal(near.life, 0);
+        assert.equal(far.life, 10000);
+        assert.ok(battle.hasteUntil > battle.time);
+        assert.equal(battle.bullets.length, 0);
+    }
+});
+
 test('a campaign goes from the first wave to the last boss and victory using real weapon hits', () => {
     const battle = new Battle(data, {tier: 1}, () => .61);
     for (let n = 1; n <= 11; n++) {
@@ -43,6 +153,37 @@ test('a campaign goes from the first wave to the last boss and victory using rea
         assert.equal(battle.phase, n === 11 ? 'victory' : 'clear', 'level ' + n);
         assert.equal(battle.shots.length + battle.zones.length + battle.tasks.length, 0);
         if (n < 11) battle.next();
+    }
+});
+
+test('the first six campaign bosses cast one extra signature below half health', () => {
+    for (let level = 1; level <= 6; level++) {
+        const battle = new Battle(data, {level});
+        if (battle.phase === 'wave') battle.beginBoss();
+        const boss = battle.boss;
+        boss.y = 60 + boss.h / 2;
+        battle.time = boss.attackAt;
+        battle.updateBoss();
+        const openingSkill = boss.skill;
+        const openingStart = boss.skillStarted;
+        boss.hp = boss.maxHp / 2 - 1;
+        battle.time++;
+        battle.updateBoss();
+        assert.equal(boss.skillStarted, openingStart);
+        boss.hp = boss.maxHp / 2;
+        battle.time = boss.skillUntil + 1;
+        battle.updateBoss();
+        assert.equal(boss.skillStarted, openingStart);
+        boss.hp--;
+        battle.time++;
+        battle.updateBoss();
+        assert.equal(boss.skill, openingSkill);
+        assert.equal(boss.skillStarted, battle.time);
+        const extraStart = boss.skillStarted;
+        battle.time = boss.skillUntil + 1;
+        battle.updateBoss();
+        assert.equal(boss.skillStarted, extraStart);
+        assert.equal(boss.pattern, 1);
     }
 });
 
@@ -169,7 +310,7 @@ test('mobile campaign uses the original playfield, movement and firing cadence',
     battle.step({x: 1, fire: true});
     assert.ok(Math.abs(battle.player.x - x - 5.2) < .0001);
     assert.equal(battle.bullets.length, 1);
-    stepFor(battle, 390, {x: 1, fire: true});
+    stepFor(battle, 375, {x: 1, fire: true});
     assert.equal(battle.bullets.length, 1);
     stepFor(battle, 40, {x: 1, fire: true});
     assert.equal(battle.bullets.length, 2);

@@ -62,6 +62,9 @@ class NewCampaignTests(unittest.TestCase):
                 self.assertTrue(game.level_enemy_defs)
                 game._trigger_boss()
             else:
+                self.assertIsNone(game.boss)
+                config.campaign_time_ms = game.level_title_until
+                game.update()
                 self.assertEqual(game.state, GameState.BOSS_FIGHT)
                 self.assertFalse(game.enemies)
                 self.assertFalse(game.level_enemy_defs)
@@ -274,11 +277,15 @@ class NewCampaignTests(unittest.TestCase):
                     self.assertTrue(boss.should_attack(config.game_ticks()))
                     config.campaign_time_ms = 1000
 
-    def test_restart_final_is_immediate_boss_without_wave(self):
+    def test_restart_final_starts_boss_after_card_without_wave(self):
         game = self.game()
         game._start_level(11)
+        game._trigger_boss()
         game.boss.hp = 1
         game._retry_level()
+        self.assertIsNone(game.boss)
+        config.campaign_time_ms = game.level_title_until
+        game.update()
         self.assertIsInstance(game.boss, OrochiBoss)
         self.assertEqual(game.boss.hp, config.CAMPAIGN_BOSS_HP[10][1])
         self.assertEqual(game.state, GameState.BOSS_FIGHT)

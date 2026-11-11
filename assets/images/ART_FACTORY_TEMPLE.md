@@ -50,7 +50,7 @@ The delivered RGBA sheets and sprites have a long edge of at least 2048 px. The 
 
 ## Additional factory and temple enemies
 
-Each enemy was generated as a two-pose sheet using built-in image generation. Shared direction was a downward-facing three-quarter view, cartoon cel shading, dark outlines, and a transparent background. The normal and action poses were exported separately to `enemies/enemy_<key>.png` and `enemies/enemy_<key>_action.png` with matching canvases and a 384 px long edge.
+Each enemy was generated as a two-pose sheet using built-in image generation. Shared direction was a downward-facing three-quarter view, cartoon cel shading, dark outlines, and a transparent background. The normal and action poses were exported separately to `enemies/enemy_<key>.png` and `animations/enemies/enemy_<key>_action.png` with matching canvases and a 384 px long edge.
 
 | Key | Character and action prompt |
 | --- | --- |
