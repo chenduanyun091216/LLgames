@@ -136,6 +136,61 @@ class OrochiTests(unittest.TestCase):
         self.assertLess(self.boss.split_hp[0], self.boss.head_max_hp)
         self.assertTrue(self.boss.hit_flashes)
 
+    def test_all_campaign_bosses_draw_hit_sparks_and_play_throttled_damage_sound(self):
+        for chapter in range(1, 12):
+            with self.subTest(chapter=chapter), patch('game_core.entities.play_sound') as sound:
+                self.game._start_level(chapter)
+                if self.game.boss is None:
+                    self.game._trigger_boss()
+                boss = self.game.boss
+                boss.y, boss.entered = 60, True
+                rect = boss.hitboxes()[0]
+                boss.hit_by('pistol', 1, hit_rect=rect)
+                sound.assert_called_once_with('boss_hit')
+                self.assertEqual(boss.hit_flashes, [(*rect.center, config.game_ticks())])
+                canvas = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT))
+                boss._draw_hit_flashes(canvas, config.game_ticks())
+                self.assertNotEqual(canvas.get_at(rect.center)[:3], (0, 0, 0))
+                boss.hit_by('pistol', 1, hit_rect=rect)
+                self.assertEqual(sound.call_count, 1)
+                with patch.object(config, 'campaign_time_ms', 1100):
+                    boss.hit_by('pistol', 1, hit_rect=rect)
+                self.assertEqual(sound.call_count, 2)
+
+    def test_orochi_head_sound_requires_damage_and_shares_body_cooldown(self):
+        with patch('game_core.entities.play_sound') as sound:
+            self.start('storm')
+            self.boss.hit_by('pistol', 0, hit_rect=self.boss.head_rect(0))
+            self.assertFalse(sound.called)
+            self.boss.skill = None
+            self.boss.hit_by('pistol', 1, hit_rect=self.boss.rect())
+            self.start('storm')
+            self.boss.hit_by('pistol', 1, hit_rect=self.boss.head_rect(0))
+            sound.assert_called_once_with('boss_hit')
+            with patch.object(config, 'campaign_time_ms', 1100):
+                self.boss.hit_by('pistol', 1, hit_rect=self.boss.head_rect(1))
+            with patch.object(config, 'campaign_time_ms', 1200):
+                self.boss.invincible_until = 1300
+                self.boss.hit_by('pistol', 1, hit_rect=self.boss.head_rect(0))
+            self.assertEqual(sound.call_count, 2)
+
+    def test_hit_sparks_fade_on_normal_and_high_resolution_surfaces(self):
+        from game_core.render import RenderSurface
+
+        for scale in (1, 3):
+            surface = pygame.Surface((64 * scale, 64 * scale))
+            target = surface if scale == 1 else RenderSurface(surface, (64, 64), surface.get_size(), (0, 0))
+            brightness = []
+            for elapsed in (0, 110, 150):
+                surface.fill((0, 0, 0))
+                self.boss.hit_flashes = [(32, 32, 1000)]
+                self.boss._draw_hit_flashes(target, 1000 + elapsed)
+                brightness.append(sum(pygame.image.tobytes(surface, 'RGB')))
+            self.assertGreater(brightness[0], brightness[1])
+            self.assertGreater(brightness[1], 0)
+            self.assertEqual(brightness[2], 0)
+            self.assertFalse(self.boss.hit_flashes)
+
     def test_laser_has_three_moving_heads_and_three_seconds_of_damage(self):
         self.start('laser')
         heads = self.boss._laser_head_rects(900)
@@ -152,13 +207,22 @@ class OrochiTests(unittest.TestCase):
             point = pygame.Rect(path[0][0] + 14, 350, 1, 1)
             self.assertEqual(self.boss.hazard_hits(point, 900), i == 1)
 
-    def test_storm_lights_all_heads_in_original_positions_and_extinguishes_only_the_hit_head(self):
+    def test_storm_bubbles_are_damage_targets_and_pop_individually(self):
         self.start('storm')
+        self.assertEqual(len(self.boss.bubble_art), 8)
+        for art in self.boss.bubble_art:
+            self.assertIsNotNone(art)
+            self.assertGreater(art.get_at(art.get_rect().center).a, 75)
         self.boss.hp = self.boss.max_hp / 2
         positions = [self.boss.head_rect(i) for i in range(8)]
         self.assertEqual(list(self.boss.hitboxes()), positions)
+        self.boss.hit_by('pistol', 1, hit_rect=positions[7])
+        self.assertEqual(list(self.boss.hitboxes()), positions)
+        self.assertFalse(self.boss.bubble_breaks)
         self.boss.hit_by('sniper', self.boss.max_hp * .05, hit_rect=positions[7])
         self.assertEqual(list(self.boss.hitboxes()), positions[:7])
+        self.assertEqual([len(effect.particles) for effect in self.boss.bubble_breaks], [18, 5])
+        self.assertEqual(self.boss.bubble_breaks[0].particles[0]['color'], self.boss.BUBBLE_COLORS[7])
         self.assertEqual([self.boss.head_rect(i) for i in range(8)], positions)
         for rect in reversed(positions[:7]):
             self.boss.hit_by('sniper', self.boss.max_hp * .05, hit_rect=rect)
@@ -166,6 +230,23 @@ class OrochiTests(unittest.TestCase):
         self.tick(10000)
         self.assertEqual(self.boss.hp, self.boss.max_hp / 2)
         self.assertEqual(self.boss.invincible_until, 0)
+        for _ in range(25):
+            self.boss.update()
+        self.assertFalse(self.boss.bubble_breaks)
+
+    def test_split_snakes_use_distinct_looping_swim_frames(self):
+        frames = self.boss.split_frames
+        self.assertEqual(len(frames), 12)
+        self.assertEqual(len({pygame.image.tobytes(frame, 'RGBA') for frame in frames}), 12)
+        surface = pygame.Surface((100, 150))
+        rect = self.boss._snake_rect(50, 130)
+        with patch.object(self.boss, '_draw_skill_sprite') as draw:
+            self.boss._draw_split_snake(surface, 0, 0, rect)
+            draw.assert_called_with(surface, frames[0], rect)
+            self.boss._draw_split_snake(surface, 1, self.boss.SPLIT_STEP, rect)
+            draw.assert_called_with(surface, frames[4], rect)
+            self.boss._draw_split_snake(surface, 0, len(frames) * self.boss.SPLIT_STEP, rect)
+            draw.assert_called_with(surface, frames[0], rect)
 
     def test_slam_heads_fall_straight_and_land_before_disappearing(self):
         self.start('slam')

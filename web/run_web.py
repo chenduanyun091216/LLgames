@@ -100,9 +100,11 @@ def download(url, target, min_size):
 
 def _atlas_layout(image, name):
     if name == 'anim_boss_ancient_whale':
-        return 2, 2, 768
+        return 8, 6, 448
     if name == 'anim_boss_orochi_idle':
         return 6, 4, 624
+    if name == 'anim_boss_orochi_split':
+        return 4, 3, 384
     if re.fullmatch(r'anim_boss_(lobster|crab|octopus|shark|dragon)_(attack|laser)', name):
         return max(1, image.width // image.height), 1, 512
     return max(1, image.width // image.height), 1, 384

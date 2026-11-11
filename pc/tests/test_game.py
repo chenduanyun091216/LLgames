@@ -16,7 +16,7 @@ from run_pc import main
 
 
 class DesktopGameTests(unittest.TestCase):
-    def test_escape_exits_difficulty_selection_and_confirms_battle_exit(self):
+    def test_escape_exits_home_and_confirms_battle_exit(self):
         pygame.init()
         self.addCleanup(pygame.quit)
         pygame.display.set_mode((960, 720))
@@ -25,7 +25,7 @@ class DesktopGameTests(unittest.TestCase):
         escape = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0)
         enter = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)
 
-        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        self.assertEqual(game.state, GameState.MENU)
         self.assertFalse(game.handle_events([escape]))
         self.assertFalse(game.exit_confirmation)
 
@@ -359,7 +359,7 @@ class DesktopGameTests(unittest.TestCase):
         self.assertEqual(game.state, GameState.PLAYING)
         press(pygame.K_h)
         press(pygame.K_n)
-        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        self.assertEqual(game.state, GameState.MENU)
 
     def test_infinite_fps_is_inside_status_panel_beside_elapsed_time(self):
         pygame.init()
@@ -559,39 +559,26 @@ class DesktopGameTests(unittest.TestCase):
                 self.assertEqual((released, idle), (right, right))
                 self.assertGreater(right, left)
 
-    def test_desktop_entry_starts_web_campaign_with_one_player(self):
+    def test_desktop_entry_opens_home_then_campaign_with_one_player(self):
         frames = []
         draw = Game.draw
-        flip = pygame.display.flip
-
         def record_frame(game, *args, **kwargs):
             frames.append((game.state, len(game.players), game.desktop_controls))
-            if game.state == GameState.DIFFICULTY_SELECT:
-                self.assertIsInstance(config.SCR, RenderSurface)
+            self.assertIsInstance(config.SCR, RenderSurface)
             return draw(game, *args, **kwargs)
-
-        def check_menu_frame():
-            if frames[-1][0] == GameState.DIFFICULTY_SELECT:
-                self.assertEqual(config.SCR.get_masks()[-1], 0)
-                window = pygame.display.get_surface()
-                # The white title must survive composition onto the native window.
-                x, y = config.VIEW_OFFSET
-                w = config.VIEW_SIZE[0]
-                title = window.subsurface((x + w // 3, y + round(74 * config.VIEW_SCALE),
-                                           w // 3, round(54 * config.VIEW_SCALE)))
-                self.assertTrue(pygame.mask.from_threshold(title, (255, 255, 255), (15, 15, 15)).count())
-            flip()
 
         events = [
             [],
+            [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)],
             [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_2, mod=0)],
+            [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)],
             [pygame.event.Event(pygame.QUIT)],
         ]
         with patch.object(config, 'campaign_time_ms', None), \
                 patch.object(Game, 'draw', record_frame), \
-                patch('pygame.display.flip', side_effect=check_menu_frame), \
                 patch('pygame.event.get', side_effect=events):
             main()
 
-        self.assertEqual(frames[0][0], GameState.DIFFICULTY_SELECT)
-        self.assertEqual(frames[1], (GameState.PLAYING, 1, True))
+        self.assertEqual([frame[0] for frame in frames[:3]],
+                         [GameState.MENU, GameState.DIFFICULTY_SELECT, GameState.DIFFICULTY_SELECT])
+        self.assertEqual(frames[3], (GameState.PLAYING, 1, True))

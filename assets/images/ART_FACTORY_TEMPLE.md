@@ -15,7 +15,8 @@ Shared direction: polished hand-painted, colorful 2D underwater arcade fantasy; 
 - `enemies/enemy_ancient_trilobite.png`: overhead downward-facing segmented jade fossil armor, gold edges, amber eyes and short legs.
 - `enemies/enemy_ancient_ray.png`: overhead downward-facing purple/blue manta guardian, gold fossil markings, luminous turquoise wing tips.
 - `bosses/boss_mecha_lizard.png`: full armored mechanical lizard, four hydraulic claws, curled armored tail, cyan plasma mouth, orange eyes, bronze dorsal fins and shoulder missile pods.
-- `bosses/boss_ancient_whale.png`: giant blue-indigo whale swimming toward viewer, broad flippers, cream belly, gold filigree armor, turquoise markings, pearl crown and purple coral.
+- `bosses/boss_ancient_whale.png`: chibi indigo whale with carved sandstone brows, turquoise runes, and a moss-covered temple gate on its back. An open mouth draws in a storm.
+- `animations/bosses/anim_boss_ancient_whale.png`: 8 frames each for swimming, tidal crescent, rune geyser, ancient pearl, suction, and swallowing. Each motion occupies one row of eight square cells.
 - `effects/mecha_plasma_rail.png`: vertical white-hot plasma beam, cyan electric filaments, blue glow and small orange sparks.
 - `effects/mecha_guided_missile.png`: downward copper/gunmetal torpedo with cyan nose and orange/cyan exhaust above.
 - `effects/mecha_emp_ring.png`: perfectly front-on narrow cyan/white electric circle, transparent center and exterior.
@@ -40,6 +41,12 @@ The whale, three skill sprites, the worm, and the rift eye were redrawn using bu
 - Enemies: a round indigo parasite covered in spines and a purple space tear with one pair of orange eyes.
 
 The delivered RGBA sheets and sprites have a long edge of at least 2048 px. The generated whale, pose atlas, pearl, and worm were resized for the 2K export. The crescent, geyser, and rift eye were generated at 2172 px on the long edge.
+
+## Chibi ancient whale skill sprites
+
+- Tidal crescent uses lavender foam curls, glowing cyan runes, and mossy sandstone along the leading edge.
+- Rune geyser rises from a carved sandstone plinth, with cyan symbols in the indigo water and a rounded foam crest.
+- Ancient pearl pairs ivory and lavender cloud motifs with a sandstone band inset with turquoise runes.
 
 ## Additional factory and temple enemies
 

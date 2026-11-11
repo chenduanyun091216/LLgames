@@ -27,6 +27,28 @@ _WEAPON_ASSETS = {
 }
 
 
+# Each path is drawn in a 20px square above the skill name.
+_SKILL_GLYPHS = {
+    'fisher_grenade': (((6, 6), (13, 6), (16, 10), (15, 16), (6, 17), (3, 12), (6, 6)),
+                       ((8, 6), (8, 2), (13, 2), (15, 4))),
+    'fire_wall': (((2, 17), (5, 9), (8, 13), (11, 3), (14, 12), (17, 8), (19, 17), (2, 17)),),
+    'fireball': (((3, 12), (9, 5), (14, 3), (18, 7), (17, 12), (11, 17), (8, 15), (3, 17), (6, 12)),),
+    'ice_floor': (((2, 15), (6, 8), (9, 12), (13, 4), (18, 15), (2, 15)), ((2, 18), (18, 18))),
+    'ice_balls': (((10, 2), (17, 6), (17, 14), (10, 18), (3, 14), (3, 6), (10, 2), (10, 18)),
+                  ((3, 6), (17, 14)), ((17, 6), (3, 14))),
+    'water_heal': (((7, 4), (13, 4), (13, 8), (17, 8), (17, 13), (13, 13), (13, 17),
+                    (7, 17), (7, 13), (3, 13), (3, 8), (7, 8), (7, 4)),),
+    'water_boost': (((2, 9), (6, 5), (10, 5), (14, 9), (18, 7)),
+                    ((2, 15), (6, 11), (10, 11), (14, 15), (18, 13))),
+    'lightning': (((11, 2), (4, 11), (10, 11), (8, 18), (16, 8), (10, 8), (11, 2)),),
+    'magnetic_storm': (((17, 5), (13, 2), (6, 3), (2, 8), (3, 14), (8, 18), (15, 16), (18, 11),
+                        (15, 7), (10, 7), (7, 10), (10, 13), (13, 11)),),
+    'radiation_laser': (((2, 14), (16, 4)), ((5, 17), (18, 8)), ((13, 3), (18, 2), (19, 7))),
+    'dart_shield': (((3, 5), (10, 2), (17, 5), (16, 12), (10, 18), (4, 12), (3, 5)),
+                    ((7, 11), (13, 7))),
+}
+
+
 @lru_cache(maxsize=96)
 def _control_art(diameter, corner, color, enabled, active, action, selected, source, icon_size, stroke=1):
     padding = max(4, diameter // 7)
@@ -333,6 +355,8 @@ class MobileControls:
                 source = image_asset(_CHAR_ASSETS[key])
                 icon_box = (min(radius * 2 - 6, 38), min(radius * 2 - 6, 40))
 
+            if source is not None:
+                source = trim_transparent(source)[0]
             diameter = round(radius * 2 * scale)
             corner = radius if action in ('attack', 'skill1', 'skill2') else 12
             icon_size = tuple(round(value * scale) for value in icon_box) if source is not None else None
@@ -358,12 +382,19 @@ class MobileControls:
             if action in ('skill1', 'skill2'):
                 if game.player.character:
                     key = 'K' if action == 'skill1' else 'L'
-                    skill_type = next((skill.skill_type for skill in CHARACTER_DEFS[game.player.character].skills
-                                       if skill.key_name == key), None)
+                    skill = next((skill for skill in CHARACTER_DEFS[game.player.character].skills
+                                  if skill.key_name == key), None)
+                    if skill:
+                        skill_type = skill.skill_type
+                        label = skill.name if len(skill.name) <= 3 else '潮汐'
+                elif action == 'skill2':
+                    label = '—'
                 elif action == 'skill1':
                     skill_type = 'fisher_grenade'
+                    label = '手榴弹'
             elif action in ('laser', 'dart'):
                 skill_type = 'radiation_laser' if action == 'laser' else 'dart_shield'
+                label = '激光' if action == 'laser' else '飞镖'
             if skill_type:
                 now = config.game_ticks()
                 end, duration = self._skill_timing(game, skill_type, now)
@@ -376,6 +407,15 @@ class MobileControls:
                     Draw.circle(surface, (47, 81, 99), center, radius - 2, 2)
                     sweep = math.tau * min(1, remaining / max(1, duration))
                     Draw.arc(surface, (125, 225, 241), ring, math.pi / 2, math.pi / 2 + sweep, 3)
+                elif not game.desktop_controls:
+                    ink = CHARACTER_DEFS[game.player.character].color if game.player.character else (255, 207, 128)
+                    cx, cy = center
+                    for path in _SKILL_GLYPHS[skill_type]:
+                        Draw.lines(surface, ink, False, [(cx + x - 10, cy + y - 20) for x, y in path], 2)
+                    game._draw_text_fit(label, game.font_tiny, (231, 243, 255),
+                                        pygame.Rect(cx - radius + 5, cy + 3, radius * 2 - 10, 19),
+                                        align='center')
+                    continue
             text_color = (231, 243, 255) if enabled else (123, 138, 154)
             if action == 'auto_fire':
                 label = '自动开' if active else '自动关'

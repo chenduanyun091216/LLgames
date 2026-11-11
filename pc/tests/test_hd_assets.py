@@ -53,7 +53,8 @@ class DesktopHDAssetsTests(unittest.TestCase):
         self.assertGreaterEqual(asset_loader.image_asset('ui/title.png').get_width(), 1595)
         self.assertEqual(asset_loader.image_asset('effects/boss_claw.png').get_size(), (426, 640))
 
-    def test_desktop_menu_title_has_space_at_peak_scale(self):
+    def test_desktop_home_title_does_not_overlap_start_button(self):
+        from game_core import menu_ui
         from game_core.game import Game
 
         pygame.init()
@@ -61,13 +62,12 @@ class DesktopHDAssetsTests(unittest.TestCase):
         window = pygame.display.set_mode((2560, 1440))
         config.update_mobile_view(window.get_size())
         game = Game(desktop_controls=True)
-        with patch.object(game, '_draw_title_image') as title, \
-                patch.object(game, '_draw_text_fit', wraps=game._draw_text_fit) as text:
+        with patch.object(menu_ui, '_art', wraps=menu_ui._art) as art:
             game._draw_menu()
-        y, width = title.call_args.args
-        subtitle = text.call_args_list[0].args[3]
-        image = game.title_image
-        self.assertLessEqual(y + int(width * 1.3 * image.get_height() / image.get_width()), subtitle.top)
+        title, box = art.call_args_list[0].args
+        self.assertIs(title, game.title_image)
+        self.assertLessEqual(box.bottom, game._mobile_menu_rects()['start'].top)
+        self.assertEqual(len(art.call_args_list), 17)
 
     def test_orochi_idle_art_has_headroom_at_1440p(self):
         from game_core.orochi import OrochiBoss

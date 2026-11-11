@@ -79,22 +79,26 @@ class WebServerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / 'anim_boss_ancient_whale.png'
-            original = Image.new('RGBA', (2048, 2012))
-            colors = [(255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 150), (0, 0, 0, 0)]
+            columns, rows, edge = 8, 6, 450
+            original = Image.new('RGBA', (columns * edge, rows * edge))
+            colors = [(index * 3, 20, 30, 150) for index in range(columns * rows)]
             for index, color in enumerate(colors):
-                x, y = index % 2 * 1024, index // 2 * 1006
-                original.paste(color, (x, y, x + 1024, y + 1006))
+                x, y = index % columns * edge, index // columns * edge
+                original.paste(color, (x, y, x + edge, y + edge))
             original.save(source)
             output = root / 'output'
             output.mkdir()
             hd_output = root / 'hd'
             prepare_image(source, output, hd_output)
-            with Image.open(hd_output / source.name) as image:
-                self.assertEqual(image.size, (1536, 1508))
-                for index, color in enumerate(colors):
-                    x, y = index % 2 * 768, index // 2 * 754
-                    frame = image.crop((x, y, x + 768, y + 754))
-                    self.assertEqual(frame.getextrema(), tuple((value, value) for value in color))
+            for directory, cell in ((output, 336), (hd_output, 448)):
+                with Image.open(directory / source.name) as image:
+                    self.assertEqual(image.size, (columns * cell, rows * cell))
+                    for index, color in enumerate(colors):
+                        x, y = index % columns * cell, index // columns * cell
+                        frame = image.crop((x, y, x + cell, y + cell))
+                        self.assertEqual(frame.getextrema()[3], (150, 150))
+                        self.assertEqual(frame.getpixel((0, 0)), frame.getpixel((cell - 1, cell - 1)))
+                        self.assertLessEqual(abs(frame.getpixel((0, 0))[0] - color[0]), 1)
             with Image.open(source) as image:
                 self.assertEqual(image.size, original.size)
 

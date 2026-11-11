@@ -12,6 +12,7 @@ from .visuals import blit_label, draw_electric_arc, draw_glow
 from .boss_skills import BOSS_COLORS, DRAGON_FIREBALL_IMAGE, SIGNATURES, draw_bubble_crab
 from .asset_loader import image_asset, image_asset_supersampled, scale_surface_cached
 from . import animation
+from .sounds import play_sound
 
 from .config import (
     WEAPON_DEFS, CHARACTER_DEFS,
@@ -843,7 +844,17 @@ class GiftBox:
         r = int(self.radius * pulse)
         x = int(self.x - r)
         y = int(self.y - r)
-        _circle(surf, (255, 230, 80, 52), (int(self.x), int(self.y)), r + 9)
+        draw_glow(surf, (round(self.x), round(self.y)), r + 9, (255, 191, 83), 115)
+        art = image_asset('ui/gift_box.png')
+        if art is not None:
+            scale = 2 * r / max(art.get_size())
+            size = tuple(round(length * scale) for length in art.get_size())
+            position = (round(self.x - size[0] / 2), round(self.y - size[1] / 2))
+            if isinstance(surf, RenderSurface):
+                surf.blit(art, position, logical_size=size, static=True)
+            else:
+                surf.blit(scale_surface_cached(art, size), position)
+            return
         _rect(surf, (190, 45, 55), (x, y, r * 2, r * 2), border_radius=8)
         _rect(surf, (255, 215, 70), (x + r - 4, y, 8, r * 2), border_radius=3)
         _rect(surf, (255, 215, 70), (x, y + r - 4, r * 2, 8), border_radius=3)
@@ -1900,6 +1911,7 @@ class Boss:
         self.edef = enemy_def
         self.max_hp = bdef.get('fixed_hp', math.ceil(bdef['base_hp'] * difficulty.boss_hp_mult * 2))
         self.hp = self.max_hp
+        self.hit_flashes = []
         self.speed = bdef['speed']
         tier = bdef.get('campaign_tier')
         self.attack_interval = (bdef['attack_interval'] if tier is not None
@@ -2100,7 +2112,42 @@ class Boss:
     def hit_by(self, weapon_name, amount=1.0, source='skill', hit_rect=None):
         if self.y < Enemy.ENTRY_DAMAGE_Y:
             return
+        previous_hp = self.hp
         self.hp -= amount * getattr(self, 'damage_mult', 1.0)
+        if self.hp < previous_hp:
+            self._hit_feedback(hit_rect, config.game_ticks())
+
+    def _hit_feedback(self, hit_rect, now, *, hitbox=None):
+        if hitbox is None:
+            hitbox = next((box for box in self.hitboxes() if hit_rect and box.colliderect(hit_rect)), self.rect())
+        point = hitbox.clip(hit_rect).center if hit_rect and hitbox.colliderect(hit_rect) else hitbox.center
+        self.hit_flashes = [flash for flash in self.hit_flashes if now - flash[2] < 150][-5:]
+        self.hit_flashes.append((*point, now))
+
+        if now - getattr(self, '_last_hit_sound_at', -1000) >= 100:
+            play_sound('boss_hit')
+            self._last_hit_sound_at = now
+
+    def _draw_hit_flashes(self, surf, now):
+        self.hit_flashes = [flash for flash in self.hit_flashes if now - flash[2] < 150]
+        for x, y, at in self.hit_flashes:
+            progress = max(0, (now - at) / 150)
+            alpha = round(220 * (1 - progress) ** 2)
+            sparks = effect_layer(surf, (48, 48))
+            for index in range(5):
+                angle = index * math.tau / 5 + (x + y) * .17
+                dx, dy = math.cos(angle), math.sin(angle)
+                distance = 3 + progress * (7.5 + 1.5 * (index % 3))
+                length = (7.5 - 1.5 * (index % 2)) * (1 - progress)
+                width = 1.2 * (1 - progress)
+                start_x, start_y = 24 + dx * distance, 24 + dy * distance
+                Draw.polygon(sparks, (255, 198 + index * 9, 125 + index * 20, alpha),
+                             ((start_x - dy * width, start_y + dx * width),
+                              (start_x + dx * length, start_y + dy * length),
+                              (start_x + dy * width, start_y - dx * width)))
+            if progress < .3:
+                Draw.circle(sparks, (255, 243, 211, round(alpha * (1 - progress / .3))), (24, 24), 3)
+            blit_effect(surf, sparks, (round(x - 24), round(y - 24)))
 
     def apply_slow(self, now, duration=4000, mult=0.7):
         self.slowed_until = max(self.slowed_until, now + duration)
@@ -2166,73 +2213,17 @@ class Boss:
         scale = _breathing_scale(now - self.breath_start_time, 0.30, 2800)
         mouth_laser = now < self.laser_active_until and self._laser_mouth_pose()
         center_y = self.y + self.h // 2
-        # —— 质感光晕 + 悬浮粒子：血量越低越红、越狂暴 ——
         hp_ratio = max(0, self.hp / self.max_hp)
         skill_color = BOSS_COLORS.get(self.bdef['key'], (110, 160, 255))
-        if hp_ratio > 0.5:
-            aura = skill_color
-            glow_c = tuple((value + 255) // 2 for value in aura)
-        elif hp_ratio > 0.25:
-            aura, glow_c = (255, 150, 60), (255, 220, 140)
-        else:
-            aura, glow_c = (255, 60, 50), (255, 130, 95)
-        pulse = 1 + 0.10 * math.sin(now * 0.008)
-        ex, ey = int(self.x), int(center_y)
-        rx, ry = int(self.w * 0.68 * scale), int(self.h * 0.60 * scale)
-        # 1) 多层脉动光晕包住 Boss 轮廓
-        _ellipse(surf, (*aura, 24), (ex - rx - 16 * size_scale, ey - ry - 16 * size_scale,
-                                     (rx + 16 * size_scale) * 2, (ry + 16 * size_scale) * 2),
-                 max(1, round(7 * size_scale)))
-        _ellipse(surf, (*aura, 40), (ex - rx, ey - ry, rx * 2, ry * 2), 4)
-        _ellipse(surf, (*glow_c, 30), (ex - int(rx * 0.82 * pulse), ey - int(ry * 0.82 * pulse),
-                                       int(rx * 1.64 * pulse), int(ry * 1.64 * pulse)), 2)
-        # 2) 绕 Boss 外轮廓旋转的发光能量粒子（双层，外圈）
-        for i in range(14):
-            angle = now * 0.0018 + i * math.tau / 14
-            depth = (math.sin(angle * 2 + i) + 1.0) / 2.0
-            px = ex + math.cos(angle) * rx * (1.24 + 0.06 * math.sin(now * 0.005 + i))
-            py = ey + math.sin(angle) * ry * 1.30 * (1 + 0.05 * math.sin(now * 0.006 + i * 2.3))
-            r = 3 + round(depth * 3)
-            _circle(surf, (*aura, 30), (int(px), int(py)), round((r + 6) * size_scale))
-            _circle(surf, (*glow_c, 90 + round(depth * 110)), (int(px), int(py)), max(1, round(r * size_scale)))
-        # 3) 从 Boss 边缘不断上浮的能量微尘
-        for i in range(12):
-            ph = (now * 0.02 + i * 0.83) % 1.0
-            ang = i * 2.399
-            px = ex + math.cos(ang) * rx * (0.75 + 0.35 * ph)
-            py = ey + math.sin(ang) * ry * 0.7 - ph * 26 * size_scale
-            alpha = int(130 * (1 - ph))
-            _circle(surf, (*glow_c, alpha), (int(px), int(py)), max(1, round((2 + 2 * (1 - ph)) * size_scale)))
-        # 4) 缓慢漂移的漂浮能量碎片
-        for i in range(6):
-            ang = now * 0.0009 + i * math.tau / 6
-            dr = 1.18 + 0.10 * math.sin(now * 0.003 + i * 1.9)
-            px = ex + math.cos(ang) * rx * dr
-            py = ey + math.sin(ang) * ry * dr * 0.9 + math.sin(now * 0.004 + i) * 8 * size_scale
-            _circle(surf, (255, 240, 180, 90), (int(px), int(py)), max(1, round((3 + i % 3) * size_scale)), 1)
-        for i in range(10):
-            angle = now * 0.0012 + i * math.tau / 10
-            depth = (math.sin(angle) + 1.0) / 2.0
-            px = self.x + math.cos(angle) * self.w * 0.62 * scale
-            py = center_y + math.sin(angle) * self.h * 0.46 * scale
-            radius = 5 + round(depth * 3)
-            if self.bdef['key'] == 'boss_niu':
-                _circle(surf, (255, 75, 25, 45), (px, py), radius + 5)
-                _circle(surf, (255, 205, 75, 120 + round(depth * 80)), (px, py), radius)
-            else:
-                _circle(surf, (90, 220, 255, 45), (px, py), radius + 5)
-                _circle(surf, (180, 110, 255, 120 + round(depth * 80)), (px, py), radius)
-        if self.bdef.get('final_boss'):
-            pulse = 1 + 0.08 * math.sin(now * 0.009)
-            for r, alpha in ((130, 34), (105, 46), (78, 60)):
-                _circle(surf, (130, 40, 220, alpha), (int(self.x), int(self.y + self.h // 2)),
-                        max(1, int(r * pulse * size_scale)), max(1, round(3 * size_scale)))
-            for a in range(0, 360, 45):
-                rad = math.radians(a + now * 0.05)
-                _circle(surf, (80, 220, 255, 130),
-                        (self.x + math.cos(rad) * 86 * size_scale,
-                         self.y + self.h // 2 + math.sin(rad) * 50 * size_scale),
-                        max(1, round(4 * size_scale)))
+        aura = skill_color
+        if hp_ratio <= .25:
+            aura = (255, 78, 57)
+        elif hp_ratio <= .5:
+            aura = (255, 155, 75)
+        glow_c = tuple((value + 255) // 2 for value in aura)
+        pulse = .94 + .06 * math.sin(now * .008)
+        draw_glow(surf, (round(self.x), round(center_y)), max(1, round(self.w * .78 * pulse)),
+                  aura, 94 if hp_ratio <= .5 else 64)
         if self.breath_base is None or self._breath_src is not self.surface:
             sw, sh = self.surface.get_size()
             hi = image_asset_supersampled(self.sprite_asset, (sw, sh), 1.5)
@@ -2289,7 +2280,7 @@ class Boss:
             else:
                 breathing_surface = tinted
         bsw, bsh = breathing_surface.get_size()
-        blit_lit_sprite(surf, breathing_surface, (sprite_x - bsw // 2, sprite_y - bsh // 2), glow_c, 185, source=source)
+        blit_lit_sprite(surf, breathing_surface, (sprite_x - bsw // 2, sprite_y - bsh // 2), glow_c, 92, source=source)
         if self.laser_warning_start:
             elapsed = now - self.laser_warning_start
             if (elapsed // 220) % 2 == 0:

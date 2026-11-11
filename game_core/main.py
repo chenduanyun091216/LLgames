@@ -88,7 +88,7 @@ async def main():
     game = Game(desktop_controls=browser_window is None, scroll_campaign_backgrounds=True)
     for filename in SKILL_IMAGES:
         image_asset(filename)
-    for sound in ('boss_appear', 'kill', 'level_up', 'player_hit'):
+    for sound in ('boss_appear', 'boss_hit', 'kill', 'level_up', 'player_hit'):
         make_sound(sound)
     warmed_background = None
     warmed_panorama = None

@@ -151,6 +151,14 @@ def _snd_hit():
         (_gen_fnoise(0.02, 0.07, lp=0.35, decay=60), 0.0, 1.0),
     ])
 
+def _snd_boss_hit():
+    return _mix_layers([
+        (_gen_tone(175, 65, 0.10, 'triangle', 0.26, attack=0.001, decay=32), 0.0, 1.0),
+        (_gen_tone(1180, 510, 0.035, 'sine', 0.15, attack=0.001, decay=48), 0.0, 1.0),
+        (_gen_fnoise(0.025, 0.08, lp=0.4, decay=55), 0.0, 1.0),
+    ])
+
+
 def _snd_niu_shield_hit():
     return _mix_layers([
         (_gen_fnoise(0.025, 0.13, lp=0.45, decay=65), 0.0, 1.0),
@@ -333,6 +341,7 @@ _SOUND_BUILDERS = {
     'shoot_shotgun': _snd_shoot_shotgun,
     'shoot_sniper': _snd_shoot_sniper,
     'hit': _snd_hit,
+    'boss_hit': _snd_boss_hit,
     'niu_shield_hit': _snd_niu_shield_hit,
     'niu_axe_impact': _snd_niu_axe_impact,
     'player_hit': _snd_player_hit,

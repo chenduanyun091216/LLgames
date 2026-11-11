@@ -18,8 +18,7 @@ def _orochi_fire_art(gold):
     # Rebuild the two original resource variants once, never once per frame.
     art = O._load_art('effects/orochi_fireball.png')
     if art is not None and gold:
-        art = art.copy()
-        art.fill((0,138,10), special_flags=pygame.BLEND_RGB_ADD)
+        return O._gold_fireball(art)
     return art
 
 class _View(Game):
@@ -202,7 +201,7 @@ class Presentation:
         if music != self._music_boss:
             start_music(level,boss=music[1])
             self._music_boss = music
-        allowed_sounds = {'shoot_pistol','shoot_rifle','shoot_shotgun','shoot_sniper','hit','niu_shield_hit','niu_axe_impact',
+        allowed_sounds = {'shoot_pistol','shoot_rifle','shoot_shotgun','shoot_sniper','hit','boss_hit','niu_shield_hit','niu_axe_impact',
             'coin','buy','error','level_up','game_over','boss_appear','fire_cast','ice_cast','player_hit',
             'water_cast','grenade','lightning','orochi_thunder','storm','laser','laser_hit','dart_cast','dart_burst','kill'}
         for event in full_snapshot.get('events',[]):

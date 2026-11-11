@@ -14,6 +14,7 @@ from game_core import config
 from game_core.game import Game, GameState
 from game_core.entities import Bullet, Enemy, GiftBox, SkillProjectile
 from game_core.entities import MagneticStorm, RadiationLaser, SpinningDarts
+from game_core.render import RenderSurface
 from game_core.special_bosses import ReturningAxe
 from game_core import sounds
 
@@ -252,7 +253,7 @@ class MobileWebTests(unittest.TestCase):
             self.assertEqual(game.state, GameState.VICTORY)
         with patch('pygame.time.get_ticks', return_value=5000):
             game.update()
-            self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+            self.assertEqual(game.state, GameState.MENU)
         game._start_infinite_game()
         game.infinite_boss_index = 7
         game._trigger_infinite_boss()
@@ -794,7 +795,7 @@ class MobileWebTests(unittest.TestCase):
         game.lives = 1
         game._player_defeated('测试')
         game._handle_click(game._game_over_choice_rects()[1].center)
-        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        self.assertEqual(game.state, GameState.MENU)
         self.assertIsNone(game.level_checkpoint)
 
     def test_declining_revive_does_not_spend_gold_and_infinite_keeps_continue(self):
@@ -832,7 +833,7 @@ class MobileWebTests(unittest.TestCase):
         game.state = GameState.PAUSED
         game.draw()
         game._handle_click(game._choice_rects()[1].center)
-        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        self.assertEqual(game.state, GameState.MENU)
         self.assertEqual(game.lives, 3)
 
     def test_touch_generated_mouse_does_not_toggle_auto_fire(self):
@@ -868,18 +869,48 @@ class MobileWebTests(unittest.TestCase):
             self.assertEqual(self.game.player.x, before)
 
     def test_difficulty_starts_single_player_without_mode_select(self):
-        _key, rect = self.game._mobile_difficulty_rects()[0]
-        self.game._handle_click(rect.center)
+        game = self.game
+        self.assertEqual(game.state, GameState.MENU)
+        game._handle_click(game._mobile_menu_rects()['start'].center)
+        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        self.assertEqual(game.selected_difficulty, 'easy')
+        rects = game._campaign_rects()
+        game._handle_click(rects['level:9'].center)
+        game._handle_click(rects['medium'].center)
+        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        game._handle_click(rects['start'].center)
         self.assertEqual(self.game.state, GameState.PLAYING)
+        self.assertEqual(game.current_level, 9)
+        self.assertEqual(game.difficulty.name, '中等')
         self.assertEqual(len(self.game.players), 1)
         self.game.draw()
+
+    def test_shop_skill_preview_and_purchase_carry_into_campaign(self):
+        game = self.game
+        game._handle_click(game._mobile_menu_rects()['start'].center)
+        game._handle_click(game._campaign_rects()['shop'].center)
+        game.player.gold = 40
+        game._handle_click(game._mobile_shop_rects()['character'].center)
+        game._handle_click(game._mobile_shop_rects()['skills:fire'].center)
+        self.assertEqual(game.shop_character, 'fire')
+        self.assertEqual(game.player.gold, 40)
+        self.assertIsNone(game.player.character)
+        game._handle_click(game._mobile_shop_rects()['character:fire'].center)
+        self.assertEqual(game.player.gold, 14)
+        self.assertEqual(game.player.character, 'fire')
+        self.assertEqual(game.state, GameState.SHOP)
+        game._handle_click(game._mobile_shop_rects()['close'].center)
+        game._handle_click(game._campaign_rects()['start'].center)
+        self.assertEqual(game.player.character, 'fire')
+        self.assertEqual(game.player.gold, 14)
 
     def test_difficulty_cards_and_custom_button_stay_separate(self):
         for size in ((844, 390), (932, 393), (390, 844)):
             with self.subTest(size=size):
                 config.update_mobile_view(size)
-                button = self.game._mobile_custom_button()
-                cards = [rect for _, rect in self.game._mobile_difficulty_rects()]
+                rects = self.game._campaign_rects()
+                button = rects['custom']
+                cards = [rects[key] for key in ('easy', 'medium', 'hard')]
                 self.assertTrue(all(rect.bottom <= button.top for rect in cards))
                 self.assertTrue(all(rect.collidelist(cards[index + 1:]) == -1
                                     for index, rect in enumerate(cards)))
@@ -898,6 +929,55 @@ class MobileWebTests(unittest.TestCase):
         self.assertIn('继续游戏', {row[0] for row in labels})
         self.assertNotIn(level_title, {row[0] for row in labels})
         self.assertFalse(any(row[0].startswith('HP') or row[0] == '射击' for row in labels))
+
+    def test_chapter_titles_draw_enemy_art_in_portrait_and_landscape(self):
+        game = self.game
+        for size in ((390, 844), (844, 390)):
+            config.update_mobile_view(size)
+            target = pygame.Surface(size)
+            config.SCR = RenderSurface(target, (config.SCREEN_WIDTH, config.SCREEN_HEIGHT),
+                                       config.VIEW_SIZE, config.VIEW_OFFSET)
+            for level in range(1, len(config.LEVEL_CONFIGS) + 1):
+                with self.subTest(size=size, level=level), \
+                        patch.object(config, 'game_ticks', return_value=1000), \
+                        patch.object(config.SCR, 'blit', wraps=config.SCR.blit) as blit, \
+                        patch.object(game, '_draw_panel', wraps=game._draw_panel) as panel:
+                    game.current_level = level
+                    game.level_title_until = 2200
+                    game._ui_labels = []
+                    game._draw_level_title()
+                    labels = [label[0] for label in game._ui_labels]
+                    self.assertIn(f'第{level}关', labels)
+                    if level == 9:
+                        self.assertIn('机房重地 之', labels)
+                        self.assertIn('废弃工厂', labels)
+                    else:
+                        self.assertIn(config.LEVEL_CONFIGS[level - 1]['title'], labels)
+                    icons = blit.call_args_list
+                    self.assertEqual(len(icons), 2 if level == 11 else 4)
+                    boss_width = icons[-1].kwargs['logical_size'][0]
+                    self.assertLessEqual(boss_width, 48)
+                    self.assertTrue(all(icon.kwargs['logical_size'][0] <= 30 for icon in icons[:-1]))
+                    plaque = pygame.Rect(*panel.call_args.args)
+                    for action, (x, y), radius, _, _ in game.mobile_controls._buttons(game):
+                        if action.startswith('character:'):
+                            button = pygame.Rect(x - radius, y - radius, 2 * radius, 2 * radius)
+                            self.assertFalse(plaque.colliderect(button))
+
+    def test_infinite_title_uses_background_level_and_expires(self):
+        game = self.game
+        game.infinite_mode = True
+        game.chapter = 20
+        game.infinite_background_level = 9
+        game.level_title_until = 2200
+        game._ui_labels = []
+        with patch.object(config, 'game_ticks', return_value=2199):
+            game._draw_level_title()
+        self.assertEqual([label[0] for label in game._ui_labels], ['第20章', '机房重地 之', '废弃工厂'])
+        game._ui_labels.clear()
+        with patch.object(config, 'game_ticks', return_value=2200):
+            game._draw_level_title()
+        self.assertEqual(game._ui_labels, [])
 
     def test_custom_difficulty_controls_fit_portrait_and_update_values(self):
         rows = self.game._mobile_custom_rows()

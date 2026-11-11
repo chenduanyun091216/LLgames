@@ -299,16 +299,17 @@ class CampaignAdapterTests(unittest.TestCase):
         self.assertEqual((p1.hp, p2.hp), (4, 2))
 
     def test_orochi_sound_capture_restores_both_bindings_even_on_error(self):
-        from game_core import orochi
+        from game_core import orochi, entities
         game = self.boss_game(11)
-        original = core.play_sound, orochi.play_sound
+        original = core.play_sound, orochi.play_sound, entities.play_sound
         with self.assertRaises(RuntimeError):
             with game._capture_sounds():
                 orochi.play_sound('thunder')
                 core.play_sound('hit')
+                entities.play_sound('boss_hit')
                 raise RuntimeError('test unwind')
-        self.assertEqual((core.play_sound, orochi.play_sound), original)
-        self.assertEqual([e['key'] for e in list(game._events)[-2:]], ['thunder', 'hit'])
+        self.assertEqual((core.play_sound, orochi.play_sound, entities.play_sound), original)
+        self.assertEqual([e['key'] for e in list(game._events)[-3:]], ['thunder', 'hit', 'boss_hit'])
 
     def test_crab_summon_original_contact_grace_applies_to_both(self):
         game = self.boss_game(2)

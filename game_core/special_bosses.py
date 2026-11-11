@@ -361,6 +361,10 @@ class NiuBoss(Boss):
         self.next_hazard_time = 0
         self.running_left = False
 
+    def _hit_feedback(self, hit_rect, now, *, hitbox=None):
+        if now >= self.shield_until:
+            super()._hit_feedback(hit_rect, now, hitbox=hitbox)
+
     def hit_by(self, weapon_name, amount=1.0, source='skill', hit_rect=None):
         previous_hp = self.hp
         super().hit_by(weapon_name, amount, source=source, hit_rect=hit_rect)
@@ -450,7 +454,7 @@ class NiuBoss(Boss):
             sheet = image_asset('bosses/boss_niu_actions.png')
             if sheet is not None:
                 return self._action_frame(sheet, pose)
-            return image_asset(f'bosses/boss_niu_{pose}.png')
+            return None
         if self.entered:
             sprite = image_asset('bosses/boss_niu_scooter.png')
             if sprite is not None:
@@ -556,13 +560,18 @@ class NiuBoss(Boss):
             visible = axe.subsurface((0, height - visible_height, width, visible_height))
             blit(visible, (x, bottom - visible_height))
             return
-        # Extend the handle along the strike without stretching the blade.
-        handle_height = height // 2
-        blade_height = height - handle_height
-        handle = axe.subsurface((0, 0, width, handle_height))
-        blade = axe.subsurface((0, handle_height, width, blade_height))
-        blit(pygame.transform.smoothscale(handle, (width, visible_height - blade_height)), (x, top))
-        blit(blade, (x, bottom - blade_height))
+        # The middle of the image also contains the blade and tassel. Insert
+        # repeating bare shaft below the pommel instead of stretching that art.
+        handle_top = round(height * .19)
+        tile_height = max(1, round(height * .04))
+        handle = axe.subsurface((0, handle_top, width, tile_height))
+        blit(axe.subsurface((0, 0, width, handle_top)), (x, top))
+        extension = visible_height - height
+        for offset in range(0, extension, tile_height):
+            count = min(tile_height, extension - offset)
+            blit(handle.subsurface((0, 0, width, count)), (x, top + handle_top + offset))
+        blit(axe.subsurface((0, handle_top, width, height - handle_top)),
+             (x, top + handle_top + extension))
 
     def _draw_axe_impact(self, surf, now):
         x, y, landed_at = self.axe_slam_impact
@@ -898,6 +907,7 @@ class ZongBoss(Boss):
         if self.y < Enemy.ENTRY_DAMAGE_Y or self.fusion_mode == 'shield':
             return
         previous_hp = self.hp
+        hitbox = self.rect()
         damage = amount * getattr(self, 'damage_mult', 1.0)
         alive = [i for i in range(2) if self.body_hp[i] > 0]
         if len(alive) == 1:
@@ -915,12 +925,14 @@ class ZongBoss(Boss):
                     continue
                 box = pygame.Rect(int(self.body_x(i) - self.w // 2), int(self.y), self.w, self.h)
                 if hit_rect is None or hit_rect.colliderect(box):
+                    hitbox = box
                     effectiveness = 0.5 if tier == 2 and i != strong_side else 1
                     self.body_hp[i] = max(0, self.body_hp[i] - damage * effectiveness)
                     break
         self.hp = sum(self.body_hp)
         if self.hp < previous_hp:
             self.expression_hit_at = config.game_ticks()
+            self._hit_feedback(hit_rect, self.expression_hit_at, hitbox=hitbox)
 
     def _draw_aura(self, surf, x, cy, index, now):
         accent = ((65, 220, 255), (185, 115, 255))[index] if not self.fusion_mode else (
@@ -948,8 +960,9 @@ class ZongBoss(Boss):
             corners = [(int(150 + math.cos(now * 0.001 + i * math.tau / 6) * 98 * self.size_scale),
                         int(150 + math.sin(now * 0.001 + i * math.tau / 6) * 98 * self.size_scale))
                        for i in range(6)]
-            Draw.polygon(halo, (175, 245, 255, 195), corners,
-                                max(1, round(5 * self.size_scale)))
+            Draw.polygon(halo, (112, 204, 236, 58), corners)
+            Draw.polygon(halo, (175, 245, 255, 132), corners,
+                         max(1, round(2 * self.size_scale)))
         elif self.fusion_mode == 'rage':
             for i in range(10):
                 angle = now * 0.004 + i * math.tau / 10

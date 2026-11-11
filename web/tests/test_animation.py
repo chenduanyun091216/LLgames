@@ -189,10 +189,13 @@ class AnimationTests(unittest.TestCase):
         boss.shield_until = 2000
         canvas = pygame.Surface((1200, 1000), pygame.SRCALPHA)
         with patch.object(config, 'game_ticks', return_value=1000), \
-                patch.object(special_bosses, 'play_sound') as sound:
+                patch.object(special_bosses, 'play_sound') as sound, \
+                patch('game_core.entities.play_sound') as body_sound:
             boss.hit_by('pistol', 1)
             boss.hit_by('pistol', 1)
             sound.assert_called_once_with('niu_shield_hit')
+            body_sound.assert_not_called()
+            self.assertFalse(boss.hit_flashes)
             self.assertEqual(boss.shield_hit_at, 1000)
             with patch.object(boss, '_draw_shield_hit', wraps=boss._draw_shield_hit) as flash:
                 boss.draw(canvas)
@@ -249,6 +252,33 @@ class AnimationTests(unittest.TestCase):
                 self.assertGreater(bounds.width, hitbox.width * scale)
                 self.assertGreaterEqual(bounds.top, hitbox.top * scale)
                 self.assertGreaterEqual(bounds.bottom, hitbox.bottom * scale)
+
+    def test_niu_axe_slam_preserves_blade_and_tassel_when_handle_extends(self):
+        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
+        boss.x, boss.y = 240, 60
+        boss.axe_slam_start = 1000
+        art = special_bosses.image_asset('effects/boss_niu_slam_axe.png')
+        for size, output in (((480, 960), (480, 960)), ((960, 540), (1920, 1080)),
+                             ((960, 540), (2560, 1440))):
+            with self.subTest(output=output), \
+                    patch.object(config, 'SCREEN_WIDTH', size[0]), \
+                    patch.object(config, 'SCREEN_HEIGHT', size[1]):
+                canvas = pygame.Surface(output, pygame.SRCALPHA)
+                target = RenderSurface(canvas, size, output, (0, 0))
+                boss._draw_axe_slam(target, 2100)
+                logical_width = max(70, round(boss.w * 1.65))
+                width = target.length(logical_width)
+                height = max(1, round(width * art.get_height() / art.get_width()))
+                original = pygame.transform.flip(
+                    special_bosses.scale_surface_cached(art, (width, height)), False, True)
+                hitbox = boss.axe_slam_rect(2100)
+                bottom = min(size[1], hitbox.bottom + round(logical_width * .12))
+                x, bottom = target.point((boss.x, bottom))
+                preserved = height * 3 // 4
+                actual = canvas.subsurface((x - width // 2, bottom - preserved, width, preserved))
+                expected = original.subsurface((0, height - preserved, width, preserved))
+                self.assertEqual(pygame.image.tobytes(actual, 'RGBA'),
+                                 pygame.image.tobytes(expected, 'RGBA'))
 
     def test_boss_laser_and_zong_attack_select_their_own_frames(self):
         crab = SimpleNamespace(bdef={'key': 'boss_crab'}, laser_warning_start=1000, laser_active_until=0)

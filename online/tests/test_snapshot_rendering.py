@@ -149,8 +149,10 @@ class SnapshotTests(unittest.TestCase):
         left=pygame.Surface((960,720),pygame.SRCALPHA)
         right=pygame.Surface((960,720),pygame.SRCALPHA)
         g.boss.draw(left)
+        g.boss._draw_hit_flashes(left, config.game_ticks())
         random.setstate(rng)
         p.view.boss.draw(right)
+        p.view.boss._draw_hit_flashes(right, config.game_ticks())
         self.assertEqual(pygame.image.tostring(left,'RGBA'),pygame.image.tostring(right,'RGBA'))
         p.draw()
 
@@ -240,7 +242,8 @@ class SnapshotTests(unittest.TestCase):
                     boss.split_xy[2]=[420,370];boss.split_hp[0]=0
                     boss.split_charge_until[2]=3000;boss.split_charged[2]=True
                 if skill=='storm':
-                    boss.head_hp[0]=0
+                    if boss.head_hp[0] > 0:
+                        boss.hit_by('sniper', boss.head_hp[0], hit_rect=boss.head_rect(0))
                     boss.update(350, 420)
                 boss.hit_flashes=[(480,180,now-50)]
                 g.boss_projectiles=[O.OrochiFireball(250,350,boss.FIRE_COLORS[0],boss.fire_art),

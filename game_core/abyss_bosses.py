@@ -12,6 +12,7 @@ from . import animation, config
 from .asset_loader import image_asset
 from .entities import Boss, BossProjectile
 from .render import Draw, RenderSurface, blit_effect, effect_layer
+from .visuals import draw_glow
 
 
 ABYSS_PROJECTILE_FIELDS = (
@@ -353,17 +354,29 @@ class AbyssProjectile(BossProjectile):
         color = (255, 179, 65) if self.skill in ('molten_burst', 'ancient_pearl') else (95, 230, 255)
         if self.skill == 'plasma_rail':
             grip = self.x, self.y
-            Draw.circle(surf, (30, 48, 65), grip, max(4, round(self.width * .55)))
-            Draw.circle(surf, color, grip, max(2, round(self.width * .25)))
+            charge = min(1, max(0, (config.game_ticks() - self.spawn_time) / self.warning_ms))
+            draw_glow(surf, grip, max(7, round(self.width * (1 + charge))), color, round(60 + 85 * charge))
+            Draw.circle(surf, (26, 55, 76), grip, max(4, round(self.width * .5)))
+            Draw.circle(surf, (196, 249, 255), grip, max(2, round(self.width * .23)))
             if active and self._active_age() > 0:
                 points = self._rail_points()
                 striking = self._rail_lash(self._active_age()) is not None
                 width = self.width if striking else self.width * .64
                 core = (235, 255, 255) if striking else (136, 210, 242)
-                Draw.lines(surf, (34, 104, 200), False, points, round(width))
-                Draw.lines(surf, color, False, points, max(1, round(width * .68)))
-                Draw.lines(surf, core, False, points, max(1, round(width * .24)))
-                Draw.circle(surf, core, points[-1], max(2, round(width * .19)))
+                Draw.lines(surf, (35, 85, 150), False, points, max(1, round(width)))
+                Draw.lines(surf, (64, 182, 230), False, points, max(1, round(width * .6)))
+                Draw.lines(surf, core, False, points, max(1, round(width * .19)))
+                phase = self._active_age() / 260
+                for offset in (0, .33, .66):
+                    position = ((phase + offset) % 1) * (len(points) - 1)
+                    index = int(position)
+                    a = pygame.Vector2(points[index])
+                    b = pygame.Vector2(points[index + 1])
+                    spark = a.lerp(b, position - index)
+                    Draw.circle(surf, (232, 255, 255), spark, max(1, round(width * .16)))
+                tip = points[-1]
+                draw_glow(surf, tip, max(4, round(width * .8)), color, 130)
+                Draw.circle(surf, core, tip, max(2, round(width * .23)))
             return
         if self.skill == 'emp_ring' and active:
             burst_age = self._active_age() - EMP_BURST_AT_MS
@@ -656,6 +669,12 @@ class AncientWhaleBoss(AbyssBoss):
     CAST_MS = {'tidal_crescent': 5000, 'rune_geyser': 3730, 'ancient_pearl': 1900,
                'whale_suction': SUCTION_MS}
 
+    # Each motion occupies one row of eight frames.
+    ANIMATION = {
+        '': (0, 660), 'tidal_crescent': (1, 400), 'rune_geyser': (2, 1100),
+        'ancient_pearl': (3, 640), 'whale_suction': (4, 520), 'whale_swallow': (5, SWALLOW_MS),
+    }
+
     def __init__(self, bdef, difficulty):
         super().__init__(bdef, difficulty)
         self.suction_start_hp = 0
@@ -744,49 +763,36 @@ class AncientWhaleBoss(AbyssBoss):
         scale = surf.scale if isinstance(surf, RenderSurface) else 1
         height = max(1, round(self.h * scale))
         now = config.game_ticks()
-        phase = (now - self.breath_start_time) * .005
-        casting = self._casting(now)
         age = now - self.skill_started_at
-        skill = 'whale_suction' if self.swallowing else self.current_skill if casting else ''
+        skill = self.current_skill if self._casting(now) or self.swallowing else ''
         if self.swallowing:
             self._draw_suction(surf, self.SUCTION_MS + age * 2)
         elif self.suction_active(now):
             self._draw_suction(surf, age)
-        art = image_asset(self.sprite_asset, (height, height))
-        if art is None:
-            super().draw(surf)
-            return
-        turn_age = now - self.swim_turn_at
-        pose = None
-        if skill == 'whale_suction':
-            pose = (0, 1)
-        elif skill in ('rune_geyser', 'ancient_pearl'):
-            pose = (1, 1)
-        elif turn_age < 420:
-            pose = (1, 0)
-        elif skill == 'tidal_crescent' or math.sin(phase) > .25:
-            pose = (0, 0)
-        if pose:
-            # Each cell in the source atlas is 1024 × 1006. Preserve that ratio.
-            width = max(1, round(height * 1024 / 1006))
-            atlas = image_asset('animations/bosses/anim_boss_ancient_whale.png', (2 * width, 2 * height))
-            if atlas is not None:
-                art = atlas.subsurface((pose[0] * width, pose[1] * height, width, height))
-        tilt = 3 * math.sin(phase) * self.swim_direction
-        if skill == 'whale_suction':
-            tilt = 0
-        elif skill == 'rune_geyser':
-            tilt = -7 * math.sin(math.pi * age / self.CAST_MS[skill])
-        elif skill == 'ancient_pearl':
-            tilt = 4 * math.sin(age * .016)
-        sprite = art
-        faces_left = pose in ((0, 0), (1, 0))
-        if skill != 'whale_suction' and faces_left != (self.swim_direction < 0):
-            sprite = pygame.transform.flip(sprite, True, False)
-        sprite = pygame.transform.rotate(sprite, tilt)
+        action, period = self.ANIMATION[skill]
+        elapsed = max(0, age if skill else now - self.breath_start_time)
+        tick = min(period - 1, elapsed) if self.swallowing else elapsed % period
+        frame = tick * 8 // period
+        atlas = image_asset('animations/bosses/anim_boss_ancient_whale.png')
+        if atlas is None:
+            art = image_asset(self.sprite_asset, (height, height))
+            if art is None:
+                super().draw(surf)
+                return
+        else:
+            edge = atlas.get_width() // 8
+            art = atlas.subsurface((frame * edge, action * edge, edge, edge))
+            if edge != height:
+                art = pygame.transform.smoothscale(art, (height, height))
+        if skill == 'tidal_crescent' and self.swim_direction < 0:
+            art = pygame.transform.flip(art, True, False)
+        elif not skill:
+            turn = min(1, max(0, (now - self.swim_turn_at) / 420))
+            tilt = -7 * self.swim_direction * math.cos(math.pi * turn)
+            art = pygame.transform.rotate(art, tilt)
         center = self.x, self.y + self.h / 2
-        _blit(surf, sprite, center, tuple(side / scale for side in sprite.get_size()))
-        if skill == 'whale_suction':
+        _blit(surf, art, center, tuple(side / scale for side in art.get_size()))
+        if skill in ('whale_suction', 'whale_swallow'):
             mouth_y = self.y + self.h * .81
             for i in range(3):
                 progress = (i / 3 - age / 520) % 1
@@ -798,7 +804,10 @@ class AncientWhaleBoss(AbyssBoss):
             color = {'tidal_crescent': (77, 200, 250),
                      'rune_geyser': (131, 181, 255), 'ancient_pearl': (255, 220, 140)}[skill]
             pulse = .5 + .5 * math.sin(age * .012)
-            mouth = self.x, self.y + self.h * .81
+            mouth_offset = {'tidal_crescent': (.055 * self.swim_direction, .67),
+                            'rune_geyser': (0, .56), 'ancient_pearl': (0, .73)}
+            x, y = mouth_offset[skill]
+            mouth = self.x + self.h * x, self.y + self.h * y
             Draw.circle(surf, color, mouth, max(3, round(self.h * (.04 + .075 * pulse))), 2)
             Draw.circle(surf, color, mouth, max(2, round(self.h * .02)))
 
@@ -807,45 +816,33 @@ class AncientWhaleBoss(AbyssBoss):
         width, height = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
         strength = min(1, age / 1200)
         layer = effect_layer(surf, (width, height))
-        for i in range(12):
-            angle = i * math.tau / 12
+        for i in range(8):
+            angle = i * math.tau / 8
             dx, dy = width * math.cos(angle), height * math.sin(angle)
-            phase = age * .009 + i * 1.8
-            left_edge, right_edge = [], []
-            for j in range(16):
-                t = j / 15
-                curl = .16 * t * math.sin(phase - 7 * t)
+            phase = age * .006 + i * 1.8
+            edges = [[], []]
+            centerline = []
+            for j in range(20):
+                t = j / 19
+                curl = .15 * t * math.sin(phase - 6 * t)
                 x = self.x + dx * t - dy * curl
                 y = mouth_y + dy * t + dx * curl
-                half = 2 + (10 + 24 * strength) * t
-                left_edge.append((x - half * math.sin(angle), y + half * math.cos(angle)))
-                right_edge.append((x + half * math.sin(angle), y - half * math.cos(angle)))
-            Draw.polygon(layer, (63, 197, 241, 36 + i % 3 * 16), left_edge + right_edge[::-1])
+                centerline.append(pygame.Vector2(x, y))
+                half = (4 + 13 * strength) * t
+                for side, edge in zip((-1, 1), edges):
+                    edge.append((x + side * half * math.sin(angle), y - side * half * math.cos(angle)))
+            Draw.polygon(layer, (69, 189, 218, 39 + i % 3 * 10), edges[0] + edges[1][::-1])
+            for offset in (0, .38, .76):
+                travel = (offset + i * .23 - age / (1050 - strength * 290)) % 1
+                position = travel * 19
+                index = min(18, int(position))
+                head = centerline[index].lerp(centerline[index + 1], position - index)
+                trail = [head, *centerline[index + 1:min(20, index + 4)]]
+                Draw.lines(layer, (163, 231, 244, round(100 + 60 * (1 - travel))),
+                           False, trail, max(1, round(1 + travel)))
+                Draw.circle(layer, (198, 243, 253, 125), head, max(2, round(4 * travel)), 1)
         blit_effect(surf, layer, (0, 0))
-        for i in range(48):
-            angle = i * math.tau / 48
-            dx, dy = width * math.cos(angle), height * math.sin(angle)
-            period = (650 + i % 9 * 53) / (1 + .45 * strength)
-            progress = (i * .381 - age / period) % 1
-            points = []
-            for j in range(7):
-                t = min(1, progress + j * (.018 + strength * .014))
-                curl = .15 * t * math.sin(t * 9 - age * .009 + i)
-                points.append((self.x + dx * t - dy * curl, mouth_y + dy * t + dx * curl))
-            Draw.lines(surf, (25, 105, 145), False, points, 7 + i % 5)
-            Draw.lines(surf, (65, 184, 218), False, points, 4 + i % 3)
-            Draw.lines(surf, (185, 247, 255), False, points[:4], 2)
-            radius = max(2, round((4 + i % 8) * (.55 + progress)))
-            Draw.circle(surf, (95, 200, 230), points[0], radius, 2)
-            x, y = points[0]
-            Draw.circle(surf, (220, 255, 255), (x - radius / 3, y - radius / 3), 2)
-        depth = height - mouth_y
-        for i in range(5):
-            t = (i / 5 - age / 1250) % 1
-            radius = self.w * (.08 + .55 * t)
-            points = [(self.x + radius * math.cos(a), mouth_y + depth * .43 * t + radius * .25 * math.sin(a))
-                      for a in (j * math.tau / 24 + age * .004 for j in range(20))]
-            Draw.lines(surf, (72, 192, 220), False, points, 3)
+        draw_glow(surf, (round(self.x), round(mouth_y)), max(8, round(self.w * .24)), (104, 216, 237), 90)
 
     def _skill_shots(self, skill, player_x, player_y):
         left, right = config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT

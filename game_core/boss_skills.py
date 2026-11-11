@@ -6,8 +6,9 @@ import pygame
 
 from . import config
 from .asset_loader import image_asset, scale_surface_cached
-from .render import Draw, RenderSurface
+from .render import Draw, RenderSurface, blit_effect, effect_layer
 from .sprites import blit_lit_sprite
+from .visuals import draw_glow
 
 
 CLAW_DROP_MS = 990
@@ -223,7 +224,7 @@ class BossSignature:
         if self.key == 'boss_lobster':
             for i, (x, y, radius) in enumerate(self._claws(age)):
                 if age < 0:
-                    Draw.line(surface, (*self.color, 95), (x, y), (x, self.bottom), 1)
+                    _draw_drop_warning(surface, x, y, self.bottom, self.color)
                 _draw_claw(surface, x, y, i)
         elif self.key == 'boss_crab':
             if age >= 0:
@@ -250,13 +251,10 @@ class BossSignature:
                 x, y = boss.x, boss.y + boss.h * .65
                 flash_age = now - self.next_fireball_at + 400
                 flash = 1 - _clamp(flash_age / 100, 0, 1)
-                spread = 6 + 8 * (1 - flash)
-                alpha = round(80 + 145 * flash)
-                for side in (-1, 1):
-                    Draw.line(surface, (255, 111, 41, alpha), (x + side * 4, y + 2),
-                              (x + side * spread, y + spread), 2)
-                Draw.circle(surface, (255, 224, 142, alpha), (round(x), round(y + 3)),
-                            2 + round(2 * flash))
+                draw_glow(surface, (round(x), round(y + 4)), round(10 + 10 * flash),
+                          (255, 132, 60), round(55 + 145 * flash))
+                if flash > 0:
+                    Draw.circle(surface, (255, 225, 156), (round(x), round(y + 4)), round(2 + 2 * flash))
         elif age < 0:
             _ripples(surface, boss.x, boss.y + boss.h * .8, boss.w * .30, self.color, phase)
         elif self.chasing:
@@ -266,8 +264,10 @@ class BossSignature:
                 for i in range(4):
                     travel = (phase + i / 4) % 1
                     dx, dy = side * 18 * travel, -40 * travel
-                    Draw.line(surface, (185, 224, 239, round(145 * (1 - travel))),
-                              (x + dx, y + dy), (x + dx + side * 9, y + dy - 15), 2)
+                    origin = x + dx, y + dy
+                    Draw.polygon(surface, (106, 172, 198),
+                                 (origin, (origin[0] + side * 8, origin[1] - 3),
+                                  (origin[0] + side * 18, origin[1] - 24)))
 
     def draw_bite(self, surface, boss):
         if not self.chasing:
@@ -276,7 +276,7 @@ class BossSignature:
         if image is None:
             return False
         blit_lit_sprite(surface, image, (boss.x - image.get_width() / 2,
-                                        boss.y - boss.h * .22), (130, 189, 207), 155,
+                                        boss.y - boss.h * .22), (130, 189, 207), 84,
                         source='effects/boss_bite.png')
         return True
 
@@ -345,24 +345,37 @@ def draw_bubble_crab(surface, x, y, size, color, now):
 
 
 def _draw_bubble(surface, x, y, radius, now, tint):
-    center = (round(x), round(y))
-    bounds = (x - radius, y - radius, 2 * radius, 2 * radius)
-    Draw.circle(surface, (*tint, 49), center, radius)
-    Draw.circle(surface, (35, 18, 50, 235), center, radius, 4)
-    Draw.circle(surface, (*tint, 216), center, radius - 2, 2)
-    for color, start, width in (((*tint, 218), .32, 3),
-                                ((255, 245, 248, 235), 1.66, 2)):
-        Draw.arc(surface, color, bounds, start, start + 2.1, width)
-    Draw.ellipse(surface, (255, 248, 246, 222), (x - 25, y - 29, 19, 8))
-    Draw.circle(surface, (255, 248, 246, 206), (round(x - 28), round(y - 19)), 3)
-    for i in range(4):
-        phase = (now * .002 + i / 4) % 1
-        Draw.circle(surface, (*tint, 155), (x + (i - 1.5) * 13, y + 27 - 53 * phase), 2 + i % 2, 1)
+    name = 'rose' if tint == CRAB_BUBBLE_COLORS[0] else 'gold'
+    source = image_asset(f'effects/orochi_bubble_{name}.png')
+    diameter = round(radius * 2)
+    if source is not None:
+        _blit_art(surface, _bubble_shell(source), (round(x - radius), round(y - radius)), (diameter, diameter))
+    else:
+        Draw.circle(surface, tint, (round(x), round(y)), round(radius), 2)
+
+
+@lru_cache(maxsize=4)
+def _bubble_shell(source):
+    shell = source.copy()
+    shell.set_alpha(145)
+    return shell
+
+
+def _draw_drop_warning(surface, x, y, bottom, color):
+    height = round(bottom - y)
+    if height <= 0:
+        return
+    lane = effect_layer(surface, (18, height))
+    Draw.polygon(lane, (*color, 46), ((9, 0), (18, height), (0, height)))
+    Draw.line(lane, (*color, 135), (9, 0), (9, height), 1)
+    blit_effect(surface, lane, (round(x - 9), round(y)))
 
 
 def _draw_tentacle(surface, points):
     left, right = [], []
     for i, (x, y, width) in enumerate(points):
+        if i == 0:
+            width *= .55
         a = points[max(0, i - 1)]
         b = points[min(len(points) - 1, i + 1)]
         dx, dy = b[0] - a[0], b[1] - a[1]
@@ -371,16 +384,22 @@ def _draw_tentacle(surface, points):
         left.append((x + nx * width, y + ny * width))
         right.append((x - nx * width, y - ny * width))
     outline = left + right[::-1]
-    Draw.polygon(surface, (115, 57, 163), outline)
-    center = [(x, y) for x, y, _ in points]
-    Draw.polygon(surface, (177, 104, 222), left + center[::-1])
-    Draw.lines(surface, (41, 19, 64), True, outline, 2)
-    for i, (x, y, width) in enumerate(points[1:-1], 1):
+    Draw.polygon(surface, (94, 39, 116), outline)
+    for fraction, color in ((.78, (135, 62, 151)), (.48, (166, 83, 165)),
+                            (.24, (195, 113, 182))):
+        edge = [(x + (lx - x) * fraction, y + (ly - y) * fraction)
+                for (x, y, _), (lx, ly) in zip(points, left)]
+        inner = [(x + (rx - x) * fraction * .22, y + (ry - y) * fraction * .22)
+                 for (x, y, _), (rx, ry) in zip(points, right)]
+        Draw.polygon(surface, color, edge + inner[::-1])
+    Draw.lines(surface, (54, 24, 72), True, outline, 2)
+    for i in range(2, len(points) - 2, 2):
+        x, y, width = points[i]
         rx, ry = right[i]
         x, y = (x + rx) / 2, (y + ry) / 2
         r = max(2, width * .28)
-        Draw.ellipse(surface, (255, 163, 218), (x - r, y - r * .8, 2 * r, 1.6 * r))
-        Draw.ellipse(surface, (177, 72, 156), (x - r * .54, y - r * .37, r * 1.08, r * .74))
+        Draw.ellipse(surface, (232, 148, 201), (x - r, y - r * .8, 2 * r, 1.6 * r))
+        Draw.ellipse(surface, (124, 49, 128), (x - r * .54, y - r * .37, r * 1.08, r * .74))
 
 
 @lru_cache(maxsize=2)
@@ -403,7 +422,7 @@ def _draw_trident(surface, x, y, red):
         width = _clamp(round(image.get_width() * 100 / image.get_height()), 35, 52)
         left = round(x - width / 2)
         top = round(y + 37 - 100)
-        Draw.line(surface, (*metal, 115), (x, top + 4), (x, top - 19), 3)
+        _draw_drop_warning(surface, x, top - 28, top + 4, metal)
         _blit_art(surface, image, (left, top), (width, 100))
         return
     shadow = (116, 33, 35) if red else (153, 96, 25)

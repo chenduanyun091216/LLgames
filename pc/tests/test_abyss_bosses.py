@@ -73,6 +73,28 @@ class AbyssBossTests(unittest.TestCase):
                 boss.attack(60000, 480)
                 self.assertEqual(boss.current_skill, cls.SKILLS[0])
 
+    def test_whale_draws_all_eight_frames_for_each_motion(self):
+        boss = self.boss(AncientWhaleBoss)
+        boss.breath_start_time = boss.skill_started_at = 1000
+        surface = pygame.Surface((1, 1))
+        for skill, (_, period) in boss.ANIMATION.items():
+            with self.subTest(skill=skill), patch.object(boss, '_draw_suction'), \
+                    patch('game_core.abyss_bosses._blit') as blit:
+                boss.current_skill = skill
+                frames = set()
+                for frame in range(8):
+                    now = 1000 + math.ceil(frame * period / 8)
+                    with patch.object(config, 'game_ticks', return_value=now):
+                        boss.draw(surface)
+                    frames.add(pygame.image.tobytes(blit.call_args.args[1], 'RGBA'))
+                self.assertEqual(len(frames), 8)
+                last_frame = blit.call_args.args[1]
+                with patch.object(config, 'game_ticks', return_value=1000 + period):
+                    boss.draw(surface)
+                if skill == 'whale_swallow':
+                    self.assertEqual(pygame.image.tobytes(blit.call_args.args[1], 'RGBA'),
+                                     pygame.image.tobytes(last_frame, 'RGBA'))
+
     def test_whale_rain_has_a_moving_center_gap(self):
         boss = self.boss(AncientWhaleBoss)
         shots = boss.attack(1000, 480)

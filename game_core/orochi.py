@@ -8,7 +8,7 @@ import pygame
 from . import asset_loader, config
 from .asset_loader import image_asset, scale_surface_cached
 from .boss_skills import circle_hits_rect
-from .entities import Boss, BossProjectile, Enemy
+from .entities import Boss, BossProjectile, Enemy, Particle
 from .render import Draw, RenderSurface, blit_effect, effect_layer
 from .sounds import play_sound
 from .sprites import blit_lit_sprite
@@ -41,9 +41,13 @@ def _turn_fireball(sprite, angle):
     return pygame.transform.rotate(sprite, angle)
 
 
-@lru_cache(maxsize=16)
-def _turn_collar(art, angle):
-    return pygame.transform.rotate(art, angle)
+@lru_cache(maxsize=3)
+def _gold_fireball(art):
+    gold = art.copy()
+    highlights = pygame.transform.grayscale(art)
+    highlights.fill((0, 140, 0), special_flags=pygame.BLEND_RGB_MULT)
+    gold.blit(highlights, (0, 0), special_flags=pygame.BLEND_RGB_ADD)
+    return gold
 
 
 class OrochiFireball(BossProjectile):
@@ -82,12 +86,16 @@ class OrochiFireball(BossProjectile):
 class OrochiBoss(Boss):
     SKILLS = ('volley', 'slam', 'split', 'laser')
     FIRE_COLORS = ((255, 58, 43), (255, 211, 41))
-    HEAD_MOUTHS = ((.045, .66), (.13, .49), (.13, .32), (.30, .22),
-                   (.70, .20), (.87, .35), (.86, .51), (.96, .67))
-    HEAD_CENTERS = ((.068, .626), (.158, .452), (.154, .275), (.326, .159),
-                    (.665, .149), (.851, .273), (.829, .453), (.945, .628))
-    COLLAR_POSES = ((.133, .62, -32), (.227, .461, -22), (.227, .293, -19), (.407, .168, 12),
-                    (.592, .175, -12), (.777, .300, 19), (.768, .466, 22), (.869, .625, 32))
+    # Normalized landmarks on the lava-serpent master, in left-to-right attack order.
+    HEAD_MOUTHS = ((.078, .658), (.094, .425), (.232, .239), (.518, .604),
+                   (.739, .180), (.852, .363), (.821, .559), (.937, .748))
+    HEAD_CENTERS = ((.103, .615), (.117, .378), (.246, .184), (.514, .473),
+                    (.713, .136), (.832, .323), (.804, .522), (.913, .707))
+    BUBBLE_ANCHORS = ((.095, .458), (.113, .220), (.246, .020), (.513, .145),
+                      (.709, -.025), (.849, .152), (.810, .368), (.919, .543))
+    BUBBLE_COLORS = ((95, 204, 255), (182, 143, 255), (255, 161, 90), (255, 105, 133),
+                     (90, 234, 202), (255, 216, 101), (139, 158, 255), (255, 150, 218))
+    BUBBLE_NAMES = ('sky-blue', 'lavender', 'amber', 'rose', 'mint', 'gold', 'indigo', 'orchid')
     IDLE_COLUMNS = 6
     IDLE_ROWS = 4
     IDLE_STEP = 80
@@ -95,6 +103,9 @@ class OrochiBoss(Boss):
     # The original 624×432 cell has 24 pixels of padding on each side.
     IDLE_ART_SIZE = (624, 432)
     IDLE_PADDING = 24
+    SPLIT_COLUMNS = 4
+    SPLIT_ROWS = 3
+    SPLIT_STEP = 55
     SLAM_ROUND = 1350
     SLAM_IMPACT = 900
     SLAM_FALL_MS = 190
@@ -124,14 +135,13 @@ class OrochiBoss(Boss):
         self.shots = []
         self.impacts = []
         self.head_hp = []
+        self.bubble_breaks = []
         self.storm_thresholds = [.5, .01]
         self.final_storm = False
         self.invincible_until = 0
         self.death_at = None
         self.death_particles = ()
         self.hazard_hit = None
-        self.hit_flashes = []
-        self.last_head_hit_sound = -1000
         self._load_artwork()
 
     def _load_artwork(self):
@@ -139,13 +149,11 @@ class OrochiBoss(Boss):
         self.idle_frames = self._load_idle_frames()
         self.slam_art = _load_art('bosses/boss_orochi_slam.png')
         self.laser_art = _load_art('bosses/boss_orochi_laser.png')
-        self.split_art = _load_art('bosses/boss_orochi_split.png')
-        self.collar_art = _load_art('effects/orochi_neck_collar.png')
+        split_sheet = image_asset('animations/bosses/anim_boss_orochi_split.png')
+        self.split_frames = self._slice_sheet(split_sheet, self.SPLIT_COLUMNS, self.SPLIT_ROWS) if split_sheet else ()
+        self.bubble_art = tuple(image_asset(f'effects/orochi_bubble_{name}.png') for name in self.BUBBLE_NAMES)
         self.fire_art = _load_art('effects/orochi_fireball.png')
-        self.gold_fire_art = None
-        if self.fire_art is not None:
-            self.gold_fire_art = self.fire_art.copy()
-            self.gold_fire_art.fill((0, 138, 10), special_flags=pygame.BLEND_RGB_ADD)
+        self.gold_fire_art = _gold_fireball(self.fire_art) if self.fire_art is not None else None
 
     def should_attack(self, now):
         return (self.entered and self.skill is None and self.death_at is None
@@ -181,6 +189,7 @@ class OrochiBoss(Boss):
             self.split_target = (self._center_x(), config.GAME_AREA_BOTTOM * .7)
         if skill == 'storm':
             self.head_hp = [self.max_hp * self.STORM_HEAD_HP_RATIO] * len(self.HEAD_CENTERS)
+            self.bubble_breaks = []
             self.storm_target = None
             self.storm_warning_age = 0
 
@@ -207,15 +216,15 @@ class OrochiBoss(Boss):
         sheet = image_asset('animations/bosses/anim_boss_orochi_idle.png')
         if sheet is None:
             return ()
-        return cls._slice_idle_sheet(sheet)
+        return cls._slice_sheet(sheet, cls.IDLE_COLUMNS, cls.IDLE_ROWS)
 
-    @classmethod
-    @lru_cache(maxsize=2)
-    def _slice_idle_sheet(cls, sheet):
-        width = sheet.get_width() // cls.IDLE_COLUMNS
-        height = sheet.get_height() // cls.IDLE_ROWS
+    @staticmethod
+    @lru_cache(maxsize=6)
+    def _slice_sheet(sheet, columns, rows):
+        width = sheet.get_width() // columns
+        height = sheet.get_height() // rows
         return tuple(sheet.subsurface((col * width, row * height, width, height))
-                     for row in range(cls.IDLE_ROWS) for col in range(cls.IDLE_COLUMNS))
+                     for row in range(rows) for col in range(columns))
 
     def _idle_index(self, now):
         return (now - self.spawned_at) % self.IDLE_PERIOD // self.IDLE_STEP
@@ -228,7 +237,7 @@ class OrochiBoss(Boss):
         """Normalized mesh displacement, shared by the baked poses and mouth anchors."""
         phase = math.tau * frame / (cls.IDLE_COLUMNS * cls.IDLE_ROWS)
         # The bottom of each neck is anchored where it meets the coil.
-        weight = max(0, min(1, (.745 - y) / .135))
+        weight = max(0, min(1, (.825 - y) / .115))
         weight = weight * weight * (3 - 2 * weight)
         dx = dy = total = 0
         for i, (cx, cy) in enumerate(cls.HEAD_CENTERS):
@@ -261,6 +270,9 @@ class OrochiBoss(Boss):
 
     def update(self, target_x=None, target_y=None):
         now = config.game_ticks()
+        for particles in self.bubble_breaks:
+            particles.update()
+        self.bubble_breaks = [particles for particles in self.bubble_breaks if not particles.is_dead()]
         if self.death_at is not None:
             return
         if self.skill is None:
@@ -407,10 +419,12 @@ class OrochiBoss(Boss):
         return pygame.Rect(round(self.x - width / 2), round(self.y + (self.h - height) / 2), width, height)
 
     def head_rect(self, index):
+        """Damage target of the bubble above this head during the storm."""
         body = self._body_art_rect()
-        x, y = self.HEAD_CENTERS[index]
-        rect = pygame.Rect(0, 0, round(body.w * .123), round(body.h * .155))
-        rect.center = (round(body.x + x * body.w), round(body.y + y * body.h))
+        x, y = self.BUBBLE_ANCHORS[index]
+        diameter = max(16, round(body.w * .12))
+        rect = pygame.Rect(0, 0, diameter, diameter)
+        rect.center = (round(body.x + x * body.w), max(diameter // 2, round(body.y + y * body.h)))
         return rect
 
     def _active_heads(self, now):
@@ -443,14 +457,6 @@ class OrochiBoss(Boss):
         rect = self.lightning_hitbox(x, y)
         return rect.center if rect else (self.x, self.y + self.h // 2)
 
-    def _hit_flash(self, rect, hit_rect, now, head=False):
-        point = rect.clip(hit_rect).center if hit_rect is not None and rect.colliderect(hit_rect) else rect.center
-        self.hit_flashes = [flash for flash in self.hit_flashes if now - flash[2] < 180][-11:]
-        self.hit_flashes.append((*point, now))
-        if head and now - self.last_head_hit_sound >= 100:
-            play_sound('hit')
-            self.last_head_hit_sound = now
-
     def hit_by(self, weapon_name, amount=1.0, source='skill', hit_rect=None):
         now = config.game_ticks()
         if amount <= 0 or self.death_at is not None or now < self.invincible_until:
@@ -460,7 +466,7 @@ class OrochiBoss(Boss):
                 return
             for i, (x, y) in enumerate(self.split_positions()):
                 if self.split_hp[i] > 0 and hit_rect.colliderect(self._snake_rect(x, y)):
-                    self._hit_flash(self._snake_rect(x, y), hit_rect, now, head=True)
+                    self._hit_feedback(hit_rect, now, hitbox=self._snake_rect(x, y))
                     self.split_hp[i] = max(0, self.split_hp[i] - amount)
                     if 0 < self.split_hp[i] <= self.head_max_hp * .3 and not self.split_charged[i]:
                         dx, dy = self.split_target[0] - x, self.split_target[1] - y
@@ -477,9 +483,12 @@ class OrochiBoss(Boss):
                 return
             for i, rect in self._active_heads(now):
                 if hit_rect.colliderect(rect):
-                    self._hit_flash(rect, hit_rect, now, head=True)
+                    self._hit_feedback(hit_rect, now, hitbox=rect)
                     remaining = self.head_hp[i] - amount
                     self.head_hp[i] = remaining if remaining > 1e-9 else 0
+                    if not self.head_hp[i]:
+                        self.bubble_breaks.append(Particle(*rect.center, self.BUBBLE_COLORS[i], 18))
+                        self.bubble_breaks.append(Particle(*rect.center, (255, 235, 248), 5))
                     if not any(self.head_hp):
                         if self.final_storm:
                             self._start_death(now)
@@ -489,8 +498,6 @@ class OrochiBoss(Boss):
             return
         if self.y < Enemy.ENTRY_DAMAGE_Y:
             return
-        hitbox = next((rect for rect in self.hitboxes() if hit_rect and rect.colliderect(hit_rect)), self.rect())
-        self._hit_flash(hitbox, hit_rect, now)
         super().hit_by(weapon_name, amount, source, hit_rect)
         if self.storm_thresholds and self.hp <= self.max_hp * self.storm_thresholds[0]:
             threshold = self.storm_thresholds.pop(0)
@@ -628,9 +635,9 @@ class OrochiBoss(Boss):
         x, y = head.centerx, head.top + 8
         length = round(head.h * 1.8)
         half = head.w / 2
-        for scale, color in ((1, (26, 128, 97, 80)), (.84, (32, 182, 127, 110)),
-                             (.65, (60, 224, 160, 145)), (.42, (134, 250, 192, 180)),
-                             (.19, (222, 255, 222, 225))):
+        for scale, color in ((1, (146, 33, 31, 80)), (.84, (207, 48, 29, 110)),
+                             (.65, (255, 94, 33, 145)), (.42, (255, 163, 64, 180)),
+                             (.19, (255, 230, 170, 225))):
             width = half * scale
             points = [(x - width, y), (x - width * .76, y - length * .25),
                       (x - width * .33, y - length * .62), (x, y - length),
@@ -641,7 +648,7 @@ class OrochiBoss(Boss):
             drift = (elapsed * 4 + i * 31) % length
             side = 1 if i % 2 else -1
             px = x + side * half * (1 - drift / length)
-            Draw.line(surf, (185, 255, 219, 170), (px, y - drift), (px, y - drift - 13), 2)
+            Draw.line(surf, (255, 211, 140, 170), (px, y - drift), (px, y - drift - 13), 2)
 
     def _draw_idle(self, surf, now):
         art = self._idle_frame(now)
@@ -667,17 +674,33 @@ class OrochiBoss(Boss):
         body = self._body_art_rect()
         _blit_art(surf, art or self.surface, body)
         for i, rect in self._active_heads(now):
-            x, y, angle = self.COLLAR_POSES[i]
-            center = (round(body.x + body.w * x), round(body.y + body.h * y))
+            art = self.bubble_art[i]
+            if art is not None:
+                _blit_art(surf, art, rect)
+            radius = rect.w // 2
+            bubble = effect_layer(surf, rect.size)
+            if art is None:
+                Draw.circle(bubble, (*self.BUBBLE_COLORS[i], 150), (radius, radius), radius)
+                Draw.circle(bubble, (*self.BUBBLE_COLORS[i], 255), (radius, radius), radius, 2)
             ratio = self.head_hp[i] / (self.max_hp * self.STORM_HEAD_HP_RATIO)
-            glow = round((.7 + .3 * math.sin(now * .012 + i)) * (110 + 100 * ratio))
-            draw_glow(surf, center, max(5, rect.w // 2), (117, 188, 255), glow)
-            if self.collar_art is not None:
-                collar_art = _turn_collar(self.collar_art, angle)
-                scale = rect.w * 1.32 / self.collar_art.get_width()
-                collar = pygame.Rect((0, 0), tuple(max(1, round(size * scale)) for size in collar_art.get_size()))
-                collar.center = center
-                _blit_art(surf, collar_art, collar)
+            if ratio < .75:
+                Draw.lines(bubble, (98, 76, 121, 185), False,
+                           ((rect.w - 3, radius // 2), (radius + 2, radius - 2),
+                            (radius + 3, radius + 1), (radius - 1, radius + 3)))
+            if ratio < .35:
+                Draw.lines(bubble, (98, 76, 121, 185), False,
+                           ((radius + 3, radius + 1), (radius + 4, radius + 4),
+                            (radius + 2, rect.h - 3)))
+            blit_effect(surf, bubble, rect.topleft)
+
+    def _draw_bubble_breaks(self, surf, now):
+        for particles in self.bubble_breaks:
+            particles.draw(surf)
+
+    def _draw_split_snake(self, surf, index, age, rect):
+        frames = self.split_frames
+        art = frames[(age // self.SPLIT_STEP + index * 3) % len(frames)] if frames else None
+        self._draw_skill_sprite(surf, art, rect)
 
     def draw(self, surf):
         if self._hd_artwork != asset_loader.web_hd_assets:
@@ -698,11 +721,12 @@ class OrochiBoss(Boss):
                 progress = min(1, (now - self.split_regroup_at) / 900)
                 for i, (x, y) in enumerate(self.split_positions()):
                     tx, ty = self._mouth(i, now)
-                    self._draw_skill_sprite(surf, self.split_art, self._snake_rect(x + (tx - x) * progress, y + (ty - y) * progress))
+                    rect = self._snake_rect(x + (tx - x) * progress, y + (ty - y) * progress)
+                    self._draw_split_snake(surf, i, age, rect)
             else:
-                for hp, (x, y) in zip(self.split_hp, self.split_positions()):
+                for i, (hp, (x, y)) in enumerate(zip(self.split_hp, self.split_positions())):
                     if hp > 0:
-                        self._draw_skill_sprite(surf, self.split_art, self._snake_rect(x, y))
+                        self._draw_split_snake(surf, i, age, self._snake_rect(x, y))
         elif self.skill == 'laser':
             heads = self._laser_head_rects(age)
             small = max(22, heads[0].w * 2 // 3)
@@ -739,12 +763,4 @@ class OrochiBoss(Boss):
             self._draw_slam(surf, age)
         else:
             self._draw_idle(surf, now)
-        self.hit_flashes = [flash for flash in self.hit_flashes if now - flash[2] < 180]
-        for x, y, at in self.hit_flashes:
-            progress = max(0, (now - at) / 180)
-            radius = round(5 + progress * 9)
-            alpha = round(255 * (1 - progress))
-            Draw.circle(surf, (255, 145, 55, alpha), (x, y), radius, 2)
-            Draw.line(surf, (255, 245, 200, alpha), (x - radius, y), (x + radius, y), 2)
-            Draw.line(surf, (255, 245, 200, alpha), (x, y - radius), (x, y + radius), 2)
-
+        self._draw_bubble_breaks(surf, now)

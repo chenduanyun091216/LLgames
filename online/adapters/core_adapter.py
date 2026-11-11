@@ -18,6 +18,7 @@ from game_core import config
 from game_core import game as core_game
 from game_core import orochi as core_orochi
 from game_core import special_bosses as core_special_bosses
+from game_core import entities as core_entities
 from game_core.game import Game, GameState, CONTACT_DAMAGE_COOLDOWN
 from game_core.entities import Player
 from game_core.boss_skills import BossSignature
@@ -118,15 +119,15 @@ class OnlineGame(Game):
         # Online runs a single synchronous world in its own process. Capture the
         # original core's sound calls as events, restore the binding before any
         # await, and let each browser play each event once. No core file changes.
-        original = core_game.play_sound, core_orochi.play_sound, core_special_bosses.play_sound
+        original = core_game.play_sound, core_orochi.play_sound, core_special_bosses.play_sound, core_entities.play_sound
         def capture(key):
             self._event_id += 1
             self._events.append({'id': self._event_id, 'type': 'sound', 'key': key})
-        core_game.play_sound = core_orochi.play_sound = core_special_bosses.play_sound = capture
+        core_game.play_sound = core_orochi.play_sound = core_special_bosses.play_sound = core_entities.play_sound = capture
         try:
             yield
         finally:
-            core_game.play_sound, core_orochi.play_sound, core_special_bosses.play_sound = original
+            core_game.play_sound, core_orochi.play_sound, core_special_bosses.play_sound, core_entities.play_sound = original
 
     @property
     def all_players(self):
