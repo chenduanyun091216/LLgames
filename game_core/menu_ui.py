@@ -40,7 +40,7 @@ SKILL_DESCRIPTIONS = {
     ),
     'radiation': (
         ('闪电链', 'lightning', '电击附近多个目标。'),
-        ('磁暴', 'magnetic_storm', '吸收可拦截的弹幕，再爆发造成范围伤害。'),
+        ('磁暴', 'magnetic_storm', '吸附可拦截的弹幕，随后爆发范围伤害。'),
         ('辐射激光', 'radiation_laser', '向上发射持续光束，再次触发可横扫。'),
         ('飞镖护盾', 'dart_shield', '飞镖环绕拦截子弹，结束后向外飞出。'),
     ),
@@ -136,7 +136,8 @@ def campaign_rects(game):
     landscape = config.MOBILE_LANDSCAPE_VIEW
     margin, gap = (24, 8) if landscape else (16, 7)
     inner = w - margin * 2
-    rects = {'home': pygame.Rect(margin, 12, 82, 40),
+    home_x = margin if game.desktop_controls else max(margin, 66)
+    rects = {'home': pygame.Rect(home_x, 12, 82, 40),
              'shop': pygame.Rect(w - margin - 86, 12, 86, 40)}
     for index, (key, _) in enumerate(DIFFICULTIES):
         rects[key] = pygame.Rect(w - margin - 238 + index * 80, 64, 78, 38)
@@ -196,7 +197,8 @@ def draw_campaign(game):
     game._draw_scrim(251, PAPER)
     _button(game, rects['home'], '← 首页')
     _button(game, rects['shop'], '商店')
-    _text(game, '战役选关', pygame.Rect(rects['home'].x, 64, w - 280, 38), font=game.font_med)
+    margin = rects['detail'].x if not config.MOBILE_LANDSCAPE_VIEW else rects['level:1'].x
+    _text(game, '战役选关', pygame.Rect(margin, 64, w - 280, 38), font=game.font_med)
     for key, label in DIFFICULTIES:
         _button(game, rects[key], label, active=game.selected_difficulty == key, radius=19)
     for level, info in enumerate(config.LEVEL_CONFIGS, 1):
@@ -280,7 +282,7 @@ def _draw_skills(game, key, rect):
         text_w = x + cell_w - text_x
         _text(game, name, pygame.Rect(text_x, y, text_w, 18), font=game.font_tiny, color=ACCENT)
         for line_index, line in enumerate(wrap(description, width=max(5, text_w // 15))):
-            _text(game, line, pygame.Rect(text_x, y + 18 + line_index * 14, text_w, 15),
+            _text(game, line, pygame.Rect(text_x, y + 18 + line_index * 16, text_w, 15),
                   font=game.font_tiny, color=MUTED)
 
 

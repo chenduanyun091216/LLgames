@@ -334,6 +334,7 @@ class DesktopGameTests(unittest.TestCase):
             event = pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)
             self.assertTrue(game.handle_events([event]))
 
+        press(pygame.K_RETURN)
         press(pygame.K_4)
         self.assertTrue(game.infinite_mode)
         press(pygame.K_F2)

@@ -1,0 +1,12 @@
+{
+  "name": "ttgames-phaser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "python3 tools/build.py",
+    "start": "python3 -m http.server 8010 --bind 127.0.0.1 --directory dist",
+    "start:https": "python3 tools/serve_https.py",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": { "phaser": "3.90.0" }
+}
