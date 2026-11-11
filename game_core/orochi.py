@@ -7,9 +7,11 @@ import pygame
 
 from . import asset_loader, config
 from .asset_loader import image_asset, scale_surface_cached
+from .boss_skills import circle_hits_rect
 from .entities import Boss, BossProjectile, Enemy
-from .render import Draw, RenderSurface
+from .render import Draw, RenderSurface, blit_effect, effect_layer
 from .sounds import play_sound
+from .sprites import blit_lit_sprite
 from .visuals import draw_electric_arc, draw_glow
 
 
@@ -27,9 +29,21 @@ def _blit_art(surf, art, rect):
 
 
 
+@lru_cache(maxsize=32)
+def _charged_sprite(art):
+    lit = art.copy()
+    lit.fill((58, 112, 163, 0), special_flags=pygame.BLEND_RGB_ADD)
+    return lit
+
+
 @lru_cache(maxsize=72)
 def _turn_fireball(sprite, angle):
     return pygame.transform.rotate(sprite, angle)
+
+
+@lru_cache(maxsize=16)
+def _turn_collar(art, angle):
+    return pygame.transform.rotate(art, angle)
 
 
 class OrochiFireball(BossProjectile):
@@ -72,6 +86,8 @@ class OrochiBoss(Boss):
                    (.70, .20), (.87, .35), (.86, .51), (.96, .67))
     HEAD_CENTERS = ((.068, .626), (.158, .452), (.154, .275), (.326, .159),
                     (.665, .149), (.851, .273), (.829, .453), (.945, .628))
+    COLLAR_POSES = ((.133, .62, -32), (.227, .461, -22), (.227, .293, -19), (.407, .168, 12),
+                    (.592, .175, -12), (.777, .300, 19), (.768, .466, 22), (.869, .625, 32))
     IDLE_COLUMNS = 6
     IDLE_ROWS = 4
     IDLE_STEP = 80
@@ -91,7 +107,10 @@ class OrochiBoss(Boss):
     LASER_WIDTH = 18
     STORM_DURATION = 10000
     HEAD_HP_RATIO = .03
-    THUNDER_INTERVAL = 1200
+    STORM_HEAD_HP_RATIO = .05
+    THUNDER_WARNING = 1000
+    THUNDER_INTERVAL = 1400
+    THUNDER_RADIUS = 50
     DEATH_DURATION = 1600
 
     def __init__(self, bdef, difficulty):
@@ -121,6 +140,7 @@ class OrochiBoss(Boss):
         self.slam_art = _load_art('bosses/boss_orochi_slam.png')
         self.laser_art = _load_art('bosses/boss_orochi_laser.png')
         self.split_art = _load_art('bosses/boss_orochi_split.png')
+        self.collar_art = _load_art('effects/orochi_neck_collar.png')
         self.fire_art = _load_art('effects/orochi_fireball.png')
         self.gold_fire_art = None
         if self.fire_art is not None:
@@ -130,7 +150,7 @@ class OrochiBoss(Boss):
     def should_attack(self, now):
         return (self.entered and self.skill is None and self.death_at is None
                 and now >= self.invincible_until
-                and (now - self.fight_start_time >= 5000 if self.opening_pending
+                and (now - self.fight_start_time >= config.BOSS_OPENING_DELAY_MS if self.opening_pending
                      else now - self.last_attack_time >= self.attack_interval))
 
     def attack(self, now, player_x):
@@ -160,7 +180,9 @@ class OrochiBoss(Boss):
             self.split_regroup_at = None
             self.split_target = (self._center_x(), config.GAME_AREA_BOTTOM * .7)
         if skill == 'storm':
-            self.head_hp = [self.head_max_hp] * len(self.HEAD_CENTERS)
+            self.head_hp = [self.max_hp * self.STORM_HEAD_HP_RATIO] * len(self.HEAD_CENTERS)
+            self.storm_target = None
+            self.storm_warning_age = 0
 
     @property
     def head_max_hp(self):
@@ -182,7 +204,7 @@ class OrochiBoss(Boss):
 
     @classmethod
     def _load_idle_frames(cls):
-        sheet = image_asset('animations/anim_boss_orochi_idle.png')
+        sheet = image_asset('animations/bosses/anim_boss_orochi_idle.png')
         if sheet is None:
             return ()
         return cls._slice_idle_sheet(sheet)
@@ -304,12 +326,16 @@ class OrochiBoss(Boss):
             self._finish_skill(now)
         elif self.skill == 'storm':
             if age >= self.STORM_DURATION:
-                surviving = sum(hp > 0 for hp in self.head_hp)
-                self.hp = min(self.max_hp, self.hp + surviving * self.head_max_hp)
+                self.hp = min(self.max_hp, self.hp + sum(self.head_hp))
                 self.invincible_until = now + 3000
                 self._finish_skill(now)
-            elif age // self.THUNDER_INTERVAL >= self.emitted:
-                self.emitted = age // self.THUNDER_INTERVAL + 1
+            elif target_x is not None and target_y is not None and (
+                    self.storm_target is None or age - self.storm_warning_age >= self.THUNDER_INTERVAL):
+                self.storm_target = (target_x, target_y)
+                self.storm_warning_age = age
+                self.emitted = 0
+            elif self.storm_target is not None and not self.emitted and age - self.storm_warning_age >= self.THUNDER_WARNING:
+                self.emitted = 1
                 play_sound('orochi_thunder')
 
     def _slam_pair(self, index):
@@ -334,7 +360,8 @@ class OrochiBoss(Boss):
     def _laser_head_rects(self, age):
         size = min(self.w // 2, 108, max(36, config.GAME_AREA_BOTTOM // 5))
         spacing = size * 1.15
-        shift = spacing * .35 * math.sin(age * .0035)
+        sweep = age + max(0, age - self.LASER_WARNING) * .6
+        shift = spacing * .35 * math.sin(sweep * .0035)
         return tuple(pygame.Rect(round(self._center_x() + shift + (i - 1) * spacing - size / 2),
                                  85, size, size) for i in range(3))
 
@@ -343,11 +370,22 @@ class OrochiBoss(Boss):
                  (head.centerx, config.SCREEN_HEIGHT)]
                 for head in self._laser_head_rects(age)]
 
+    def _laser_widths(self):
+        return self.LASER_WIDTH, self.LASER_WIDTH * 2, self.LASER_WIDTH
+
+    def hazard_strike(self, age):
+        if self.skill == 'storm':
+            return self.storm_warning_age
+        return age // (self.SLAM_ROUND if self.skill == 'slam' else 1000)
+
     def hazard_hits(self, rect, age):
         if self.skill == 'laser' and self.LASER_WARNING <= age < self.LASER_END:
-            expanded = rect.inflate(self.LASER_WIDTH, self.LASER_WIDTH)
-            return any(expanded.clipline(a, b) for path in self.laser_paths(age)
-                       for a, b in zip(path, path[1:]))
+            return any(rect.inflate(width, 0).clipline(*path)
+                       for path, width in zip(self.laser_paths(age), self._laser_widths()))
+        if self.skill == 'storm':
+            elapsed = age - self.storm_warning_age
+            return (self.storm_target is not None and self.THUNDER_WARNING <= elapsed < self.THUNDER_INTERVAL
+                    and circle_hits_rect(rect, *self.storm_target, self.THUNDER_RADIUS))
         if self.skill == 'slam':
             if rect.collidelist(self._slam_rects(age)) >= 0:
                 return True
@@ -490,31 +528,48 @@ class OrochiBoss(Boss):
             Draw.ellipse(surf, (32, 159, 105), rect)
             Draw.ellipse(surf, (10, 48, 42), rect, 2)
 
-    def storm_pulse(self, now):
-        elapsed = self.age(now) % self.THUNDER_INTERVAL
-        first = max(0, 1 - elapsed / 180)
-        echo = .45 * max(0, 1 - (elapsed - 220) / 150) if elapsed >= 220 else 0
-        return max(first, echo)
-
     def draw_storm_lightning(self, surf, now):
-        pulse = self.storm_pulse(now)
-        if pulse <= 0:
+        if self.storm_target is None:
             return
-        strike = self.age(now) // self.THUNDER_INTERVAL
-        width = config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT
-        center = self._center_x()
-        bottom = config.GAME_AREA_BOTTOM
+        x, y = self.storm_target
+        radius = self.THUNDER_RADIUS
+        elapsed = self.age(now) - self.storm_warning_age
+        if elapsed < self.THUNDER_WARNING:
+            progress = max(0, elapsed) / self.THUNDER_WARNING
+            size = radius * 2 + 2
+            center = (radius + 1, radius + 1)
+            sigil = effect_layer(surf, (size, size))
+            Draw.circle(sigil, (61, 33, 139, round(65 + 70 * progress)), center, radius)
+            Draw.circle(sigil, (191, 154, 255, 220), center, radius, 2)
+            Draw.circle(sigil, (113, 188, 255, 140), center, radius - 8, 1)
+            charge = radius - 4
+            if progress:
+                Draw.arc(sigil, (231, 245, 255), (center[0] - charge, center[1] - charge,
+                                                 2 * charge, 2 * charge),
+                         math.pi / 2 - math.tau * progress, math.pi / 2, 4)
+            for i in range(8):
+                angle = now * .006 + i * math.tau / 8
+                distance = (radius - 12) * (1 - progress * .68)
+                px = center[0] + math.cos(angle) * distance
+                py = center[1] + math.sin(angle) * distance
+                Draw.polygon(sigil, (157, 214, 255, 220),
+                             ((px, py - 3), (px + 2, py), (px, py + 3), (px - 2, py)))
+            draw_glow(sigil, center, 8 + round(12 * progress), (145, 161, 255), 130)
+            blit_effect(surf, sigil, (round(x - center[0]), round(y - center[1])))
+            return
+        progress = (elapsed - self.THUNDER_WARNING) / (self.THUNDER_INTERVAL - self.THUNDER_WARNING)
+        if progress >= 1:
+            return
+        alpha = round(255 * (1 - progress))
+        draw_glow(surf, (x, y), radius, (153, 110, 255), alpha)
+        Draw.circle(surf, (216, 201, 255, alpha), (x, y), radius, 2)
+        Draw.circle(surf, (155, 213, 255, alpha), (x, y), round(radius * (.25 + .75 * progress)), 2)
+        fork = (x - 30, y * .44)
+        draw_electric_arc(surf, (x + 40, 0), fork, (176, 134, 255), alpha, now, 7, 8)
+        draw_electric_arc(surf, fork, (x, y), (209, 183, 255), alpha, now, 13, 7)
         for side in (-1, 1):
-            x = center + side * width * (.32 if (strike + side) % 3 else .40)
-            start = (x + side * width * .06, 0)
-            fork = (x - side * width * .04, round(bottom * .36))
-            end = (x + side * width * .045, round(bottom * .78))
-            alpha = round(220 * pulse)
-            color = (114, 159, 255)
-            draw_electric_arc(surf, start, fork, color, alpha, now, strike + side, 5)
-            draw_electric_arc(surf, fork, end, color, alpha, now, strike - side + 7, 4)
-            draw_electric_arc(surf, fork, (x - side * width * .13, round(bottom * .57)),
-                              (166, 136, 255), round(alpha * .76), now, strike + side + 18, 2)
+            draw_electric_arc(surf, fork, (x + side * (radius - 5), y - 18),
+                              (137, 188, 255), alpha, now, side + 21, 3)
 
     def _draw_slam(self, surf, age):
         index, elapsed = divmod(age, self.SLAM_ROUND)
@@ -522,22 +577,71 @@ class OrochiBoss(Boss):
             return
         bottom = config.GAME_AREA_BOTTOM
         after_impact = elapsed - self.SLAM_IMPACT
-        for i in self._slam_pair(index):
-            x = self._lane_x(i)
-            if 0 <= after_impact < 420:
-                fade = round(220 * (1 - after_impact / 420))
-                for side in (-1, 1):
-                    crack = [(x, bottom), (x + 16 * side, bottom - 10),
-                             (x + 26 * side, bottom - 4), (x + 51 * side, bottom - 17)]
-                    Draw.lines(surf, (39, 22, 18, fade), False, crack, 5)
-                    Draw.lines(surf, (255, 154, 76, fade), False, crack, 2)
+        if 0 <= after_impact < 560:
+            for lane in self._slam_pair(index):
+                self._draw_slam_impact(surf, self._lane_x(lane), bottom, after_impact / 560, lane)
         for head in self._slam_rects(age):
             if after_impact < 0:
-                for offset in (-head.w // 4, 0, head.w // 4):
-                    x = head.centerx + offset
-                    Draw.line(surf, (124, 231, 176, 155), (x, head.top - 28),
-                              (x, head.top + 9), 2)
+                self._draw_slam_trail(surf, head, elapsed)
             self._draw_skill_sprite(surf, self.slam_art, head)
+
+    def _draw_slam_impact(self, surf, x, y, progress, lane):
+        fade = round(255 * (1 - progress))
+        radius = 12 + round(98 * progress)
+        wave = pygame.Rect(x - radius, y - 12 - radius // 4, 2 * radius, 12 + radius // 2)
+        Draw.ellipse(surf, (255, 121, 51, fade // 2), wave.inflate(12, 6), 6)
+        Draw.ellipse(surf, (255, 220, 139, fade), wave, 2)
+        if progress < .55:
+            dust_x = round(26 + 46 * progress)
+            for side in (-1, 1):
+                draw_glow(surf, (x + side * dust_x, y - 11), 35, (187, 100, 65), fade)
+        if progress < .35:
+            draw_glow(surf, (x, y - 12), 66, (255, 151, 64), round(fade * (1 - progress / .35)))
+        for side in (-1, 1):
+            crack = [(x, y - 8), (x + 13 * side, y - 20),
+                     (x + 31 * side, y - 17), (x + 61 * side, y - 34)]
+            for i in range(1, len(crack)):
+                px, py = crack[i]
+                offset = (5 + i * 4) * side
+                plate = (crack[i - 1], (px - offset, py + 13), (px + offset, py + 8),
+                         (px + offset, py - 5), crack[i])
+                Draw.polygon(surf, (92, 52, 47, fade), plate)
+                Draw.lines(surf, (165, 91, 54, fade), False, plate[1:4], 2)
+            Draw.lines(surf, (46, 23, 25, fade), False, crack, 7)
+            Draw.lines(surf, (255, 162, 72, fade), False, crack, 2)
+            Draw.lines(surf, (255, 190, 97, fade), False,
+                       (crack[1], (x + 20 * side, y - 38), (x + 37 * side, y - 48)), 2)
+            for i in range(8):
+                spread = 26 + (i * 17 + lane * 11) % 95
+                lift = 34 + (i * 29 + lane * 7) % 86
+                px = x + side * (6 + spread * progress)
+                py = y - 12 - lift * 4 * progress * (1 - progress)
+                size = max(2, round((4 + i % 4) * (1 - progress)))
+                Draw.polygon(surf, (97, 50, 44, fade),
+                             ((px - size, py), (px, py - size), (px + size, py - 2), (px + 2, py + size)))
+                Draw.line(surf, (255, 194, 103, fade), (px - size, py), (px, py - size), 2)
+                if i % 2 == 0:
+                    Draw.line(surf, (255, 224, 151, fade), (px, py - 14),
+                              (px - side * 13 * progress, py - 21), 2)
+
+    def _draw_slam_trail(self, surf, head, elapsed):
+        x, y = head.centerx, head.top + 8
+        length = round(head.h * 1.8)
+        half = head.w / 2
+        for scale, color in ((1, (26, 128, 97, 80)), (.84, (32, 182, 127, 110)),
+                             (.65, (60, 224, 160, 145)), (.42, (134, 250, 192, 180)),
+                             (.19, (222, 255, 222, 225))):
+            width = half * scale
+            points = [(x - width, y), (x - width * .76, y - length * .25),
+                      (x - width * .33, y - length * .62), (x, y - length),
+                      (x + width * .33, y - length * .62),
+                      (x + width * .76, y - length * .25), (x + width, y)]
+            Draw.polygon(surf, color, points)
+        for i in range(6):
+            drift = (elapsed * 4 + i * 31) % length
+            side = 1 if i % 2 else -1
+            px = x + side * half * (1 - drift / length)
+            Draw.line(surf, (185, 255, 219, 170), (px, y - drift), (px, y - drift - 13), 2)
 
     def _draw_idle(self, surf, now):
         art = self._idle_frame(now)
@@ -548,20 +652,32 @@ class OrochiBoss(Boss):
         pad = self.IDLE_PADDING
         pad_x = round(body.w * pad / (self.IDLE_ART_SIZE[0] - 2 * pad))
         pad_y = round(body.h * pad / (self.IDLE_ART_SIZE[1] - 2 * pad))
-        _blit_art(surf, art, body.inflate(2 * pad_x, 2 * pad_y))
+        rect = body.inflate(2 * pad_x, 2 * pad_y)
+        if now < self.invincible_until:
+            glow = 125 + round(100 * (.5 + .5 * math.sin(now * .012)))
+            draw_glow(surf, body.center, max(body.w, body.h) // 2, (89, 169, 255), glow)
+            charged = _charged_sprite(art)
+            lit = scale_surface_cached(charged, rect.size)
+            blit_lit_sprite(surf, lit, rect.topleft, (176, 229, 255), 220, charged)
+        else:
+            _blit_art(surf, art, rect)
 
     def _draw_storm(self, surf, now):
-        art = image_asset(self.sprite_asset) if isinstance(surf, RenderSurface) else None
-        _blit_art(surf, art or self.surface, self._body_art_rect())
-        pulse = self.storm_pulse(now)
+        art = image_asset(self.sprite_asset)
+        body = self._body_art_rect()
+        _blit_art(surf, art or self.surface, body)
         for i, rect in self._active_heads(now):
-            radius = max(7, rect.w // 2)
-            Draw.circle(surf, (115, 204, 255, 90 + round(75 * pulse)), rect.center, radius + 5, 2)
-            Draw.ellipse(surf, (170, 231, 255), rect.inflate(4, 4), 2)
-            ratio = self.head_hp[i] / self.head_max_hp
-            blink = .5 + .5 * math.sin(now * .012)
-            marker = (rect.centerx, rect.top - 5)
-            Draw.circle(surf, (255, 54, 62, round(100 + 155 * blink)), marker, 3 + round(3 * ratio))
+            x, y, angle = self.COLLAR_POSES[i]
+            center = (round(body.x + body.w * x), round(body.y + body.h * y))
+            ratio = self.head_hp[i] / (self.max_hp * self.STORM_HEAD_HP_RATIO)
+            glow = round((.7 + .3 * math.sin(now * .012 + i)) * (110 + 100 * ratio))
+            draw_glow(surf, center, max(5, rect.w // 2), (117, 188, 255), glow)
+            if self.collar_art is not None:
+                collar_art = _turn_collar(self.collar_art, angle)
+                scale = rect.w * 1.32 / self.collar_art.get_width()
+                collar = pygame.Rect((0, 0), tuple(max(1, round(size * scale)) for size in collar_art.get_size()))
+                collar.center = center
+                _blit_art(surf, collar_art, collar)
 
     def draw(self, surf):
         if self._hd_artwork != asset_loader.web_hd_assets:
@@ -598,22 +714,23 @@ class OrochiBoss(Boss):
                 self._draw_skill_sprite(surf, self.laser_art, head)
             for left, right in zip(heads, heads[1:]):
                 draw_electric_arc(surf, left.center, right.center, (150, 196, 255), 220, now, left.x, 2)
-            for path in self.laser_paths(age):
+            for i, (path, width) in enumerate(zip(self.laser_paths(age), self._laser_widths())):
+                color = (255, 46, 39) if i == 1 else (255, 209, 45)
                 if age < self.LASER_WARNING:
-                    Draw.line(surf, (255, 100, 65, 125), path[0], path[-1], 2)
+                    Draw.line(surf, (*color, 125), path[0], path[-1], 2)
                 else:
                     x, y = path[0]
                     bottom = path[-1][1]
-                    half = self.LASER_WIDTH / 2
+                    half = width / 2
                     neck = y + 28
-                    Draw.polygon(surf, (255, 80, 40, 100),
+                    Draw.polygon(surf, (*color, 100),
                                  ((x - 6, y), (x + 6, y), (x + half + 7, neck),
                                   (x + half + 7, bottom), (x - half - 7, bottom), (x - half - 7, neck)))
-                    Draw.polygon(surf, (255, 95, 43, 245),
+                    Draw.polygon(surf, (*color, 245),
                                  ((x - 3, y), (x + 3, y), (x + half, neck),
                                   (x + half, bottom), (x - half, bottom), (x - half, neck)))
-                    Draw.line(surf, (255, 247, 220), (x, y), (x, bottom), max(3, self.LASER_WIDTH // 5))
-                    Draw.circle(surf, (255, 95, 43, 225), (x, y), 8)
+                    Draw.line(surf, (255, 247, 220), (x, y), (x, bottom), max(3, width // 5))
+                    Draw.circle(surf, (*color, 225), (x, y), 8)
                     Draw.circle(surf, (255, 247, 220), (x, y), 4)
         elif self.skill == 'storm':
             self._draw_storm(surf, now)
@@ -622,8 +739,6 @@ class OrochiBoss(Boss):
             self._draw_slam(surf, age)
         else:
             self._draw_idle(surf, now)
-            if now < self.invincible_until:
-                Draw.ellipse(surf, (125, 205, 255, 200), self.rect().inflate(30, 18), 3)
         self.hit_flashes = [flash for flash in self.hit_flashes if now - flash[2] < 180]
         for x, y, at in self.hit_flashes:
             progress = max(0, (now - at) / 180)

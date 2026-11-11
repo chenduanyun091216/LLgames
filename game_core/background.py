@@ -54,9 +54,8 @@ def background_art(level, size):
 
 @lru_cache(maxsize=2)
 def _background_panorama(level, size):
-    stem = 'bg1-scroll' if level == 1 else f'bg{level}'
     for suffix in ('jpg', 'png'):
-        panorama = cover_image_asset(f'backgrounds/{stem}.{suffix}', size, panorama=True)
+        panorama = cover_image_asset(f'backgrounds/bg{level}.{suffix}', size, panorama=True)
         if panorama is not None:
             fade = pygame.Surface(panorama.get_size(), pygame.SRCALPHA)
             fade.fill((20, 39, 48, 76))

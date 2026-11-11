@@ -27,6 +27,13 @@ class _View(Game):
     def players(self):
         players = getattr(self, 'all_players', (self.player,))
         return [p for p in players if getattr(p,'alive',True)] or list(players)
+    def _players_to_draw(self):
+        return [p for p in getattr(self, 'all_players', self.players)
+                if getattr(p, 'alive', True) or p.character in config.CHARACTER_DEFS] or self.players
+    def _player_downed_age(self, player, now):
+        if getattr(player, 'alive', True):
+            return None
+        return 360 if player.animation_hit_at is None else now - player.animation_hit_at
     def _draw_hud(self): pass
     def _draw_player_label(self, player, label):
         super()._draw_player_label(player, 'P' + str(getattr(player,'slot',1)))
@@ -45,7 +52,7 @@ class Presentation:
         configure_world(self.orientation)
         config.SCR = surface
         self.surface = surface
-        self.view = _View()
+        self.view = _View(scroll_campaign_backgrounds=True)
         self.view.mobile_controls.draw = lambda *args: None
         self.objects = {}
         self.time_ms = 0
@@ -85,6 +92,7 @@ class Presentation:
         if name == 'CrescentWave': return S.CrescentWave(0, 0)
         if name in ('ZongBomb', 'ZongFireball'): return CLASSES[name](0, 0, 0, 0)
         if name == 'ZongReflectBullet': return S.ZongReflectBullet(0, 0)
+        if name == 'NiuShieldShard': return S.NiuShieldShard(0, 0, f['index'], f['width'])
         if name == 'NiuFanBullet': return S.NiuFanBullet(0, 0, 0, False)
         if name == 'OrochiFireball': return O.OrochiFireball(0, 0, f['color'], None)
         raise ValueError('Unsupported constructor')
@@ -167,6 +175,10 @@ class Presentation:
                     obj.surface = factories[obj.character]() if obj.character in factories else make_player_surface(asset)
                     obj.sprite_asset = asset
                     obj.breath_base = None
+        previous_background = None
+        if self._background_level is not None and snap['game'].get('current_level') != self._background_level:
+            previous = self.view.scrolling_background(self.view.bg.get_size())
+            previous_background = (previous if previous is not None else self.view.bg).copy()
         self.objects = live
         for k in COLLECTIONS: setattr(self.view,k,[live[i] for i in snap['collections'].get(k,[])])
         for k,v in snap['game'].items():
@@ -183,16 +195,15 @@ class Presentation:
         self.view.state = GameState.BOSS_FIGHT if self.view.boss else GameState.PLAYING
         level = self.view.current_level
         if level != self._background_level:
-            previous = self.view.bg.copy() if self._background_level is not None else None
             self.view.bg = make_background(level)
-            self.view.bg_transition_prev = previous if self.time_ms < self.view.bg_transition_until else None
+            self.view.bg_transition_prev = previous_background if self.time_ms < self.view.bg_transition_until else None
             self._background_level = level
         music = (level, bool(self.view.boss))
         if music != self._music_boss:
             start_music(level,boss=music[1])
             self._music_boss = music
-        allowed_sounds = {'shoot_pistol','shoot_rifle','shoot_shotgun','shoot_sniper','hit',
-            'coin','buy','error','level_up','game_over','boss_appear','fire_cast','ice_cast',
+        allowed_sounds = {'shoot_pistol','shoot_rifle','shoot_shotgun','shoot_sniper','hit','niu_shield_hit','niu_axe_impact',
+            'coin','buy','error','level_up','game_over','boss_appear','fire_cast','ice_cast','player_hit',
             'water_cast','grenade','lightning','orochi_thunder','storm','laser','laser_hit','dart_cast','dart_burst','kill'}
         for event in full_snapshot.get('events',[]):
             ident = event.get('id')

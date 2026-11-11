@@ -12,6 +12,25 @@ from online.shared.world import WORLD_SIZES
 
 
 class CampaignParityTests(unittest.TestCase):
+    def test_niu_slam_damages_only_players_hit_by_the_axe(self):
+        game = OnlineGame('hard')
+        game._start_level(7)
+        game._trigger_boss()
+        boss = game.boss
+        boss.y = 60
+        boss.axe_slam_start = 1000
+        now = 2100
+        slam = boss.axe_slam_rect(now)
+        inside, outside = game.players
+        inside.x, inside.y = slam.center
+        outside.x, outside.y = slam.right + outside.rect().width // 2 + 2, slam.centery
+        self.assertFalse(slam.colliderect(outside.rect()))
+        for player in game.players:
+            player.invincible_until = 0
+        hp = [player.hp for player in game.players]
+        game._update_special_boss_hazards(now)
+        self.assertEqual([inside.hp, outside.hp], [hp[0] - 1, hp[1]])
+
     def test_all_levels_and_difficulties_share_spawn_and_boss_numbers(self):
         for orientation, size in WORLD_SIZES.items():
             for difficulty in ('easy', 'medium', 'hard'):
@@ -66,7 +85,7 @@ class CampaignParityTests(unittest.TestCase):
             game._start_level(level)
             self.assertIsNone(game.boss)
             self.assertEqual(game.state, GameState.PLAYING)
-            self.assertEqual(len(game.level_enemy_defs), 3)
+            self.assertEqual(len(game.level_enemy_defs), 6)
         game._start_level(11)
         self.assertEqual(game.state, GameState.BOSS_FIGHT)
         self.assertEqual(game.boss.bdef['key'], 'boss_orochi')
@@ -135,7 +154,7 @@ class CampaignParityTests(unittest.TestCase):
                         shots = boss.attack(config.game_ticks(), 480, 600)
                         random.seed(57)
                         expected = shared.attack(config.game_ticks(), 480, 600)
-                        self.assertTrue(shots, skill)
+                        self.assertEqual(bool(shots), skill != 'whale_suction')
                         self.assertEqual(len(shots), len(expected))
                         for a, b in zip(shots, expected):
                             self.assertIs(type(a), AbyssProjectile)
@@ -162,6 +181,49 @@ class CampaignParityTests(unittest.TestCase):
                                                      pygame.image.tostring(b, 'RGBA'))
                                 view.draw()
 
+    def test_whale_suction_auto_revives_players_at_bottom_after_animation(self):
+        game = OnlineGame('medium')
+        game._start_level(10)
+        game._trigger_boss()
+        game.boss.skill_index = 3
+        game.boss.attack(1000, game.player.x)
+        game.lives = 2
+        for player in game.players:
+            player.invincible_until = 9000
+        self.assertFalse(game._update_whale_suction(5999))
+        self.assertTrue(game._update_whale_suction(6000))
+        self.assertEqual(len(game.players), 2)
+        self.assertTrue(game._update_whale_suction(6699))
+        self.assertEqual(len(game.players), 2)
+        self.assertTrue(game.boss.swallowing)
+        config.campaign_time_ms = 6350
+        view = Presentation(pygame.Surface(game.world_size))
+        view.apply(json.loads(json.dumps(game.snapshot(), allow_nan=False)), 1)
+        self.assertTrue(view.view.boss.swallowing)
+        view.draw()
+        game.tick = 401
+        game.step()
+        self.assertEqual(game.lives, 0)
+        self.assertEqual(len(game.players), 2)
+        for player in game.players:
+            self.assertEqual(player.hp, player.max_hp)
+            self.assertEqual(player.y, config.GAME_AREA_BOTTOM - 14)
+
+    def test_whale_suction_only_revives_when_resources_are_available(self):
+        game = OnlineGame('medium')
+        game._start_level(10)
+        game._trigger_boss()
+        game.lives = 1
+        game.player.gold = 0
+        game.boss.skill_index = 3
+        game.boss.attack(1000, game.player.x)
+        game._update_whale_suction(6000)
+        game.tick = 401
+        game.step()
+        self.assertEqual(len(game.players), 1)
+        self.assertEqual(game.lives, 0)
+        self.assertEqual(game.players[0].y, config.GAME_AREA_BOTTOM - 14)
+
     def test_new_projectile_damage_matches_single_and_hits_each_player_once(self):
         from game_core.abyss_bosses import AbyssProjectile, EFFECT_ASSETS, RAIL_EXTEND_MS, RINGS, LANES
         for difficulty in ('easy', 'medium', 'hard'):
@@ -181,7 +243,7 @@ class CampaignParityTests(unittest.TestCase):
                     if skill in LANES:
                         shot.height = 110
                     if skill == 'rune_geyser':
-                        shot.spawn_time -= 200
+                        shot.spawn_time -= 370
                     for p in game.all_players:
                         p.x, p.y = 480, 575 if skill in RINGS else 550
                     if skill == 'plasma_rail':
@@ -189,8 +251,6 @@ class CampaignParityTests(unittest.TestCase):
                         game.boss.sync_weapon_mount(shot, config.game_ticks())
                         for p in game.all_players:
                             p.x, p.y = shot.x, shot.y + 75
-                    if skill == 'sonar_ring':
-                        shot.gap_angle = 180  # keep both bodies outside safe sector
                     if skill == 'emp_ring':
                         shot.spawn_time -= 400
                         for p in game.all_players:
@@ -200,6 +260,11 @@ class CampaignParityTests(unittest.TestCase):
                     game.step()
                     self.assertEqual(game.all_players[0].hp, initial - damage)
                     game.step()
+                    if skill == 'rune_geyser':
+                        first, second = game.all_players
+                        self.assertLess(first.y, 550)
+                        self.assertGreater(first.geyser_lift_until, config.game_ticks())
+                        self.assertGreater(second.geyser_lift_until, config.game_ticks())
                     expected_second = initial - damage if shot.persistent else initial
                     self.assertEqual(game.all_players[1].hp, expected_second)
                     for p in game.all_players:

@@ -151,6 +151,20 @@ def _snd_hit():
         (_gen_fnoise(0.02, 0.07, lp=0.35, decay=60), 0.0, 1.0),
     ])
 
+def _snd_niu_shield_hit():
+    return _mix_layers([
+        (_gen_fnoise(0.025, 0.13, lp=0.45, decay=65), 0.0, 1.0),
+        (_gen_tone(1240, 1170, 0.105, 'triangle', 0.21, attack=0.001, decay=26), 0.0, 1.0),
+        (_gen_tone(710, 670, 0.13, 'sine', 0.15, attack=0.001, decay=21), 0.0, 1.0),
+    ])
+
+def _snd_niu_axe_impact():
+    return _mix_layers([
+        (_gen_tone(145, 38, 0.28, 'sine', 0.54, attack=0.001, decay=11), 0.0, 1.0),
+        (_gen_fnoise(0.19, 0.32, lp=0.40, decay=18), 0.0, 1.0),
+        (_gen_tone(680, 160, 0.08, 'triangle', 0.24, attack=0.001, decay=35), 0.0, 1.0),
+    ])
+
 def _snd_player_hit():
     return _mix_layers([
         (_gen_fnoise(0.09, 0.38, lp=0.55, decay=32), 0.0, 1.0),
@@ -319,6 +333,8 @@ _SOUND_BUILDERS = {
     'shoot_shotgun': _snd_shoot_shotgun,
     'shoot_sniper': _snd_shoot_sniper,
     'hit': _snd_hit,
+    'niu_shield_hit': _snd_niu_shield_hit,
+    'niu_axe_impact': _snd_niu_axe_impact,
     'player_hit': _snd_player_hit,
     'coin': _snd_coin,
     'buy': _snd_buy,

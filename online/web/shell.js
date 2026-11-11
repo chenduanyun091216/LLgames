@@ -63,8 +63,10 @@ function renderState(s) {
   $('result').querySelector('button').disabled=bridge.slot!==1;
   $('status').textContent=`房间 ${bridge.code} · P${bridge.slot} · 第 ${s.current_level||1}/${s.total_levels||11} 关${s.level_title?' '+s.level_title:''} · 金币 ${s.gold} · 生命 ${s.lives} | `+s.players.map(p=>`P${p.slot} ${p.alive?`${Math.ceil(p.hp)}/${p.max_hp}`:'等待复活'}`).join(' · ')+(s.paused?` | 已暂停：${s.pause_reason||'等待玩家'}`:'');
   const boss=s.world?.objects?.find(o=>o.id===s.world.boss)?.fields;
-  if(!boss&&combatAvailable()) $('status').textContent+=` | 击杀 ${s.kills||0}/${s.kills_needed||'—'}`;
-  const revive=document.querySelector('[data-action="revive"]');revive.textContent=s.lives>0?'复活（消耗 1 条共享生命）':`复活 ${s.revive_cost||0} 金币`;revive.disabled=me.alive;
+  if(!boss&&combatAvailable()) $('status').textContent+=` | Boss 倒计时 ${Math.ceil((s.boss_remaining_ms||0)/1000)} 秒`;
+  const revive=document.querySelector('[data-action="revive"]');
+  revive.textContent=s.lives>0?'复活（消耗 1 条共享生命）':`复活 ${s.revive_cost} 金币（全队剩余 ${s.paid_revives_remaining} 次）`;
+  revive.disabled=me.alive||(s.lives<=0&&s.paid_revives_remaining===0);
   const skillNames={fisher:[['手雷','fisher_grenade'],['无技能','']],fire:[['火墙','fire_wall'],['火球','fireball']],ice:[['冰墙','ice_floor'],['冰球','ice_balls']],water:[['水疗','water_heal'],['潮汐','water_boost']],radiation:[['闪电链','lightning'],['磁暴','magnetic_storm']]};
   (skillNames[me.character]||skillNames.fisher).forEach(([name,key],i)=>{const button=document.querySelector(`[data-action="skill${i+1}"]`),now=s.world?.time_ms||0;const remaining=Math.max(me.cooldowns?.[key]||0,me.active_until?.[key]||0)-now;button.textContent=name+(remaining>0?` ${Math.ceil(remaining/1000)}s`:'');button.disabled=!key||!me.alive;});
   if(me.shop_open) renderCatalog(s,me);

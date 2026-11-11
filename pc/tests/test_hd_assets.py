@@ -40,10 +40,15 @@ class DesktopHDAssetsTests(unittest.TestCase):
                 self.assertGreaterEqual(width, 2560)
                 self.assertGreaterEqual(height, 1440)
 
-        for name, count in (('boss_attack', 4), ('boss_niu_laser', 8), ('boss_mecha_lizard', 8)):
+        for name, count in (('boss_attack', 4), ('boss_mecha_lizard', 8)):
             with self.subTest(sheet=name):
-                sheet = asset_loader.image_asset(f'animations/anim_{name}.png')
+                sheet = asset_loader.image_asset(f'animations/bosses/anim_{name}.png')
                 self.assertEqual(sheet.get_size(), (512 * count, 512))
+                self.assertTrue(sheet.get_masks()[-1])
+        for name in ('boss_niu_actions', 'boss_niu_axe_sequence'):
+            with self.subTest(sheet=name):
+                sheet = asset_loader.image_asset(f'bosses/{name}.png')
+                self.assertEqual(sheet.get_size(), (1312, 1199))
                 self.assertTrue(sheet.get_masks()[-1])
         self.assertGreaterEqual(asset_loader.image_asset('ui/title.png').get_width(), 1595)
         self.assertEqual(asset_loader.image_asset('effects/boss_claw.png').get_size(), (426, 640))

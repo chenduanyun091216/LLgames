@@ -11,6 +11,7 @@ from game_core.boss_skills import BossSignature
 from game_core import special_bosses as S, orochi as O
 from online.adapters.snapshot import encode_world
 from online.adapters.presentation import Presentation
+from online.shared.world import configure_world
 
 class SnapshotTests(unittest.TestCase):
     @classmethod
@@ -37,6 +38,7 @@ class SnapshotTests(unittest.TestCase):
         g.skill_projectiles=[E.SkillProjectile(320,350,0,2,k,owner=g.player) for k in ('fireball','fire_rocket','grenade','ice_ball')]
         g.magnetic_storms=[E.MagneticStorm(600,300)]
         g.radiation_lasers=[E.RadiationLaser(other)]
+        g.radiation_lasers[0].muzzle_effect=3
         g.dart_shields=[E.SpinningDarts(g.player)]
         g.lightnings=[E.Lightning(100,500,g.enemies[:2],1)]
         g.boss_projectiles=[E.BossProjectile(700,200,10,2),E.DragonFireball(750,200,1)]
@@ -55,6 +57,7 @@ class SnapshotTests(unittest.TestCase):
         p=Presentation(pygame.Surface((960,720)))
         p.apply({'world':json.loads(raw)},2);p.draw()
         self.assertIs(p.view.radiation_lasers[0].owner,p.view.all_players[1])
+        self.assertEqual(p.view.radiation_lasers[0].muzzle_effect,3)
         self.assertIs(p.view.lightnings[0].targets[0],p.view.enemies[0])
         self.assertIs(p.view.boss_projectiles[1].lightning_previous,p.view.boss_projectiles[0])
         self.assertEqual(len(p.view.bullets),len(config.WEAPON_DEFS))
@@ -88,10 +91,10 @@ class SnapshotTests(unittest.TestCase):
     def test_match_reset_difficulty_and_audio_dedup(self):
         g=self.world(); p=Presentation(pygame.Surface((960,720)))
         frame={'world':encode_world(g),'match_id':'one','difficulty':'hard',
-               'events':[{'id':1,'type':'sound','key':'ice_cast'}]}
+               'events':[{'id':1,'type':'sound','key':'player_hit'}]}
         with patch('online.adapters.presentation.play_sound') as sound, patch('online.adapters.presentation.start_music') as music, patch('online.adapters.presentation.advance_music') as advance:
             p.apply(frame); player=p.view.player; p.draw();p.apply(frame)
-            sound.assert_called_once_with('ice_cast')
+            sound.assert_called_once_with('player_hit')
             music.assert_called_once_with(1,boss=True)
             advance.assert_called_once_with()
             self.assertIs(p.view.difficulty,config.DIFFICULTY_PRESETS['hard'])
@@ -177,12 +180,14 @@ class SnapshotTests(unittest.TestCase):
                     p.apply(encode_world(g));self.assert_boss_pixels(g,p)
 
     def test_niu_phases_and_special_projectile_refs(self):
+        configure_world('landscape')
         g=self.campaign_boss(7);p=Presentation(pygame.Surface((960,720)))
         boss=g.boss
         shots=[S.ReturningAxe(boss,-1,320,True),S.ReturningAxe(boss,1,640,False),
                S.NiuFanBullet(200,300,25,True),S.NiuFanBullet(260,300,-25,False),
                S.CrescentWave(350,300),S.ZongBomb(400,300,0,2),
-               S.ZongFireball(500,300,20,2),S.ZongReflectBullet(550,300)]
+               S.ZongFireball(500,300,20,2),S.ZongReflectBullet(550,300),
+               S.NiuShieldShard(350,400,2,420)]
         shots[5].color='red'
         shots[6].lightning_previous=shots[5]
         g.boss_projectiles=shots
@@ -191,8 +196,7 @@ class SnapshotTests(unittest.TestCase):
                        {'shield_until':9000}, {'shield_until':0,'shield_break_at':100},
                        {'axe_slam_start':100},
                        {'axe_slam_start':None,'lightning_xs':(200,480,760),
-                        'lightning_warning_until':1000,'lightning_until':2400},
-                       {'laser_active_until':4000}):
+                        'lightning_warning_until':1000,'lightning_until':2400}):
             for k,v in fields.items():setattr(boss,k,v)
             for now in (200,600,1000,1450,2300):
                 config.campaign_time_ms=now
@@ -235,7 +239,9 @@ class SnapshotTests(unittest.TestCase):
                 if skill=='split':
                     boss.split_xy[2]=[420,370];boss.split_hp[0]=0
                     boss.split_charge_until[2]=3000;boss.split_charged[2]=True
-                if skill=='storm':boss.head_hp[0]=0
+                if skill=='storm':
+                    boss.head_hp[0]=0
+                    boss.update(350, 420)
                 boss.hit_flashes=[(480,180,now-50)]
                 g.boss_projectiles=[O.OrochiFireball(250,350,boss.FIRE_COLORS[0],boss.fire_art),
                                     O.OrochiFireball(400,350,boss.FIRE_COLORS[1],boss.gold_fire_art)]

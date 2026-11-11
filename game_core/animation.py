@@ -4,6 +4,7 @@ from functools import lru_cache
 import pygame
 
 from .asset_loader import image_asset
+from .config import CHARACTER_DEFS
 from .boss_skills import BITE_REPEAT_MS, CHASE_MS, CLAW_DELAY_MS, LASH_MS, TRIDENT_INTERVAL_MS
 
 _FRAMES = {}
@@ -13,6 +14,13 @@ DOWNWARD_LASER_POSES = {
     'boss_shark': (1, .70, .74),
     'boss_dragon': (1, .62, .32),
     'boss': (1, .68, .77),
+}
+# Mouth positions in the replacement art, separate from the gameplay beam origins.
+LASER_ART_MOUTHS = {
+    'boss_crab': (.50, .54),
+    'boss_octopus': (.52, .54),
+    'boss_shark': (.52, .79),
+    'boss_dragon': (.67, .38),
 }
 
 # Left and right edge travel as a fraction of sprite height. Keep the
@@ -49,8 +57,6 @@ def _body_pose(sprite, name, swing):
 def boss_idle_frame(name, sprite, elapsed):
     if name not in IDLE_BODY_TRAVEL:
         return sprite
-    if name == 'boss_dragon':
-        sprite = frame('boss_dragon_attack', 0) or sprite
     return _body_pose(sprite, name, _IDLE_SWING[elapsed // 135 % len(_IDLE_SWING)])
 
 
@@ -69,18 +75,17 @@ def _signature_pose(signature, now):
         if age < CLAW_DELAY_MS:
             return (2, 1) if age < 135 else (1, -.65)
         age -= CLAW_DELAY_MS
-    if signature.key == 'boss_shark' and age < 3 * TRIDENT_INTERVAL_MS:
-        age %= TRIDENT_INTERVAL_MS
+    if signature.key == 'boss_shark':
+        if age < 2 * TRIDENT_INTERVAL_MS:
+            phase = age % TRIDENT_INTERVAL_MS
+            return (2, 1) if phase < 90 else (3, .35) if phase < 155 else (1, -.75)
+        age -= 2 * TRIDENT_INTERVAL_MS
     return _ATTACK_POSES[min(7, age // 75)]
 
 
 def frame(name, index):
-    if name in ('boss_dragon_attack', 'boss_dragon_laser') and index % 4 == 2:
-        fire_breath = image_asset('animations/boss_dragon_fire_breath.png')
-        if fire_breath is not None:
-            return fire_breath
-        index = 1
-    sheet = image_asset('animations/anim_' + name + '.png')
+    category = 'players' if name.startswith('player') else 'bosses'
+    sheet = image_asset(f'animations/{category}/anim_{name}.png')
     if sheet is None:
         return None
     size = sheet.get_height()
@@ -115,6 +120,40 @@ def action_frame(start, now):
     return min(3, elapsed // 150) if 0 <= elapsed < 600 else None
 
 
+def player_frame(player, name, now, downed_age=None):
+    moving = player.animation_move_at is not None and 0 <= now - player.animation_move_at < 150
+    custom = player.character in CHARACTER_DEFS
+    if custom:
+        if downed_age is not None:
+            return frame(name + '_down', min(3, max(0, downed_age) // 120)) or frame(name + '_back', 0)
+        if player.animation_hit_at is not None:
+            elapsed = now - player.animation_hit_at
+            if 0 <= elapsed < 240:
+                sprite = frame(name + '_hurt', elapsed // 60)
+                if sprite is not None:
+                    return sprite
+
+    index = action_frame(player.animation_skill_at, now)
+    if index is not None and player.animation_skill:
+        sprite = frame(name + '_' + player.animation_skill, index) or frame(name + '_cast', index)
+        if sprite is not None:
+            return sprite
+
+    if custom or name == 'player1':
+        elapsed = now - player.last_shot_time
+        if player.last_shot_time > 0 and 0 <= elapsed < 180:
+            sprite = frame(name + '_attack', elapsed // 45)
+            if sprite is not None:
+                return sprite
+        if not moving:
+            sprite = frame(name + '_idle', now // 240 % 4)
+            if sprite is not None or custom:
+                return sprite or frame(name + '_back', 0)
+
+    frame_ms = 120 if moving else 480
+    return frame(name + '_run', now // frame_ms % 4) or frame(name + '_back', 0)
+
+
 def boss_frame(boss, now):
     mode = getattr(boss, 'fusion_mode', None)
     if boss.bdef['key'] == 'boss_zongzong' and mode:
@@ -126,11 +165,6 @@ def boss_frame(boss, now):
     warning = getattr(boss, 'laser_warning_start', 0)
     laser_active = now < getattr(boss, 'laser_active_until', 0)
     if warning or laser_active:
-        if boss.bdef['key'] == 'boss_niu':
-            elapsed = now - (boss.laser_active_until - 2000 if laser_active else warning)
-            sprite = frame('boss_niu_laser', max(0, elapsed // (75 if laser_active else 50)) % 8)
-            if sprite is not None:
-                return sprite
         pose = DOWNWARD_LASER_POSES.get(boss.bdef['key'])
         if laser_active and pose and 1 <= boss.bdef.get('campaign_level', 0) <= 6:
             sprite = frame(boss.bdef['key'] + '_laser', pose[0])
@@ -145,13 +179,20 @@ def boss_frame(boss, now):
     name = boss.bdef['key']
     if name in IDLE_BODY_TRAVEL:
         signature = getattr(boss, 'signature', None)
-        if signature and name != 'boss_dragon' and now < signature.end_at:
-            index, swing = _signature_pose(signature, now)
+        if signature and now < signature.end_at:
+            if name == 'boss_dragon':
+                # The shot starts at animation age 300; wind up again before the next one.
+                elapsed = now - start if start is not None else 0
+                if now < signature.impact_at or elapsed >= 600:
+                    index, swing = 1, -.75
+                elif elapsed < 450:
+                    index, swing = 2, 1
+                else:
+                    index, swing = 3, .35
+            else:
+                index, swing = _signature_pose(signature, now)
         elif start is not None and 0 <= now - start < 600:
             index, swing = _ATTACK_POSES[(now - start) // 75]
-            # Dragon fireballs already set the animation clock back by 300 ms.
-            if name == 'boss_dragon' and signature and 300 <= now - start < 450:
-                index = 2
         else:
             return None
         sprite = frame(name + '_attack', index)
@@ -159,16 +200,9 @@ def boss_frame(boss, now):
     index = action_frame(start, now)
     if index is None:
         return None
-    if name == 'boss_niu':
-        index = min(7, (now - boss.animation_attack_at) // 75)
-    pattern = getattr(boss, 'last_pattern', '')
     if name == 'boss_zongzong':
         action = 'bomb' if getattr(boss, 'attack_phase', 1) % 2 else 'wave'
         result = frame(name + '_' + action, index)
-        if result is not None:
-            return result
-    if name == 'boss_niu' and pattern in ('vortex', 'lightning'):
-        result = frame(name + '_' + pattern, index)
         if result is not None:
             return result
     return frame(name + '_attack', index)

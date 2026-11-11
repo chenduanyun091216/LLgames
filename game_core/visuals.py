@@ -78,8 +78,10 @@ def draw_glow(surface, center, radius, color, opacity=255):
 def _bubble(radius, opacity):
     bubble = pygame.Surface((radius * 2 + 2, radius * 2 + 2), pygame.SRCALPHA)
     center = (radius + 1, radius + 1)
-    pygame.draw.circle(bubble, (162, 225, 238, round(95 * opacity / 16)), center, radius, 1)
-    bubble.set_at((radius, 2), (222, 247, 255, round(156 * opacity / 16)))
+    pygame.draw.circle(bubble, (187, 235, 249, round(154 * opacity / 8)), center, radius, 1)
+    pygame.draw.circle(bubble, (239, 252, 255, round(225 * opacity / 8)),
+                       (center[0] - radius // 3, center[1] - radius // 2),
+                       2 if radius >= 6 else 1)
     return bubble
 
 
@@ -94,23 +96,24 @@ def _scaled_bubble(radius, opacity, diameter):
 def draw_water_drift(surface, now):
     width, height = surface.get_size()
     rendered = isinstance(surface, RenderSurface)
+    radii = (3, 4, 6, 8)
     if rendered:
-        diameters = {radius: surface.length(radius * 2 + 2) for radius in (2, 3, 4)}
-    margin = 8  # Wrap fully outside the visible area.
-    for rise, count, seed in ((height, 24, 0), (max(1, height // 4), 12, 24)):
+        diameters = {radius: surface.length(radius * 2 + 2) for radius in radii}
+    margin = max(radii) + 2  # Wrap fully outside the visible area.
+    for rise, count, seed in ((height, 30, 0), (max(1, height // 3), 16, 30)):
         travel = rise + 2 * margin
         for index in range(count):
             i = index + seed
-            radius = 2 if seed else 2 + i % 3
-            speed = 0.015 + (radius - 2) * 0.007 + (i % 4) * 0.001
+            radius = radii[0] if seed else radii[i % len(radii)]
+            speed = 0.025 + (radius - 3) * 0.006 + (i % 4) * 0.002
             distance = now * speed
             position = (travel * index / count - distance) % travel - margin
-            opacity = round(16 * max(0, min(1, position / rise)))
+            opacity = round(8 * max(0, min(1, position / (rise * 0.45))))
             if opacity == 0:
                 continue
             y = height - rise + position
             x = width * (0.06 + 0.88 * ((i * 47 + 13) % 97) / 97)
-            x += math.sin(distance * 0.045 + i) * (radius + 2)
+            x += math.sin(distance * 0.045 + i) * (radius + 4)
             position = (round(x) - radius - 1, round(y) - radius - 1)
             if rendered:
                 bubble = _scaled_bubble(radius, opacity, diameters[radius])

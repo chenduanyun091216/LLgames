@@ -46,6 +46,39 @@ class AnimationTests(unittest.TestCase):
         self.assertEqual(animation.action_frame(1000, 1300), 2)
         self.assertIsNone(animation.action_frame(1000, 1700))
 
+    def test_q_style_player_animation_priority_and_recovery(self):
+        player = entities.Player()
+        player.character = 'fire'
+        player.animation_move_at = 1000
+        player.shoot(1000)
+        player.animation_skill = 'fireball'
+        player.animation_skill_at = 1000
+        player.animation_hit_at = 1000
+        with patch.object(animation, 'frame', side_effect=lambda name, index: name):
+            self.assertEqual(animation.player_frame(player, 'player_fire', 1000, 0), 'player_fire_down')
+            self.assertEqual(animation.player_frame(player, 'player_fire', 1000), 'player_fire_hurt')
+            self.assertEqual(animation.player_frame(player, 'player_fire', 1300), 'player_fire_fireball')
+            player.animation_skill_at = None
+            player.shoot(1400)
+            self.assertEqual(animation.player_frame(player, 'player_fire', 1450), 'player_fire_attack')
+            player.animation_move_at = 1630
+            self.assertEqual(animation.player_frame(player, 'player_fire', 1640), 'player_fire_run')
+            self.assertEqual(animation.player_frame(player, 'player_fire', 1800), 'player_fire_idle')
+
+    def test_fisher_animation_switches_between_grenade_shoot_walk_and_idle(self):
+        player = entities.Player()
+        player.animation_move_at = 1000
+        player.shoot(1000)
+        player.animation_skill = 'fisher_grenade'
+        player.animation_skill_at = 1000
+        with patch.object(animation, 'frame', side_effect=lambda name, index: (name, index)):
+            self.assertEqual(animation.player_frame(player, 'player1', 1150), ('player1_fisher_grenade', 1))
+            player.animation_skill_at = None
+            self.assertEqual(animation.player_frame(player, 'player1', 1045), ('player1_attack', 1))
+            player.animation_move_at = 1190
+            self.assertEqual(animation.player_frame(player, 'player1', 1200), ('player1_run', 2))
+            self.assertEqual(animation.player_frame(player, 'player1', 1440), ('player1_idle', 2))
+
     def test_zongzong_expressions_follow_hits_without_changing_damage(self):
         enemy = entities.Enemy(next(e for e in config.ENEMY_DEFS if e.get('zongzong')))
         enemy.y = enemy.ENTRY_DAMAGE_Y
@@ -93,37 +126,11 @@ class AnimationTests(unittest.TestCase):
         self.assertEqual([call.args[0].get_size() for call in rotate.call_args_list],
                          [tuple(view.length(side) for side in size) for size in original_sizes])
 
-    def test_boss_animation_matches_special_state(self):
-        niu = SimpleNamespace(bdef={'key': 'boss_niu'}, last_pattern='vortex', animation_attack_at=1000)
-        with patch.object(animation, 'frame', wraps=animation.frame) as pick:
-            self.assertIsNotNone(animation.boss_frame(niu, 1300))
-            pick.assert_called_with('boss_niu_vortex', 4)
+    def test_zongzong_animation_matches_rage_state(self):
         zong = SimpleNamespace(bdef={'key': 'boss_zongzong'}, fusion_mode='rage', fusion_started_at=1000)
         with patch.object(animation, 'frame', wraps=animation.frame) as pick:
             self.assertIsNotNone(animation.boss_frame(zong, 1300))
             pick.assert_called_with('boss_zongzong_rage', 2)
-
-    def test_niu_uses_eight_frames_for_attacks_and_laser(self):
-        niu = SimpleNamespace(bdef={'key': 'boss_niu'}, last_pattern='axes', animation_attack_at=1000)
-        with patch.object(animation, 'frame', wraps=animation.frame) as pick:
-            for index in range(8):
-                self.assertIsNotNone(animation.boss_frame(niu, 1000 + 75 * index))
-                pick.assert_called_with('boss_niu_attack', index)
-            niu.laser_warning_start = 1000
-            niu.laser_active_until = 0
-            animation.boss_frame(niu, 1350)
-            pick.assert_called_with('boss_niu_laser', 7)
-            niu.laser_warning_start = 0
-            niu.laser_active_until = 4000
-            animation.boss_frame(niu, 2150)
-            pick.assert_called_with('boss_niu_laser', 2)
-
-    def test_niu_action_sheets_have_eight_frames(self):
-        for action in ('attack', 'vortex', 'lightning', 'laser'):
-            with self.subTest(action=action):
-                frames = [animation.frame('boss_niu_' + action, i) for i in range(8)]
-                self.assertGreaterEqual(len({pygame.image.tostring(frame, 'RGBA') for frame in frames}), 7)
-                self.assertIs(animation.frame('boss_niu_' + action, 8), frames[0])
 
     def test_niu_shield_image_is_drawn_only_while_active(self):
         boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
@@ -148,7 +155,7 @@ class AnimationTests(unittest.TestCase):
         width = round(boss.w * 2.5)
         with patch.object(special_bosses, '_niu_shield_fragments',
                           wraps=special_bosses._niu_shield_fragments) as split:
-            boss._draw_shield_break(view, 1300)
+            special_bosses.NiuShieldShard(300, 200, 2, width).draw(view)
         self.assertEqual(split.call_args.args[0].get_size(),
                          (view.length(width), view.length(round(width / 3))))
 
@@ -176,19 +183,30 @@ class AnimationTests(unittest.TestCase):
         self.assertEqual(boss.shield_break_at, 2000)
         self.assertEqual(boss.shield_until, 0)
 
+    def test_niu_shield_hits_flash_and_play_metal_sound(self):
+        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
+        boss.y = 60
+        boss.shield_until = 2000
+        canvas = pygame.Surface((1200, 1000), pygame.SRCALPHA)
+        with patch.object(config, 'game_ticks', return_value=1000), \
+                patch.object(special_bosses, 'play_sound') as sound:
+            boss.hit_by('pistol', 1)
+            boss.hit_by('pistol', 1)
+            sound.assert_called_once_with('niu_shield_hit')
+            self.assertEqual(boss.shield_hit_at, 1000)
+            with patch.object(boss, '_draw_shield_hit', wraps=boss._draw_shield_hit) as flash:
+                boss.draw(canvas)
+                flash.assert_called_once()
+
     def test_niu_shield_break_uses_large_shield_fragments(self):
         shield = special_bosses.image_asset('effects/boss_niu_shield.png', (450, 150))
         fragments = special_bosses._niu_shield_fragments(shield)
         self.assertEqual(len(fragments), 5)
         self.assertTrue(all(fragment.get_bounding_rect().width >= 70 for fragment in fragments))
-        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
-        boss.y = 60
-        boss.shield_break_at = 1000
         canvas = pygame.Surface((1200, 1000), pygame.SRCALPHA)
-        with patch.object(special_bosses, '_niu_shield_fragments', wraps=special_bosses._niu_shield_fragments) as split:
-            boss._draw_shield_break(canvas, 1300)
-            split.assert_called_once()
-        self.assertGreater(canvas.get_bounding_rect().width, boss.w * 2)
+        shard = special_bosses.NiuShieldShard(300, 200, 2, 450)
+        shard.draw(canvas)
+        self.assertGreaterEqual(canvas.get_bounding_rect().width, 70)
 
     def test_niu_axe_slam_scales_and_tints_boss_sprite(self):
         boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
@@ -203,7 +221,8 @@ class AnimationTests(unittest.TestCase):
         original = pygame.Surface((1, 1), pygame.SRCALPHA)
         original.fill((200, 200, 200, 255))
         tinted = entities._niu_slam_sprite(original).get_at((0, 0))
-        self.assertGreater(tinted.r, tinted.g * 2)
+        self.assertGreater(tinted.r, tinted.g)
+        self.assertGreater(tinted.g, tinted.b)
 
     def test_niu_axe_slam_windup_has_no_warning_lines(self):
         boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
@@ -213,6 +232,23 @@ class AnimationTests(unittest.TestCase):
             with self.subTest(elapsed=elapsed), patch.object(special_bosses.Draw, 'line') as line:
                 boss._draw_axe_slam(canvas, 1000 + elapsed)
                 line.assert_not_called()
+
+    def test_niu_axe_slam_draws_sprite_below_boss(self):
+        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
+        boss.x, boss.y = 240, 60
+        boss.axe_slam_start = 1000
+        size = (config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
+        for scale in (1, 2):
+            with self.subTest(scale=scale):
+                output = tuple(value * scale for value in size)
+                canvas = pygame.Surface(output, pygame.SRCALPHA)
+                target = RenderSurface(canvas, size, output, (0, 0)) if scale > 1 else canvas
+                boss._draw_axe_slam(target, 2000)
+                bounds = canvas.get_bounding_rect()
+                hitbox = boss.axe_slam_rect(2000)
+                self.assertGreater(bounds.width, hitbox.width * scale)
+                self.assertGreaterEqual(bounds.top, hitbox.top * scale)
+                self.assertGreaterEqual(bounds.bottom, hitbox.bottom * scale)
 
     def test_boss_laser_and_zong_attack_select_their_own_frames(self):
         crab = SimpleNamespace(bdef={'key': 'boss_crab'}, laser_warning_start=1000, laser_active_until=0)
@@ -248,20 +284,89 @@ class AnimationTests(unittest.TestCase):
                     self.assertTrue(pick.called)
                     self.assertIsNotNone(pick(boss, 1300))
 
-    def test_niu_running_reverses_direction_and_laser_takes_priority(self):
+    def test_niu_scooter_reverses_direction_without_laser(self):
         boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
         boss.entered = True
         right = boss._body_frame(1000)
-        self.assertIsNotNone(right)
-        boss.movement_timer = 16
-        self.assertIsNot(boss._body_frame(1000), right)
-        boss.movement_timer = 0
+        self.assertIsNotNone(special_bosses.image_asset('bosses/boss_niu_scooter.png'))
+        self.assertIsNot(boss._body_frame(1200), right)
         boss.running_left = True
         left = boss._body_frame(1000)
         self.assertEqual(pygame.image.tostring(left, 'RGBA'),
                          pygame.image.tostring(pygame.transform.flip(right, True, False), 'RGBA'))
-        boss.laser_active_until = 2000
-        self.assertIs(boss._body_frame(1000), special_bosses.image_asset('bosses/boss_niu_laser.png'))
+        self.assertFalse(boss.can_laser())
+        with patch.object(special_bosses.random, 'choice', return_value='axes') as choose:
+            boss.attack(1000, 400, opening=True)
+        self.assertNotIn('laser', choose.call_args.args[0])
+
+    def test_niu_stops_patrol_and_dismounts_until_attack_ends(self):
+        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
+        boss.entered = True
+        boss.last_pattern = 'bullets'
+        boss.animation_attack_at = 1000
+        x = boss.x
+        with patch.object(config, 'game_ticks', return_value=1599):
+            boss.update()
+        self.assertEqual(boss.x, x)
+        self.assertIs(boss._body_frame(1599).get_parent(),
+                      special_bosses.image_asset('bosses/boss_niu_actions.png'))
+        with patch.object(config, 'game_ticks', return_value=1600):
+            boss.update()
+        self.assertNotEqual(boss.x, x)
+        self.assertIsNot(boss._body_frame(1600), boss._body_frame(1599))
+
+    def test_niu_axe_attack_cycles_through_four_poses(self):
+        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
+        boss.entered = True
+        boss.last_pattern = 'axes'
+        boss.animation_attack_at = 1000
+        sheet = special_bosses.image_asset('bosses/boss_niu_axe_sequence.png')
+        frames = [boss._body_frame(1000 + 150 * index) for index in range(4)]
+        self.assertTrue(all(frame.get_parent() is sheet for frame in frames))
+        self.assertEqual(len({frame.get_offset() for frame in frames}), 4)
+
+    def test_niu_shield_shards_launch_separately_and_aim_at_launch(self):
+        boss = special_bosses.NiuBoss(config.BOSS_DEFS[6], config.DIFFICULTY_PRESETS['easy'])
+        boss.shield_break_at = 1000
+        with patch.object(config, 'game_ticks', return_value=1000):
+            shards = boss.launch_shield_shards()
+            self.assertEqual(len(shards), 5)
+            self.assertFalse(boss.launch_shield_shards())
+        first, second, *waiting = shards
+        self.assertGreater(second.x - first.x, first.width / 5)
+        starting_position = first.origin
+        boss.x += 20
+        boss.y += 12
+        first.follow_shield(boss)
+        self.assertEqual(first.origin, (starting_position[0] + 20, starting_position[1] + 12))
+        left, right = boss.x - 220, boss.x + 220
+        target_y = boss.y + boss.h + 400
+        with patch.object(config, 'game_ticks', return_value=2499):
+            for shard in shards:
+                shard.update(left, target_y)
+                self.assertEqual((shard.x, shard.y), shard.origin)
+        with patch.object(config, 'game_ticks', return_value=2550):
+            for shard in shards:
+                shard.update(left, target_y)
+            self.assertLess(first.x, first.prev_x)
+            self.assertAlmostEqual(((first.x - first.prev_x) ** 2 + (first.y - first.prev_y) ** 2) ** .5, 70)
+            self.assertEqual((second.x, second.y), second.origin)
+            self.assertFalse(second.hits_rect(pygame.Rect(*second.origin, 2, 2)))
+        with patch.object(config, 'game_ticks', return_value=2850):
+            for shard in shards:
+                shard.update(right, target_y)
+        self.assertLess(first.x, first.prev_x)
+        self.assertGreater(second.x, second.prev_x)
+        self.assertTrue(second.hits_rect(pygame.Rect(*second.origin, 2, 2)))
+        self.assertTrue(all((shard.x, shard.y) == shard.origin for shard in waiting))
+        with patch.object(config, 'game_ticks', return_value=3750):
+            for shard in shards:
+                shard.update(right, target_y)
+        self.assertTrue(all((shard.x, shard.y) != shard.origin for shard in shards))
+        launched_origin = first.origin
+        boss.x += 20
+        first.follow_shield(boss)
+        self.assertEqual(first.origin, launched_origin)
 
     def test_first_six_bosses_play_distinct_idle_and_attack_poses(self):
         for definition in config.BOSS_DEFS[:6]:
@@ -362,7 +467,7 @@ class AnimationTests(unittest.TestCase):
                      'player_ice_run', 'player_water_run', 'player_radiation_run',
                      'boss_lobster_attack', 'boss_crab_attack', 'boss_octopus_attack',
                      'boss_shark_attack', 'boss_dragon_attack', 'boss_attack',
-                     'boss_niu_attack', 'boss_zongzong_attack'):
+                     'boss_zongzong_attack'):
             self.assertIsNotNone(animation.frame(name, 0), name)
 
 

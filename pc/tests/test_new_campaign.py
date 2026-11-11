@@ -76,9 +76,10 @@ class NewCampaignTests(unittest.TestCase):
             else:
                 self.assertEqual(game.state, GameState.VICTORY)
 
-    def test_new_waves_only_use_their_three_new_species(self):
+    def test_factory_and_temple_waves_each_use_six_species(self):
         game = self.game()
         for level, expected in ((9, config.FACTORY_ENEMY_KEYS), (10, config.TEMPLE_ENEMY_KEYS)):
+            self.assertEqual(len(expected), 6)
             game.state = GameState.PLAYING
             game._start_level(level)
             random.seed(410 + level)
@@ -92,47 +93,71 @@ class NewCampaignTests(unittest.TestCase):
         for old_level in config.LEVEL_CONFIGS[:8]:
             self.assertFalse(set(old_level['enemy_pool']) & set(config.FACTORY_ENEMY_KEYS + config.TEMPLE_ENEMY_KEYS))
 
-    def test_temple_rifts_stagger_worms_and_destroyed_eye_stays_gone(self):
-        for difficulty, batch_size in (('easy', 3), ('medium', 4), ('hard', 6)):
-            with self.subTest(difficulty=difficulty):
-                game = self.game(difficulty=difficulty)
+    def test_whale_swallow_finishes_before_countdown_or_game_over(self):
+        for lives, expected in ((2, GameState.INFINITE_COUNTDOWN), (1, GameState.GAME_OVER)):
+            with self.subTest(lives=lives):
+                game = self.game()
                 game._start_level(10)
-                game._update_temple_enemies(1000)
-                game._update_temple_enemies(9500)
-                left, right = game.enemies
-                self.assertLess(left.x, right.x)
-                self.assertEqual(left.temple_worms_left, batch_size)
-                self.assertEqual(right.temple_worms_left, batch_size)
-                game._update_temple_enemies(left.temple_spawn_at)
-                self.assertEqual(len(game.enemies), 3)
-                self.assertEqual(right.temple_worms_left, batch_size)
-                game._kill_enemy(left)
-                for _ in range(batch_size):
-                    game._update_temple_enemies(right.temple_spawn_at)
-                self.assertEqual(game.level_kills, 0)
-                self.assertEqual(len(game.enemies), 2 + batch_size)
-                game._update_temple_enemies(right.temple_spawn_at)
-                self.assertNotIn(left, game.enemies)
-                self.assertEqual(right.temple_worms_left, batch_size)
-                game._start_level(11)
-                self.assertFalse(game.enemies)
+                game._trigger_boss()
+                game.lives = lives
+                game.player.gold = 0
+                game.boss.skill_index = 3
+                game.boss.attack(1000, game.player.x)
+                with patch.object(config, 'game_ticks', return_value=6000):
+                    game._update_whale_suction(6000)
+                self.assertEqual(game.state, GameState.BOSS_FIGHT)
+                self.assertEqual(game.lives, lives)
+                with patch.object(config, 'game_ticks', return_value=6700):
+                    game._update_whale_suction(6700)
+                self.assertEqual(game.state, expected)
+                self.assertEqual(game.lives, lives - 1)
+
+    def test_temple_rift_reopens_with_a_second_eye_only_if_it_survives(self):
+        for survives in (False, True):
+            for size in ((480, 720), (960, 540)):
+                with self.subTest(survives=survives, size=size):
+                    config.update_mobile_view(size)
+                    game = self.game()
+                    game._start_level(10)
+                    game._update_temple_enemies(1000)
+                    game._update_temple_enemies(9500)
+                    first, = game.enemies
+                    self.assertEqual(first.max_hp, 16)
+                    self.assertEqual((first.unscaled_base_w, first.unscaled_base_h), (378, 126))
+                    if not survives:
+                        game._kill_enemy(first)
+                    for _ in range(5):
+                        game._update_temple_enemies(first.temple_spawn_at)
+                    eyes = [enemy for enemy in game.enemies if enemy.temple_kind == 'rift']
+                    self.assertEqual(len(eyes), 2 if survives else 0)
+                    if survives:
+                        left, right = eyes
+                        self.assertFalse(left.rect().colliderect(right.rect()))
+                        for eye in eyes:
+                            self.assertLessEqual(eye.rect().bottom, config.SCREEN_HEIGHT / 2)
+                            self.assertEqual(eye.max_hp, 16)
+                        game._kill_enemy(left)
+                        game._update_temple_enemies(right.temple_spawn_at)
+                        self.assertEqual([e for e in game.enemies if e.temple_kind == 'rift'], [right])
 
     def test_temple_rifts_wait_at_worm_cap_and_resume_when_slot_opens(self):
         game = self.game(difficulty='hard')
         game._start_level(10)
         game._update_temple_enemies(1000)
         game._update_temple_enemies(9500)
-        left, right = game.enemies
-        for now in range(9980, 12500, 20):
-            game._update_temple_enemies(now)
+        left, = game.enemies
+        for _ in range(7):
+            game._update_temple_enemies(left.temple_spawn_at)
+        right = next(e for e in game.enemies if e.temple_kind == 'rift' and e is not left)
+        for _ in range(4):
+            game._update_temple_enemies(right.temple_spawn_at)
         worms = [enemy for enemy in game.enemies if enemy.temple_kind == 'worm']
         self.assertEqual(len(worms), 10)
-        remaining = left.temple_worms_left + right.temple_worms_left
-        self.assertEqual(remaining, 2)
+        self.assertEqual(left.temple_worms_left + right.temple_worms_left, 8)
         game._kill_enemy(worms[0])
-        game._update_temple_enemies(12500)
+        game._update_temple_enemies(right.temple_spawn_at)
         self.assertEqual(sum(enemy.temple_kind == 'worm' for enemy in game.enemies), 10)
-        self.assertEqual(left.temple_worms_left + right.temple_worms_left, 1)
+        self.assertEqual(left.temple_worms_left + right.temple_worms_left, 7)
 
     def test_infinite_leaks_remove_enemies_and_use_shared_hit_protection(self):
         game = self.game()
@@ -181,7 +206,7 @@ class NewCampaignTests(unittest.TestCase):
 
     def test_pc_browser_use_identical_boss_health_interval_and_attack_specs(self):
         fields = ('skill', 'warning_ms', 'active_ms', 'damage', 'speed', 'angle', 'width',
-                  'height', 'ring_speed', 'ring_thickness', 'gap_degrees')
+                  'height', 'ring_speed', 'ring_thickness')
         for difficulty in ('easy', 'medium', 'hard'):
             for level in (9, 10):
                 specs = []
@@ -194,7 +219,7 @@ class NewCampaignTests(unittest.TestCase):
                     boss.entered = True
                     attacks = []
                     for i in range(4):
-                        with patch('game_core.abyss_bosses.random.uniform', side_effect=random.Random(i).uniform):
+                        with patch('game_core.abyss_bosses.random', random.Random(i)):
                             shots = boss.attack(1000 + i * 10000, 480, 610)
                         game._add_boss_projectiles(shots)
                         attacks.append([tuple(getattr(p, f) for f in fields) for p in shots])

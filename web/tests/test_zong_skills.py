@@ -7,6 +7,7 @@ os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 from game_core import config
+from game_core.render import RenderSurface
 from game_core.special_bosses import ZongBoss, ZongReflectBullet
 
 
@@ -24,17 +25,31 @@ class ZongSkillsTests(unittest.TestCase):
         boss.fight_start_time = 1000
         return boss
 
-    def test_opening_snow_once_after_five_seconds(self):
+    def test_opening_snow_once_after_three_seconds(self):
         boss = self.make_boss()
-        with patch('game_core.config.game_ticks', return_value=5999):
+        with patch('game_core.config.game_ticks', return_value=3999):
             boss.update()
             self.assertEqual(boss.snow_until, 0)
-        with patch('game_core.config.game_ticks', return_value=6000):
+        with patch('game_core.config.game_ticks', return_value=4000):
             boss.update()
-            self.assertEqual(boss.snow_until, 9000)
-        with patch('game_core.config.game_ticks', return_value=9001):
+            self.assertEqual(boss.snow_until, 7000)
+        with patch('game_core.config.game_ticks', return_value=7001):
             boss.update()
-            self.assertEqual(boss.snow_until, 9000)
+            self.assertEqual(boss.snow_until, 7000)
+
+    def test_snow_composites_only_visible_effect_tiles(self):
+        size = (960, 540)
+        output = (1920, 1080)
+        canvas = pygame.Surface(output, pygame.SRCALPHA)
+        view = RenderSurface(canvas, size, output, (0, 0), track_damage=True)
+        with patch.object(config, 'SCREEN_WIDTH', size[0]), \
+                patch.object(config, 'SCREEN_HEIGHT', size[1]), \
+                patch.object(config, 'game_ticks', return_value=1000):
+            ZongBoss.draw_snow(view, 2000, config.make_font(16), 20)
+        dirty_tiles = sum(row.bit_count() for row in view._dirty_rows)
+        total_tiles = (output[0] // view.tile) * len(view._dirty_rows)
+        self.assertGreater(dirty_tiles, 0)
+        self.assertLess(dirty_tiles, total_tiles // 2)
 
     def test_bombs_have_three_distinct_colors(self):
         boss = self.make_boss()

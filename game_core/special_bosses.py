@@ -1,13 +1,14 @@
 """第七、八关 Boss 的专属攻击与阶段。"""
 import math
-from functools import lru_cache
+from functools import lru_cache, partial
 import random
 import pygame
 from .render import Draw, RenderSurface, blit_effect, effect_layer
 
-from . import config
+from . import animation, config
 from .asset_loader import image_asset, scale_surface_cached
 from .entities import Boss, BossProjectile, Enemy
+from .sounds import play_sound
 from .sprites import _circle, _rect, blit_lit_sprite
 from .visuals import blit_label, draw_electric_arc
 
@@ -32,6 +33,10 @@ class ReturningAxe(BossProjectile):
         self.blast_reason = '被牛魔王的飞斧爆炸击败！'
         self.max_lifetime = self.OUTBOUND_MS + self.RETURN_MS + 80
 
+    @property
+    def landing_y(self):
+        return config.SCREEN_HEIGHT - 28
+
     def update(self, target_x=None, target_y=None):
         now = config.game_ticks()
         age = now - self.spawn_time
@@ -48,7 +53,7 @@ class ReturningAxe(BossProjectile):
             progress = age / self.OUTBOUND_MS
             ox, oy = self.origin
             self.x = ox + (self.target_x - ox) * progress + self.side * 105 * math.sin(math.pi * progress)
-            self.y = oy + (config.GAME_AREA_BOTTOM - 20 - oy) * progress
+            self.y = oy + (self.landing_y - oy) * progress
             return
         if self.impact_x is None:
             self.impact_x = self.x
@@ -57,38 +62,99 @@ class ReturningAxe(BossProjectile):
         boss_x = self.boss.x + self.side * 42
         boss_y = self.boss.y + self.boss.h * 0.65
         self.x = boss_x + (self.impact_x - boss_x) * progress + self.side * 105 * math.sin(math.pi * progress)
-        self.y = boss_y + (config.GAME_AREA_BOTTOM - 20 - boss_y) * progress
+        self.y = boss_y + (self.landing_y - boss_y) * progress
 
     def rect(self):
         return self.block_rect()
 
+    @staticmethod
+    @lru_cache(maxsize=96)
+    def _spin_frame(axe, size, angle):
+        return pygame.transform.rotate(scale_surface_cached(axe, size), angle)
+
     def draw(self, surf):
-        cx, cy = int(self.x), int(self.y)
-        angle = config.game_ticks() * 0.0462
-        glow = effect_layer(surf, (110, 110))
-        gc = (55, 55)
-        red = self.red
-        Draw.circle(glow, (255, 55, 15, 28) if red else (30, 100, 255, 35), gc, 54)
-        Draw.circle(glow, (255, 120, 30, 65) if red else (65, 155, 255, 75), gc, 46)
-        Draw.circle(glow, (255, 215, 70, 85) if red else (145, 220, 255, 105), gc, 39, 5)
-        def rotate(point):
-            x, y = point
-            return (gc[0] + x * math.cos(angle) - y * math.sin(angle),
-                    gc[1] + x * math.sin(angle) + y * math.cos(angle))
-        Draw.line(glow, (55, 28, 27), rotate((0, 38)), rotate((0, -34)), 11)
-        Draw.line(glow, (190, 135, 70), rotate((0, 36)), rotate((0, -34)), 5)
-        blade = [rotate(p) for p in ((-4, -25), (13, -37), (37, -42), (30, -25),
-                                      (27, -10), (38, 3), (12, -1), (-4, -12))]
-        Draw.polygon(glow, (255, 218, 140) if red else (205, 240, 255), blade)
-        Draw.polygon(glow, (175, 50, 25) if red else (35, 95, 175), blade, 3)
-        Draw.lines(glow, (255, 250, 210), False, [rotate(p) for p in ((37, -42), (30, -25), (27, -10), (38, 3))], 3)
-        arc_color = (255, 169, 70) if red else (105, 221, 255)
-        for side in (0, math.pi):
-            start = (angle + side) % math.tau
-            Draw.arc(glow, (*arc_color, 215), (7, 7, 96, 96), start, start + 1.2, 3)
-        Draw.circle(glow, (255, 245, 190) if red else (225, 250, 255), gc, 8)
-        Draw.circle(glow, (100, 35, 35), gc, 4)
-        blit_effect(surf, glow, (cx - 55, cy - 55))
+        axe = image_asset('effects/boss_niu_slam_axe.png')
+        if axe is None:
+            super().draw(surf)
+            return
+        age = config.game_ticks() - self.spawn_time
+        angle = (self.side * (age * 2 // 11) * 15) % 360
+        color = (255, 143, 63) if self.red else (107, 203, 255)
+        glow = effect_layer(surf, (120, 120))
+        for radius, alpha, width in ((51, 55, 9), (49, 205, 3), (42, 85, 2)):
+            phase = math.radians(-angle)
+            Draw.arc(glow, (*color, alpha), (60 - radius, 60 - radius, 2 * radius, 2 * radius),
+                     phase, phase + 1.8, width)
+        blit_effect(surf, glow, (round(self.x - 60), round(self.y - 60)))
+        scaled = isinstance(surf, RenderSurface)
+        width = surf.length(56) if scaled else 56
+        height = max(1, round(width * axe.get_height() / axe.get_width()))
+        frame = self._spin_frame(axe, (width, height), angle)
+        center = surf.point((self.x, self.y)) if scaled else (round(self.x), round(self.y))
+        blit = surf.blit_pixels if scaled else surf.blit
+        blit(frame, frame.get_rect(center=center).topleft)
+
+
+class NiuShieldShard(BossProjectile):
+    LAUNCH_DELAY_MS = 1500
+    LAUNCH_INTERVAL_MS = 300
+
+    def __init__(self, x, y, index, width):
+        super().__init__(x, y, 0, 0)
+        self.index = index
+        self.width = width
+        self.r = max(8, round(width / 18))
+        self.max_lifetime = 1000
+        self.origin = (x, y)
+        self.launched = False
+
+    @property
+    def unblockable(self):
+        return not self.launched
+
+    @property
+    def launch_at(self):
+        return self.spawn_time + self.LAUNCH_DELAY_MS + self.index * self.LAUNCH_INTERVAL_MS
+
+    def follow_shield(self, boss):
+        if not self.launched:
+            self.x = self.prev_x = boss.x + (self.index - 2) * self.width * .23
+            self.y = self.prev_y = boss.y + boss.h + self.width / 3 * .28
+            self.origin = (self.x, self.y)
+
+    def update(self, target_x=None, target_y=None):
+        age = config.game_ticks() - self.launch_at
+        if age < 0:
+            return
+        if not self.launched:
+            if target_x is None or target_y is None:
+                return
+            self.angle = math.degrees(math.atan2(target_x - self.x, target_y - self.y))
+            self.launched = True
+        self.prev_x, self.prev_y = self.x, self.y
+        distance = min(age, self.max_lifetime) * 1.4
+        angle = math.radians(self.angle)
+        self.x = self.origin[0] + math.sin(angle) * distance
+        self.y = self.origin[1] + math.cos(angle) * distance
+        self.alive = age < self.max_lifetime
+
+    def hits_rect(self, rect):
+        return self.launched and bool(rect.inflate(2 * self.r, 2 * self.r).clipline(
+            (round(self.prev_x), round(self.prev_y)), (round(self.x), round(self.y))))
+
+    def draw(self, surf):
+        shield = _niu_shield_image(surf, self.width, max(1, round(self.width / 3)))
+        if shield is None:
+            super().draw(surf)
+            return
+        piece = _niu_shield_fragments(shield)[self.index]
+        age = max(0, config.game_ticks() - self.launch_at)
+        angle = (age // 30 * 15 * (self.index % 2 * 2 - 1)) % 360
+        fragment = _niu_rotated_shield_fragment(piece, angle)
+        scaled = isinstance(surf, RenderSurface)
+        center = surf.point((self.x, self.y)) if scaled else (round(self.x), round(self.y))
+        blit = surf.blit_pixels if scaled else surf.blit
+        blit(fragment, fragment.get_rect(center=center).topleft)
 
 
 class CrescentWave(BossProjectile):
@@ -269,8 +335,8 @@ def _niu_shield_image(surf, width, height):
 class NiuBoss(Boss):
     AXE_SLAM_CYCLE_MS = 1500
     AXE_SLAM_COUNT = 3
+    AXE_SLAM_LAND_MS = 1100
     axe_slam_duration = AXE_SLAM_CYCLE_MS * AXE_SLAM_COUNT
-    RUN_POSES = ('run_stride', 'run_pass', 'run_reverse', 'run_pass')
 
     def __init__(self, bdef, difficulty):
         super().__init__(bdef, difficulty)
@@ -282,9 +348,14 @@ class NiuBoss(Boss):
         self.lightning_next_tick = 0
         self.shield_until = 0
         self.shield_damage = 0
+        self.shield_hit_at = None
+        self.shield_hit_offset = 0
+        self.shield_hit_sound_at = -100
         self.shield_break_at = None
+        self.shield_shards_launched_at = None
         self.axe_slam_start = None
         self.axe_slam_hit = -1
+        self.axe_slam_impact = None
         self.shield_thresholds = bdef.get('shield_thresholds', (0.75, 0.5, 0.25))
         self.shield_triggered = set()
         self.next_hazard_time = 0
@@ -294,15 +365,22 @@ class NiuBoss(Boss):
         previous_hp = self.hp
         super().hit_by(weapon_name, amount, source=source, hit_rect=hit_rect)
         dealt = max(0, previous_hp - self.hp)
-        if config.game_ticks() < self.shield_until:
+        now = config.game_ticks()
+        if now < self.shield_until and dealt:
+            if now - self.shield_hit_sound_at >= 100:
+                play_sound('niu_shield_hit')
+                self.shield_hit_sound_at = now
+            self.shield_hit_at = now
+            offset = (hit_rect.centerx - self.x) / self.w if hit_rect is not None else 0
+            self.shield_hit_offset = max(-1, min(1, offset))
             self.shield_damage += dealt
             if self.shield_damage >= self.max_hp * 0.15:
                 self.shield_until = 0
-                self.shield_break_at = config.game_ticks()
+                self.shield_break_at = now
         for threshold in self.shield_thresholds:
             if threshold not in self.shield_triggered and previous_hp / self.max_hp > threshold >= self.hp / self.max_hp:
                 self.shield_triggered.add(threshold)
-                self.shield_until = config.game_ticks() + (3000 if 'campaign_tier' in self.bdef else 5000)
+                self.shield_until = now + (3000 if 'campaign_tier' in self.bdef else 5000)
                 self.shield_damage = 0
                 break
 
@@ -319,35 +397,68 @@ class NiuBoss(Boss):
         if self.entered and not was_entered and 'campaign_tier' not in self.bdef:
             self.last_attack_time = config.game_ticks()
 
+    def _attack_pose(self, now):
+        attack_at = getattr(self, 'animation_attack_at', None)
+        if self.axe_slam_start is not None and 0 <= now - self.axe_slam_start < self.axe_slam_duration:
+            return 'slam' if (now - self.axe_slam_start) % self.AXE_SLAM_CYCLE_MS < 800 else 'axes'
+        if now < self.lightning_until:
+            return 'lightning'
+        if attack_at is not None and 0 <= now - attack_at < 600:
+            return 'bullets' if self.last_pattern == 'bullets' else 'axes'
+        shield_duration = 3000 if 'campaign_tier' in self.bdef else 5000
+        if 0 <= now - (self.shield_until - shield_duration) < 600:
+            return 'lightning'
+        return None
+
+    def _move(self, speed_mult, laser=False):
+        if self._attack_pose(config.game_ticks()) is None:
+            super()._move(speed_mult, laser=laser)
+
     @staticmethod
-    @lru_cache(maxsize=3)
-    def _left_run_frame(sprite):
-        return pygame.transform.flip(sprite, True, False)
+    @lru_cache(maxsize=10)
+    def _scooter_frame(sprite, lean, left):
+        frame = pygame.transform.rotate(sprite, lean) if lean else sprite
+        return pygame.transform.flip(frame, True, False) if left else frame
+
+    @staticmethod
+    @lru_cache(maxsize=4)
+    def _action_frame(sheet, pose):
+        index = {'axes': 0, 'slam': 1, 'lightning': 2, 'bullets': 3}[pose]
+        width, height = sheet.get_width() // 2, sheet.get_height() // 2
+        row, column = divmod(index, 2)
+        return sheet.subsurface((column * width, row * height, width, height))
+
+    @staticmethod
+    @lru_cache(maxsize=4)
+    def _axe_frame(sheet, index):
+        width, height = sheet.get_width() // 2, sheet.get_height() // 2
+        row, column = divmod(index, 2)
+        return sheet.subsurface((column * width, row * height, width, height))
 
     def _body_frame(self, now):
-        attack_at = getattr(self, 'animation_attack_at', None)
-        running = False
-        if self.laser_warning_start or now < self.laser_active_until:
-            pose = 'laser'
-        elif self.axe_slam_start is not None and 0 <= now - self.axe_slam_start < self.axe_slam_duration:
-            pose = 'slam' if (now - self.axe_slam_start) % self.AXE_SLAM_CYCLE_MS < 800 else 'axes'
-        elif now < self.lightning_until:
-            pose = 'lightning'
-        elif attack_at is not None and 0 <= now - attack_at < 600:
-            pose = 'bullets' if self.last_pattern == 'bullets' else 'axes'
-        elif self.entered:
-            running = True
-            pose = self.RUN_POSES[int(self.movement_timer / 8) % len(self.RUN_POSES)]
-        else:
-            return None
-        sprite = image_asset(f'bosses/boss_niu_{pose}.png')
-        if sprite is None:
-            return super()._body_frame(now)
-        return self._left_run_frame(sprite) if running and self.running_left else sprite
+        pose = self._attack_pose(now)
+        if pose is not None:
+            if pose in ('axes', 'slam'):
+                sheet = image_asset('bosses/boss_niu_axe_sequence.png')
+                if sheet is not None:
+                    if self.axe_slam_start is not None and 0 <= now - self.axe_slam_start < self.axe_slam_duration:
+                        age = (now - self.axe_slam_start) % self.AXE_SLAM_CYCLE_MS
+                        index = min(3, age // 300)
+                    else:
+                        index = min(3, max(0, now - self.animation_attack_at) // 150)
+                    return self._axe_frame(sheet, index)
+            sheet = image_asset('bosses/boss_niu_actions.png')
+            if sheet is not None:
+                return self._action_frame(sheet, pose)
+            return image_asset(f'bosses/boss_niu_{pose}.png')
+        if self.entered:
+            sprite = image_asset('bosses/boss_niu_scooter.png')
+            if sprite is not None:
+                lean = round(2 * math.sin(now * math.tau / 1200))
+                return self._scooter_frame(sprite, lean, self.running_left)
+        return None
 
     def should_attack(self, now):
-        if self.laser_warning_start or now < self.laser_active_until:
-            return False
         if now < self.next_hazard_time:
             return False
         interval = self.attack_interval
@@ -355,48 +466,34 @@ class NiuBoss(Boss):
             interval /= self.slow_mult
         return self.entered and now - self.last_attack_time >= interval
 
-    def death_laser_xs(self):
-        left, right = self._safe_laser_x(-100000), self._safe_laser_x(100000)
-        separation = min(120, max(0, (right - left) / 2))
-        center = max(left + separation, min(right - separation, self.x))
-        return center - separation, center + separation
-
-    def laser_paths(self, now):
-        top = int(self.y + self.h * .72)
-        height = max(1, config.SCREEN_HEIGHT - top)
-        swing = math.sin(now * .008) * 28
-        return tuple([(round(x + math.sin(now * .008 + t * 4) * 12 * t + swing * t),
-                       round(top + height * t)) for t in (i / 20 for i in range(21))]
-                     for x in self.death_laser_xs())
-
-    def laser_hits(self, rect, now):
-        if now >= self.laser_active_until:
-            return False
-        target = rect.inflate(max(24, self.w // 2), max(24, self.w // 2))
-        return any(target.clipline(a, b) for path in self.laser_paths(now) for a, b in zip(path, path[1:]))
+    def launch_shield_shards(self):
+        if self.shield_break_at is None or self.shield_break_at == self.shield_shards_launched_at:
+            return []
+        self.shield_shards_launched_at = self.shield_break_at
+        width = max(1, round(self.w * 2.5))
+        shards = [NiuShieldShard(self.x, self.y, index, width) for index in range(5)]
+        for shard in shards:
+            shard.follow_shield(self)
+        return shards
 
     def attack(self, now, player_x, opening=False):
         self.last_attack_time = now
-        pattern = (random.choice(('axes', 'slam', 'lightning', 'laser')) if opening else
+        self.animation_attack_at = now
+        pattern = (random.choice(('axes', 'slam', 'lightning')) if opening else
                    random.choice([p for p in ('axes', 'axes', 'slam', 'lightning', 'bullets')
                                   if p != self.last_pattern]))
         self.last_pattern = pattern
         tier = self.bdef.get('campaign_tier')
         warning = 0 if opening else (1200, 1000, 850)[tier] if tier is not None else 900
         recovery = (2000, 1700, 1400)[tier] if tier is not None else 0
-        if pattern == 'laser':
-            self._keep_laser_inside()
-            self.laser_active_until = now + 2000
-            self.next_death_laser_time = now + random.randint(9000, 16000) * self.bdef.get('laser_interval_mult', 1)
-            return []
         if pattern == 'axes':
             return [ReturningAxe(self, -1, max(40, min(config.SCREEN_WIDTH - 40, player_x - 55)), True),
                     ReturningAxe(self, 1, max(40, min(config.SCREEN_WIDTH - 40, player_x + 55)), False)]
         if pattern == 'slam':
             self.axe_slam_start = now
             self.axe_slam_hit = -1
+            self.axe_slam_impact = None
             self.next_hazard_time = now + self.axe_slam_duration + recovery
-            self.next_death_laser_time = max(self.next_death_laser_time, self.next_hazard_time)
             return []
         if pattern == 'lightning':
             self.lightning_xs = tuple(max(35, min(config.SCREEN_WIDTH - 35, player_x + dx))
@@ -406,7 +503,6 @@ class NiuBoss(Boss):
             self.lightning_next_tick = now + 800 if tier is None and not opening else self.lightning_warning_until
             if tier is not None:
                 self.next_hazard_time = self.lightning_until + recovery
-                self.next_death_laser_time = max(self.next_death_laser_time, self.next_hazard_time)
             return []
         return [NiuFanBullet(self.x + (i - 2.5) * 18, self.y + self.h * 0.7,
                              angle, red=i % 2 == 0)
@@ -429,41 +525,89 @@ class NiuBoss(Boss):
         if not 800 <= age < 1500:
             return None
         top = round(self.y + self.h * .7)
-        reach = min(1.0, (age - 800) / 300)
-        bottom = round(top + (config.GAME_AREA_BOTTOM - top) * reach)
+        reach = min(1.0, (age - 800) / (self.AXE_SLAM_LAND_MS - 800))
+        ground = config.SCREEN_HEIGHT - 8
+        bottom = round(top + (ground - top) * reach)
         width = max(30, round(self.w * .75))
         return pygame.Rect(round(self.x - width / 2), top, width, max(1, bottom - top))
 
     def _draw_axe_slam(self, surf, now):
-        age = (now - self.axe_slam_start) % self.AXE_SLAM_CYCLE_MS
-        top = round(self.y + self.h * .7)
-        if age < 800:
-            return
         hitbox = self.axe_slam_rect(now)
         if hitbox is None:
             return
-        width = max(70, round(self.w * 1.25))
-        height = max(1, hitbox.bottom - top + 65)
-        art = effect_layer(surf, (width + 30, height))
-        cx = (width + 30) // 2
-        tip = min(height - 30, hitbox.bottom - top)
-        Draw.line(art, (95, 25, 20, 230), (cx, 0), (cx, tip), 24)
-        Draw.line(art, (195, 105, 40, 255), (cx, 0), (cx, tip), 14)
-        Draw.line(art, (255, 218, 110, 255), (cx - 3, 0), (cx - 3, tip), 3)
-        half = width // 2
-        for side in (-1, 1):
-            blade = [(cx, tip - 16), (cx + side * half * .58, tip - 38),
-                     (cx + side * half, tip - 32), (cx + side * half * .8, tip - 10),
-                     (cx + side * half * .82, tip + 8), (cx + side * half, tip + 22),
-                     (cx + side * half * .52, tip + 17), (cx, tip + 6)]
-            Draw.polygon(art, (180, 38, 20, 255), blade)
-            Draw.polygon(art, (255, 184, 55, 255), blade, 4)
-            edge = [(cx + side * half, tip - 32), (cx + side * half * .8, tip - 10),
-                    (cx + side * half * .82, tip + 8), (cx + side * half, tip + 22)]
-            Draw.lines(art, (255, 245, 205, 255), False, edge, 4)
-        Draw.circle(art, (255, 195, 55, 255), (cx, tip - 5), 10)
-        Draw.circle(art, (205, 35, 25, 255), (cx, tip - 5), 6)
-        blit_effect(surf, art, (round(self.x - cx), top))
+        axe = image_asset('effects/boss_niu_slam_axe.png')
+        if axe is None:
+            return
+        width = max(70, round(self.w * 1.65))
+        bottom = min(config.SCREEN_HEIGHT, hitbox.bottom + round(width * .12))
+        scaled = isinstance(surf, RenderSurface)
+        if scaled:
+            width = surf.length(width)
+            x, bottom = surf.point((self.x, bottom))
+            _, top = surf.point((self.x, hitbox.top))
+        else:
+            x, top = round(self.x), hitbox.top
+        height = max(1, round(width * axe.get_height() / axe.get_width()))
+        axe = pygame.transform.flip(scale_surface_cached(axe, (width, height)), False, True)
+        x -= width // 2
+        blit = surf.blit_pixels if scaled else surf.blit
+        visible_height = max(1, bottom - top)
+        if visible_height <= height:
+            visible = axe.subsurface((0, height - visible_height, width, visible_height))
+            blit(visible, (x, bottom - visible_height))
+            return
+        # Extend the handle along the strike without stretching the blade.
+        handle_height = height // 2
+        blade_height = height - handle_height
+        handle = axe.subsurface((0, 0, width, handle_height))
+        blade = axe.subsurface((0, handle_height, width, blade_height))
+        blit(pygame.transform.smoothscale(handle, (width, visible_height - blade_height)), (x, top))
+        blit(blade, (x, bottom - blade_height))
+
+    def _draw_axe_impact(self, surf, now):
+        x, y, landed_at = self.axe_slam_impact
+        age = now - landed_at
+        if not 0 <= age < 400:
+            return
+        progress = age / 400
+        width = max(100, round(self.w * 2.6))
+        height = max(60, round(self.h * 1.4))
+        art = effect_layer(surf, (width, height))
+        cx, cy = width // 2, height * .78
+        fade = 1 - progress
+        reach = width * (.12 + .36 * progress)
+        depth = height * (.045 + .11 * progress)
+        ring = (round(cx - reach), round(cy - depth), round(2 * reach), round(2 * depth))
+        Draw.ellipse(art, (255, 112, 40, round(170 * fade)), ring, 7)
+        Draw.ellipse(art, (255, 223, 142, round(245 * fade)), ring, 2)
+        if progress < .32:
+            Draw.ellipse(art, (255, 247, 192, round(225 * (1 - progress / .32))),
+                         (round(cx - reach / 2), round(cy - depth), round(reach), round(depth * 2)))
+        for i in range(14):
+            angle = math.pi * (i + .5) / 14
+            dx, dy = math.cos(angle) * reach, -math.sin(angle) * height * (.15 + .56 * progress)
+            size = max(2, round(self.size_scale * (4 + i % 4) * fade))
+            px, py = cx + dx, cy + dy
+            Draw.polygon(art, (255, 154 + i % 3 * 34, 58, round(255 * fade)),
+                         ((px, py - size), (px + size, py + size), (px - size, py)))
+        blit_effect(surf, art, (round(x - cx), round(y - cy)))
+
+    def _draw_shield_hit(self, surf, age):
+        fade = 1 - age / 180
+        size = max(1, round(56 * self.size_scale))
+        sparks = effect_layer(surf, (size, size))
+        center = size / 2
+        for i in range(7):
+            angle = i * math.tau / 7
+            dx, dy = math.cos(angle), math.sin(angle)
+            inner = size * (.08 + .18 * (1 - fade))
+            outer = inner + size * .18
+            Draw.line(sparks, (255, 223, 155, round(245 * fade)),
+                      (center + dx * inner, center + dy * inner),
+                      (center + dx * outer, center + dy * outer), 2)
+        x = self.x + self.shield_hit_offset * self.w
+        y = self.y + self.h + self.w * .23
+        blit_effect(surf, sparks, (round(x - center), round(y - center)))
 
     def _draw_shield_break(self, surf, now):
         progress = (now - self.shield_break_at) / 900
@@ -489,51 +633,10 @@ class NiuBoss(Boss):
             Draw.polygon(effect, (255, 135 + i % 3 * 40, 35, round(230 * fade)), points)
             Draw.line(effect, (255, 245, 170, round(240 * fade)), (x, y - size), (x + size, y), 2)
         blit_effect(surf, effect, (round(self.x - cx), round(self.y + self.h - cy)))
-        shield_width = max(1, round(self.w * 2.5))
-        shield_height = max(1, round(shield_width / 3))
-        shield = _niu_shield_image(surf, shield_width, shield_height)
-        if shield is not None:
-            for i, piece in enumerate(_niu_shield_fragments(shield)):
-                direction = i - 2
-                angle = round(direction * progress * 30 / 5) * 5
-                fragment = _niu_rotated_shield_fragment(piece, angle)
-                if progress > .7:
-                    fragment = fragment.copy()
-                    fragment.set_alpha(round(255 * (1 - progress) / .3))
-                x = (self.x - shield_width / 2 + shield_width * (i + .5) / 5
-                     + direction * shield_width * .28 * progress)
-                y = (self.y + self.h - shield_height * .22 + shield_height / 2
-                     - (1.1 - abs(direction) * .2) * shield_height * progress
-                     + shield_height * .6 * progress * progress)
-                if isinstance(surf, RenderSurface):
-                    surf.blit_pixels(fragment, fragment.get_rect(center=surf.point((x, y))).topleft)
-                else:
-                    surf.blit(fragment, (round(x - fragment.get_width() / 2),
-                                         round(y - fragment.get_height() / 2)))
 
     def draw(self, surf):
         super().draw(surf)
         now = config.game_ticks()
-        if now < self.laser_active_until:
-            for path, color in zip(self.laser_paths(now), ((255, 190, 25), (255, 40, 35))):
-                left = min(point[0] for point in path) - 70
-                right = max(point[0] for point in path) + 70
-                top = path[0][1]
-                beam = effect_layer(surf, (right - left, max(1, config.SCREEN_HEIGHT - top + 1)))
-                points = [(x - left, y - top) for x, y in path]
-                width = max(24, self.w // 2)
-                Draw.lines(beam, (*color, 45), False, points, width + 35)
-                Draw.lines(beam, (*color, 110), False, points, width + 15)
-                Draw.lines(beam, (*color, 235), False, points, width)
-                Draw.lines(beam, (255, 247, 190, 245), False, points, max(5, width // 4))
-                for i in range(2, len(points) - 1, 3):
-                    x, y = points[i]
-                    d = math.sin(now * .025 + i) * width * .35
-                    Draw.line(beam, (255, 255, 225, 190), (x - width//2, y + d),
-                              (x + width//2, y - d), 2)
-                blit_effect(surf, beam, (left, top))
-                _circle(surf, (*color, 150), path[0], width // 2 + 9)
-                _circle(surf, (255, 250, 210), path[0], max(5, width // 5))
         cx, cy = int(self.x), int(self.y + self.h // 2)
         for i in range(12):
             angle = now * 0.003 + i * math.tau / 12
@@ -584,10 +687,14 @@ class NiuBoss(Boss):
             else:
                 Draw.line(surf, (255, 190, 55), (self.x - self.w, self.y + self.h + 8),
                           (self.x + self.w, self.y + self.h + 8), max(2, round(8 * self.size_scale)))
+        if self.shield_hit_at is not None and 0 <= now - self.shield_hit_at < 180:
+            self._draw_shield_hit(surf, now - self.shield_hit_at)
         if self.shield_break_at is not None and 0 <= now - self.shield_break_at < 900:
             self._draw_shield_break(surf, now)
         if self.axe_slam_start is not None and 0 <= now - self.axe_slam_start < self.axe_slam_duration:
             self._draw_axe_slam(surf, now)
+        if self.axe_slam_impact is not None:
+            self._draw_axe_impact(surf, now)
 
 
 @lru_cache(maxsize=8)
@@ -595,6 +702,25 @@ def _zong_crescent_flash(image):
     flash = image.copy()
     flash.fill((125, 125, 125), special_flags=pygame.BLEND_RGB_ADD)
     return flash
+
+
+@lru_cache(maxsize=8)
+def _snowflake(radius, branched):
+    half = 9 if branched else radius
+    flake = pygame.Surface((half * 2 + 1, half * 2 + 1), pygame.SRCALPHA)
+    pygame.draw.circle(flake, (225, 250, 255, 180), (half, half), radius)
+    if branched:
+        for dx, dy in ((8, 0), (4, 7), (-4, 7)):
+            pygame.draw.line(flake, (235, 255, 255, 190),
+                             (half - dx, half - dy), (half + dx, half + dy), 2)
+    return flake
+
+
+@lru_cache(maxsize=8)
+def _snow_edge(size):
+    edge = pygame.Surface(size, pygame.SRCALPHA)
+    edge.fill((170, 230, 255, 95))
+    return edge
 
 
 class ZongBoss(Boss):
@@ -671,7 +797,7 @@ class ZongBoss(Boss):
             return
         now = config.game_ticks()
         tier = self.bdef.get('campaign_tier')
-        if not self.opening_snow_done and now - self.fight_start_time >= 5000:
+        if not self.opening_snow_done and now - self.fight_start_time >= config.BOSS_OPENING_DELAY_MS:
             duration = 5000 if tier is None else (2500, 3000, 3500)[tier]
             self.snow_until = max(self.snow_until, now + duration)
             self.opening_snow_done = True
@@ -848,30 +974,30 @@ class ZongBoss(Boss):
         now = config.game_ticks()
         if now >= until:
             return
-        snow = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
-        snow.fill((70, 140, 225, 35))
+        width, height = surf.get_size()
+        blit = partial(surf.blit, static=True) if isinstance(surf, RenderSurface) else surf.blit
         for i in range(96):
-            x = (i * 137 + int(now * 0.023 * (1 + i % 3))) % config.SCREEN_WIDTH
-            y = (i * 83 + int(now * 0.055 * (1 + i % 4))) % config.SCREEN_HEIGHT
-            radius = 2 + i % 4
-            pygame.draw.circle(snow, (225, 250, 255, 180), (x, y), radius)
-            if i % 5 == 0:
-                for dx, dy in ((8, 0), (4, 7), (-4, 7)):
-                    pygame.draw.line(snow, (235, 255, 255, 190),
-                                     (x - dx, y - dy), (x + dx, y + dy), 2)
-        pygame.draw.rect(snow, (170, 230, 255, 95), snow.get_rect(), 5)
+            flake = _snowflake(2 + i % 4, i % 5 == 0)
+            half = flake.get_width() // 2
+            x = (i * 137 + int(now * 0.023 * (1 + i % 3))) % width
+            y = (i * 83 + int(now * 0.055 * (1 + i % 4))) % height
+            blit(flake, (max(0, min(width - flake.get_width(), x - half)),
+                         max(0, min(height - flake.get_height(), y - half))))
+        # Separate edges keep the transparent interior out of the compositor.
+        horizontal = _snow_edge((width, 5))
+        vertical = _snow_edge((5, height - 10))
+        blit(horizontal, (0, 0))
+        blit(horizontal, (0, height - 5))
+        blit(vertical, (0, 5))
+        blit(vertical, (width - 5, 5))
         message = '极寒暴雪 · 移速与射速减半' if reduction == 50 else f'极寒暴雪 · 移速与射速降低 {reduction}%'
-        width, height = font.size(message)
-        box = pygame.Rect(config.SCREEN_WIDTH // 2 - width // 2 - 16, 246,
-                          width + 32, height + 12)
-        if isinstance(surf, RenderSurface) and surf.desktop_ui:
-            surf.blit(snow, (0, 0))
-            Draw.rect(surf, (8, 38, 78, 175), box, border_radius=8)
-            Draw.rect(surf, (180, 235, 255, 190), box, 2, 8)
-        else:
-            pygame.draw.rect(snow, (8, 38, 78, 175), box, border_radius=8)
-            pygame.draw.rect(snow, (180, 235, 255, 190), box, 2, border_radius=8)
-            surf.blit(snow, (0, 0))
+        text_width, text_height = font.size(message)
+        box = pygame.Rect(width // 2 - text_width // 2 - 16, 246, text_width + 32, text_height + 12)
+        panel = effect_layer(surf, box.size)
+        bounds = pygame.Rect((0, 0), box.size)
+        Draw.rect(panel, (8, 38, 78, 175), bounds, border_radius=8)
+        Draw.rect(panel, (180, 235, 255, 190), bounds, 2, 8)
+        blit_effect(surf, panel, box.topleft)
         blit_label(surf, font, message, (225, 250, 255), box.center, 20)
 
     def draw(self, surf):

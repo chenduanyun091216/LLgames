@@ -187,14 +187,11 @@ class CampaignAdapterTests(unittest.TestCase):
         self.assertEqual([p.hp for p in game.all_players], [3, 3])
 
     def test_death_laser_hits_each_player_once_per_activation(self):
-        for level in (6, 7):
+        for level in (5, 6):
             game = self.boss_game(level)
             game.boss.laser_active_until = 2000
             now = 100
-            if level == 7:
-                x, _ = game.boss.laser_paths(now)[0][-3]
-            else:
-                x = game.boss.death_laser_rects(now)[0].centerx
+            x = game.boss.death_laser_rects(now)[0].centerx
             self.stack(game, x, 600)
             game._damage_player_on_contacts(now)
             self.assertEqual([p.hp for p in game.all_players], [4, 4])
@@ -262,12 +259,17 @@ class CampaignAdapterTests(unittest.TestCase):
         boss._start_death(0)
         game._settle_boss_if_killed()
         self.assertEqual(game.phase, 'playing')
-        config.campaign_time_ms = boss.DEATH_DURATION
+        game.tick = (boss.DEATH_DURATION * 60 + 999) // 1000
+        config.campaign_time_ms = round(game.tick * 1000 / 60)
         game._settle_boss_if_killed()
         self.assertEqual(game.phase, 'won')
         tick = game.tick
         game.step()
-        self.assertEqual(game.tick, tick)
+        self.assertEqual(game.tick, tick + 1)
+        for _ in range(240):
+            game.step()
+        self.assertEqual(game.tick, tick + 240)
+        self.assertEqual(game.phase, 'won')
 
     def test_boss_clear_heals_each_survivor_but_never_revives(self):
         game = self.boss_game(1)
@@ -357,6 +359,19 @@ class CampaignAdapterTests(unittest.TestCase):
         self.assertEqual([p.hp for p in game.all_players], [3, 3])
         self.assertEqual(set(axe._player_hits), {1, 2})
 
+    def test_niu_shield_hit_sends_sparks_and_sound(self):
+        game = self.boss_game(7)
+        game.boss.shield_until = 2000
+        config.campaign_time_ms = 1000
+        with game._capture_sounds():
+            game.boss.hit_by('pistol', 1, hit_rect=pygame.Rect(500, 100, 10, 10))
+        snapshot = game.snapshot()
+        world = snapshot['world']
+        record = next(record for record in world['objects'] if record['type'] == 'NiuBoss')
+        self.assertEqual(record['fields']['shield_hit_at'], 1000)
+        self.assertGreater(record['fields']['shield_hit_offset'], 0)
+        self.assertEqual(snapshot['events'][-1]['key'], 'niu_shield_hit')
+
     def test_zong_snow_only_slows_living_players(self):
         game = self.boss_game(8)
         p1, p2 = game.all_players
@@ -372,6 +387,7 @@ class CampaignAdapterTests(unittest.TestCase):
         p1.gold = 123
         p1.owned_weapons.append('rifle')
         p1.current_weapon = 'rifle'
+        game.lives = 0
         p2.hp = 0
         p2.alive = False
         game._level_complete()
@@ -381,7 +397,7 @@ class CampaignAdapterTests(unittest.TestCase):
             game.step()
         self.assertEqual(game.current_level, 2)
         self.assertEqual(game.gold, 123 + config.CAMPAIGN_REWARDS[0])
-        self.assertEqual(game.lives, 5)
+        self.assertEqual(game.lives, 0)
         self.assertEqual(p1.current_weapon, 'rifle')
         self.assertFalse(p2.alive)
         self.assertEqual(p1.x, x)

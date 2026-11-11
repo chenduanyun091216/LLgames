@@ -47,7 +47,7 @@ class CoOpRulesTests(unittest.TestCase):
         enemy = self.enemy(); enemy.y = 150; enemy.speed = 1
         self.g.enemies = [enemy]
         self.g.step()
-        self.assertEqual(enemy.y, 151)
+        self.assertEqual(enemy.y, 151.25)
 
     def test_either_shop_opener_requires_both_to_close(self):
         self.assertIsNone(self.g.action(2, 'shop_open'))
@@ -91,12 +91,14 @@ class CoOpRulesTests(unittest.TestCase):
         self.assertIsNotNone(self.g.action(1, 'character', 'ice'))
         self.assertNotIn('ice', self.p1.owned_characters)
 
-    def test_death_is_individual_and_requires_confirmation(self):
+    def test_death_is_individual_and_auto_revives_with_shared_lives(self):
         self.kill(self.p2)
         self.assertTrue(self.p1.alive); self.assertFalse(self.p2.alive)
         self.assertEqual(self.g.lives, 5)
-        self.g.step(); self.assertFalse(self.p2.alive)
-        self.g.action(2, 'revive')
+        self.g.step()
+        self.assertEqual(self.p2.x, self.g.world_size[0] // 2)
+        self.assertEqual(self.p2.y, config.GAME_AREA_BOTTOM - 14)
+        self.assertEqual(self.p2.invincible_until, config.game_ticks() + 1500)
         self.assertTrue(self.p2.alive); self.assertEqual(self.g.lives, 4)
         self.assertEqual(self.p2.hp, self.p2.max_hp)
         self.assertIsNotNone(self.g.action(2, 'revive'))
@@ -106,6 +108,30 @@ class CoOpRulesTests(unittest.TestCase):
         self.p1.gold = 100
         self.kill(self.p1); self.g.action(1, 'revive')
         self.assertEqual(self.g.gold, 100); self.assertEqual(self.g.lives, 4)
+        self.assertEqual(self.g.revive_count, 0)
+
+    def test_paid_revive_limit_is_shared_by_both_players(self):
+        for difficulty, limit in (('easy', 5), ('medium', 4), ('hard', 3)):
+            with self.subTest(difficulty=difficulty):
+                game = OnlineGame(difficulty)
+                p1, p2 = game.all_players
+                game.lives = 0
+                p1.gold = 1000
+                for purchase in range(limit):
+                    player = game.all_players[purchase % 2]
+                    player.invincible_until = 0
+                    game._damage_target = player
+                    game._damage_player(0, 100, 'test')
+                    self.assertIsNone(game.action(player.slot, 'revive'))
+                gold = 1000 - limit * REVIVE_COSTS[difficulty]
+                self.assertEqual(game.gold, gold)
+                for player in (p1, p2):
+                    player.invincible_until = 0
+                    game._damage_target = player
+                    game._damage_player(0, 100, 'test')
+                    self.assertIsNotNone(game.action(player.slot, 'revive'))
+                self.assertEqual(game.gold, gold)
+                self.assertEqual(game.phase, 'lost')
 
     def test_paid_revive_prices_all_difficulties(self):
         for difficulty, price in REVIVE_COSTS.items():
@@ -169,11 +195,15 @@ class CoOpRulesTests(unittest.TestCase):
     def test_contact_damage_cooldown_per_player(self):
         enemy=self.enemy(); enemy.x=self.p1.x=self.p2.x; enemy.y=self.p1.y-20
         self.g.enemies=[enemy]
-        self.g._damage_player_on_contacts(0)
+        with self.g._capture_sounds():
+            self.g._damage_player_on_contacts(0)
+            self.assertEqual((self.p1.hp,self.p2.hp),(4,4))
+            self.p1.invincible_until=self.p2.invincible_until=0
+            self.g._damage_player_on_contacts(800)
         self.assertEqual((self.p1.hp,self.p2.hp),(4,4))
-        self.p1.invincible_until=self.p2.invincible_until=0
-        self.g._damage_player_on_contacts(800)
-        self.assertEqual((self.p1.hp,self.p2.hp),(4,4))
+        snapshot = self.g.snapshot()
+        self.assertEqual(sum(event.get('key') == 'player_hit' for event in snapshot['events']), 2)
+        self.assertEqual(len(snapshot['world']['collections']['explosions']), 2)
 
     def test_water_heal_uses_caster_not_player_one(self):
         self.p2.owned_characters.append('water')
@@ -207,21 +237,32 @@ class CoOpRulesTests(unittest.TestCase):
         self.g.level_kills=self.g._campaign_value(config.CAMPAIGN_KILLS)-1
         self.g._kill_enemy(enemy); self.g._kill_enemy(enemy)
         self.assertEqual(self.g.kill_count,1)
+        self.assertEqual(self.g.state,GameState.PLAYING)
+        self.g.background_scroll_ticks = 40 * config.FPS - 1
+        self.g.step()
         self.assertEqual(self.g.state,GameState.BOSS_FIGHT)
         self.assertEqual(self.g.boss.bdef['key'],'boss_lobster')
+        snapshot = self.g.snapshot()
+        self.assertEqual(snapshot['boss_remaining_ms'], 0)
+        self.assertEqual(snapshot['world']['game']['background_scroll_ticks'], 40 * config.FPS)
 
     def test_campaign_transitions_and_final_victory_rewards_once(self):
         for level in range(1, len(config.LEVEL_CONFIGS) + 1):
             self.assertEqual(self.g.current_level, level)
+            self.g.enemies.append(self.enemy())
             self.g._level_complete(); gold = self.g.gold
             self.g._level_complete()
             self.assertEqual(self.g.gold, gold)
+            self.assertFalse(self.g.enemies)
+            self.assertTrue(self.g.particles)
             if level < len(config.LEVEL_CONFIGS):
                 self.assertEqual(self.g.state, GameState.LEVEL_TRANSITION)
                 for _ in range(120):
                     self.g.step()
             else:
-                self.g.step()
+                for _ in range(25):
+                    self.g.step()
+                self.assertFalse(self.g.particles)
                 self.assertEqual(self.g.phase, 'won')
                 self.assertEqual(self.g.current_level, 11)
         self.assertRaises(ValueError, self.g._start_level, 12)

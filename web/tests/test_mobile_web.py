@@ -44,8 +44,51 @@ class MobileWebTests(unittest.TestCase):
 
     def test_radiation_laser_has_a_narrower_hitbox(self):
         laser = RadiationLaser(self.game.player)
-        self.assertEqual(laser.rect().width, int(self.game.player.SIZE[0] * 0.40) + 20)
+        self.assertEqual(laser.beam_width(), int(self.game.player.SIZE[0] * 0.28))
+        self.assertEqual(laser.rect().width, laser.beam_width() + 20)
         self.assertAlmostEqual(laser.rect().centerx, self.game.player.x, delta=1)
+
+    def test_radiation_laser_hits_each_monster_but_plays_one_impact_sound(self):
+        game = self.game
+        game._start_game('easy')
+        now = config.game_ticks()
+        laser = RadiationLaser(game.player)
+        game.radiation_lasers = [laser]
+        game.enemies = [Enemy(config.ENEMY_DEFS[0]) for _ in range(2)]
+        for enemy, y in zip(game.enemies, (100, 160)):
+            enemy.x, enemy.y = laser.rect().centerx, y
+            enemy.max_hp = 10
+        with patch('game_core.game.play_sound') as sound:
+            game._update_radiation_lasers(now)
+        sound.assert_called_once_with('laser_hit')
+        self.assertEqual([effect.element for effect in game.explosions], ['radiation', 'radiation'])
+
+    def test_radiation_laser_rolls_one_animated_muzzle_effect_per_cast(self):
+        game = self.game
+        player = game.player
+        player.character = 'radiation'
+        player.x, player.y = 100, 110
+        previews = set()
+        for index in range(4):
+            now = 1000 + index * 10000
+            with patch.object(config, 'game_ticks', return_value=now) as clock, \
+                    patch('game_core.game.random.randrange', return_value=index) as roll:
+                game._activate_radiation_laser(player)
+                laser, = game.radiation_lasers
+                self.assertEqual(laser.muzzle_effect, index)
+                clock.return_value = now + 180
+                game._activate_radiation_laser(player)
+                self.assertIs(game.radiation_lasers[0], laser)
+                roll.assert_called_once()
+                surface = pygame.Surface((200, 160), pygame.SRCALPHA)
+                laser._draw_muzzle(surface, (100, 77), now + 180)
+                first = pygame.image.tobytes(surface, 'RGBA')
+                surface.fill((0, 0, 0, 0))
+                laser._draw_muzzle(surface, (100, 77), now + 260)
+                self.assertNotEqual(first, pygame.image.tobytes(surface, 'RGBA'))
+                previews.add(first)
+            game.radiation_lasers.clear()
+        self.assertEqual(len(previews), 4)
 
     def test_gift_hud_shows_active_effects_and_hides_expired_ones(self):
         game = self.game
@@ -225,12 +268,12 @@ class MobileWebTests(unittest.TestCase):
         niu = game.boss
         self.assertEqual(niu.attack_interval, 6800)
         niu.laser_active_until = 2000
-        self.assertEqual(len(niu.death_laser_rects(1000)), 2)
+        self.assertFalse(niu.death_laser_rects(1000))
         niu.laser_active_until = 0
         niu.y = 60
         with patch('pygame.time.get_ticks', return_value=1000), patch('game_core.entities.random.randint', return_value=7000):
             niu.update()
-        self.assertEqual(niu.next_death_laser_time, 15000)
+        self.assertEqual(niu.next_death_laser_time, 0)
         with patch('game_core.special_bosses.random.choice', return_value='axes'):
             game._add_boss_projectiles(niu.attack(1000, game.player.x))
         self.assertEqual([projectile.damage for projectile in game.boss_projectiles], [1, 1])
@@ -246,7 +289,7 @@ class MobileWebTests(unittest.TestCase):
         game._start_infinite_game()
         game.infinite_boss_index = 6
         game._trigger_infinite_boss()
-        self.assertEqual(len(game.boss.death_laser_xs()), 2)
+        self.assertFalse(game.boss.can_laser())
         self.assertEqual(game.boss.max_hp, 170)
 
     def test_player_can_reach_bottom_and_fire_without_clipping_the_shot(self):
@@ -459,16 +502,21 @@ class MobileWebTests(unittest.TestCase):
         first = boss.axe_slam_rect(now + 900)
         later = boss.axe_slam_rect(now + 1100)
         self.assertGreater(later.bottom, first.bottom)
+        self.assertGreater(later.bottom, config.GAME_AREA_BOTTOM)
         self.assertIsNone(boss.axe_slam_rect(now + 1500))
         self.assertIsNotNone(boss.axe_slam_rect(now + 2400))
         self.assertIsNotNone(boss.axe_slam_rect(now + 3900))
         self.assertIsNone(boss.axe_slam_rect(now + 4500))
         self.assertGreaterEqual(boss.next_hazard_time, now + 4500)
         game.player.x = boss.x
-        game.player.y = later.centery
+        game.player.y = game.player.bottom_limit()
         game.player_invincible_until = 0
         hp = game.player_hp
-        game._update_special_boss_hazards(now + 1100)
+        with patch('game_core.game.play_sound') as sound:
+            game._update_special_boss_hazards(now + 1100)
+            game._update_special_boss_hazards(now + 1101)
+            self.assertEqual(sum(call.args == ('niu_axe_impact',) for call in sound.call_args_list), 1)
+        self.assertEqual(boss.axe_slam_impact, (later.centerx, later.bottom, now + 1100))
         self.assertEqual(game.player_hp, hp - 1)
         game.player_invincible_until = 0
         game._update_special_boss_hazards(now + 1200)
@@ -477,6 +525,40 @@ class MobileWebTests(unittest.TestCase):
             game.player_invincible_until = 0
             game._update_special_boss_hazards(now + strike)
         self.assertEqual(game.player_hp, hp - 3)
+
+    def test_niu_flying_axes_can_hit_at_the_bottom_in_both_orientations(self):
+        game = self.game
+        for size in ((844, 390), (390, 844)):
+            with self.subTest(size=size):
+                config.update_mobile_view(size)
+                game._start_game('hard')
+                game._start_level(7)
+                game._trigger_boss()
+                boss = game.boss
+                boss.y = 60
+                game.player.x = config.SCREEN_WIDTH // 2
+                game.player.y = game.player.bottom_limit()
+                with patch('game_core.special_bosses.random.choice', return_value='axes'):
+                    axes = boss.attack(1000, game.player.x)
+                for axe in axes:
+                    with patch.object(config, 'game_ticks', return_value=axe.spawn_time + axe.OUTBOUND_MS - 1):
+                        axe.update()
+                    self.assertIs(game._hit_by_projectile(axe), game.player)
+
+    def test_niu_flying_axe_has_no_landing_circle(self):
+        from game_core.render import Draw
+
+        game = self.game
+        game._start_game('hard')
+        game._start_level(7)
+        game._trigger_boss()
+        axe = ReturningAxe(game.boss, 1, game.player.x, red=True)
+        game.warned_boss_shots = [axe]
+        with patch.object(Draw, 'circle', wraps=Draw.circle) as circle:
+            game.draw()
+        center = (int(axe.target_x), axe.landing_y)
+        self.assertFalse(
+            any(call.args[2:4] == (center, axe.explode_radius) for call in circle.call_args_list))
 
     def test_immune_axe_contact_does_not_delay_damage_after_invincibility(self):
         game = self.game
@@ -498,20 +580,6 @@ class MobileWebTests(unittest.TestCase):
             self.assertEqual(game.player_hp, hp - 1)
             game._update_boss_fight(2200)
             self.assertEqual(game.player_hp, hp - 1)
-
-    def test_niu_lasers_swing_together_and_hit_visible_path(self):
-        game = self.game
-        game._start_game('hard')
-        game._start_level(7)
-        game._trigger_boss()
-        boss = game.boss
-        boss.y = 60
-        boss.laser_active_until = 3000
-        paths = boss.laser_paths(1500)
-        self.assertEqual(len(paths), 2)
-        self.assertEqual(paths[0][-1][0] - paths[0][0][0], paths[1][-1][0] - paths[1][0][0])
-        self.assertTrue(boss.laser_hits(pygame.Rect(paths[0][-1][0] - 2, paths[0][-1][1] - 3, 4, 3), 1500))
-        self.assertFalse(boss.laser_hits(pygame.Rect(0, 0, 5, 5), 1500))
 
     def test_enemy_bomb_hit_sound_requires_player_damage(self):
         game = self.game
@@ -540,6 +608,8 @@ class MobileWebTests(unittest.TestCase):
                                        (cycle, 36, 4180), (2 * cycle, 42, 3960),
                                        (6 * cycle, 66, 3080), (7 * cycle, 66, 3080)):
             with self.subTest(defeated=defeated):
+                game.chapter = defeated + 1
+                game.infinite_background_level = defeated % cycle + 1
                 game.infinite_boss_index = defeated
                 game._trigger_infinite_boss()
                 self.assertEqual(game.infinite_boss_index, defeated)
@@ -629,37 +699,81 @@ class MobileWebTests(unittest.TestCase):
         game._player_defeated('测试')
         self.assertEqual(game.state, GameState.GAME_OVER)
 
+    def test_respawn_centers_player_and_starts_protection_after_countdown(self):
+        game = self.game
+        for infinite in (False, True):
+            with self.subTest(infinite=infinite):
+                game.infinite_mode = infinite
+                game.player.x, game.player.y = 100, 100
+                game.lives = 2
+                game._player_defeated('测试')
+                if infinite:
+                    game._continue_infinite()
+                self.assertEqual(game.state, GameState.INFINITE_COUNTDOWN)
+                self.assertEqual((game.player.x, game.player.y),
+                                 (config.SCREEN_WIDTH // 2, config.GAME_AREA_BOTTOM - 14))
+                with patch.object(pygame.time, 'get_ticks', return_value=game.infinite_countdown_end), \
+                        patch.object(config, 'game_ticks', return_value=10000):
+                    game.update()
+                self.assertTrue(game._player_is_invincible(11499))
+                self.assertFalse(game._player_is_invincible(11500))
+
+    def test_paid_revive_limits_by_difficulty(self):
+        game = self.game
+        for difficulty, limit, cost in (('easy', 5, 50), ('medium', 4, 75), ('hard', 3, 100)):
+            with self.subTest(difficulty=difficulty):
+                game._start_game(difficulty)
+                game.lives = 1
+                game.player.gold = 500
+                for purchase in range(1, limit + 1):
+                    game._player_defeated('测试')
+                    self.assertEqual(game.state, GameState.PAID_REVIVE)
+                    game._paid_revive()
+                    self.assertEqual(game.player.gold, 500 - purchase * cost)
+                    self.assertEqual(game.lives, 1)
+                game._player_defeated('测试')
+                self.assertEqual(game.state, GameState.GAME_OVER)
+
     def test_retry_restores_level_start_after_paid_revive(self):
         game = self.game
         game._start_game('medium')
         game.player.gold = 120
         game.player.owned_weapons.append('rifle')
         game.player.current_weapon = 'rifle'
+        game.player.owned_characters.append('water')
+        game.try_switch_character('water')
         game.lives = 2
+        game.revive_count = 1
         game.player_hp = 3
         game.kill_count = 12
         with patch('game_core.config.game_ticks', return_value=1000):
             game.player.water_boost_until = 5000
             game.player.skill_cooldowns['water_heal'] = 7000
             game._start_level(2)
-        game.player.gold = 200
+        game.player.gold = 300
         game.player.owned_weapons.append('shotgun')
+        game.player.owned_characters.append('ice')
+        game.try_switch_character('ice')
         game.kill_count = 20
         game.lives = 1
-        game._player_defeated('测试')
-        game._paid_revive()
+        for _ in range(3):
+            game._player_defeated('测试')
+            game._paid_revive()
         game._player_defeated('测试')
         self.assertEqual(game.state, GameState.GAME_OVER)
         with patch('game_core.config.game_ticks', return_value=10000):
             game._handle_click(game._game_over_choice_rects()[0].center)
         self.assertEqual(game.state, GameState.PLAYING)
         self.assertEqual(game.current_level, 2)
-        self.assertEqual((game.lives, game.player_hp, game.player.gold, game.kill_count), (2, 3, 120, 12))
+        self.assertEqual((game.lives, game.player_hp, game.player.gold, game.kill_count), (3, 3, 120, 12))
         self.assertEqual(game.player.owned_weapons, ['pistol', 'rifle'])
         self.assertEqual(game.player.current_weapon, 'rifle')
+        self.assertEqual(game.player.owned_characters, ['water'])
+        self.assertEqual(game.player.character, 'water')
         self.assertEqual(game.player.water_boost_until, 14000)
         self.assertEqual(game.player.skill_cooldowns['water_heal'], 16000)
         self.assertEqual(game.revive_count, 0)
+        self.assertEqual(game._paid_revives_remaining(), 4)
 
     def test_retry_boss_start_level_can_be_repeated_and_exit(self):
         game = self.game
@@ -669,13 +783,15 @@ class MobileWebTests(unittest.TestCase):
         game._start_level(6)
         self.assertEqual(game.state, GameState.BOSS_FIGHT)
         for _ in range(2):
+            game.lives = 1
             game._player_defeated('测试')
             self.assertEqual(game.state, GameState.GAME_OVER)
             game._handle_keydown(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN))
             self.assertEqual(game.state, GameState.BOSS_FIGHT)
             self.assertEqual(game.current_level, 6)
-            self.assertEqual(game.lives, 1)
+            self.assertEqual(game.lives, 3)
             self.assertIsNotNone(game.boss)
+        game.lives = 1
         game._player_defeated('测试')
         game._handle_click(game._game_over_choice_rects()[1].center)
         self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
@@ -696,6 +812,7 @@ class MobileWebTests(unittest.TestCase):
 
     def test_terminal_rage_movement_speed_and_expiry(self):
         game = self.game
+        game._start_game('hard')
         player = game.player
         for infinite in (False, True):
             with self.subTest(infinite=infinite):
@@ -1030,12 +1147,15 @@ class MobileWebTests(unittest.TestCase):
         for shot in shots:
             for _ in range(20):
                 shot.update()
-            self.assertAlmostEqual(math.hypot(shot.x - origin[0], shot.y - origin[1]), 160)
+            self.assertAlmostEqual(math.hypot(shot.x - origin[0], shot.y - origin[1]), 140)
 
         rocket = rockets[0]
         surface = pygame.Surface((96, 96), pygame.SRCALPHA)
         SkillProjectile(48, 48, 0, rocket.speed, 'fire_rocket').draw(surface)
-        self.assertGreaterEqual(surface.get_bounding_rect().height, 47)
+        self.assertGreaterEqual(surface.get_bounding_rect().height, 75)
+        surface.fill((0, 0, 0, 0))
+        SkillProjectile(48, 48, 0, shots[0].speed, 'fireball').draw(surface)
+        self.assertLessEqual(surface.get_bounding_rect().width, 42)
         direct, nearby, distant = [Enemy(config.ENEMY_DEFS[0]) for _ in range(3)]
         for enemy, offset in zip((direct, nearby, distant), (0, 36, 115)):
             enemy.x = rocket.x + offset
@@ -1049,6 +1169,7 @@ class MobileWebTests(unittest.TestCase):
         nearby_hit.assert_called_once_with('sniper', rocket.damage)
         distant_hit.assert_not_called()
         self.assertEqual(game.explosions[-1].element, 'fire')
+        self.assertEqual(len(game.explosions), 3)  # One blast and two target impacts.
 
     def test_skill_cooldown_ring_tracks_remaining_fraction(self):
         game = self.game
@@ -1300,8 +1421,8 @@ class MobileWebTests(unittest.TestCase):
                 self.assertGreater(bounds.width, 0)
                 self.assertLessEqual(bounds.width, 365)
                 self.assertLessEqual(bounds.height, config.GAME_AREA_BOTTOM)
-        self.assertTrue(storm.contains_point(center[0] + 130, center[1]))
-        self.assertFalse(storm.contains_point(center[0] + 150, center[1]))
+        self.assertTrue(storm.contains_point(center[0] + 124, center[1]))
+        self.assertFalse(storm.contains_point(center[0] + 125, center[1]))
         first_disc, _ = next(shield.dart_positions(0))
         self.assertTrue(shield.hits(pygame.Rect(*first_disc, 1, 1), 0))
         self.assertFalse(shield.hits(pygame.Rect(first_disc[0] + 28, first_disc[1], 1, 1), 0))
@@ -1318,10 +1439,10 @@ class MobileWebTests(unittest.TestCase):
 
         self.assertLessEqual(enemy.rect().right, config.GAME_AREA_RIGHT)
 
-    def test_niu_opening_random_skill_starts_at_five_seconds(self):
+    def test_niu_opening_random_skill_starts_at_three_seconds(self):
         game = self.game
         for infinite in (False, True):
-            for skill in ('axes', 'slam', 'lightning', 'laser'):
+            for skill in ('axes', 'slam', 'lightning'):
                 with self.subTest(infinite=infinite, skill=skill):
                     if infinite:
                         game._start_infinite_game()
@@ -1337,38 +1458,36 @@ class MobileWebTests(unittest.TestCase):
                     boss.fight_start_time = 1000
                     boss.last_attack_time = 1000
                     boss.attack_interval = 20000
-                    game.last_spawn_time = 6000
+                    game.last_spawn_time = 4000
                     with patch.object(boss, 'update'), patch.object(game, '_maybe_spawn_gift'), \
                             patch('game_core.special_bosses.random.choice', return_value=skill), \
-                            patch.object(config, 'game_ticks', return_value=5999):
-                        game._update_boss_fight(5999)
+                            patch.object(config, 'game_ticks', return_value=3999):
+                        game._update_boss_fight(3999)
                         self.assertIsNone(boss.last_pattern)
                     with patch.object(boss, 'update'), patch.object(game, '_maybe_spawn_gift'), \
                             patch('game_core.special_bosses.random.choice', return_value=skill), \
-                            patch.object(config, 'game_ticks', return_value=6000):
-                        game._update_boss_fight(6000)
+                            patch.object(config, 'game_ticks', return_value=4000):
+                        game._update_boss_fight(4000)
                     self.assertEqual(boss.last_pattern, skill)
-                    self.assertEqual(boss.last_attack_time, 6000)
+                    self.assertEqual(boss.last_attack_time, 4000)
                     self.assertFalse(boss.opening_skill_pending)
-                    if skill == 'laser':
-                        self.assertEqual(boss.laser_active_until, 8000)
-                    elif skill == 'lightning':
-                        self.assertEqual(boss.lightning_warning_until, 6000)
-                        self.assertGreater(boss.lightning_until, 6000)
+                    if skill == 'lightning':
+                        self.assertEqual(boss.lightning_warning_until, 4000)
+                        self.assertGreater(boss.lightning_until, 4000)
                     elif skill == 'slam':
-                        self.assertEqual(boss.axe_slam_start, 6000)
+                        self.assertEqual(boss.axe_slam_start, 4000)
                     else:
                         self.assertEqual(len(game.boss_projectiles), 2)
                     with patch.object(boss, 'update'), patch.object(game, '_maybe_spawn_gift'), \
                             patch.object(boss, 'attack', wraps=boss.attack) as attack, \
-                            patch.object(config, 'game_ticks', return_value=6001):
-                        game._update_boss_fight(6001)
+                            patch.object(config, 'game_ticks', return_value=4001):
+                        game._update_boss_fight(4001)
                         attack.assert_not_called()
                     if skill == 'axes':
-                        self.assertFalse(boss.should_attack(25999))
-                        self.assertTrue(boss.should_attack(26000))
+                        self.assertFalse(boss.should_attack(23999))
+                        self.assertTrue(boss.should_attack(24000))
 
-    def test_signature_opening_starts_five_seconds_after_entry(self):
+    def test_signature_opening_starts_three_seconds_after_entry(self):
         game = self.game
         for size in ((844, 390), (390, 844)):
             config.update_mobile_view(size)
@@ -1392,17 +1511,17 @@ class MobileWebTests(unittest.TestCase):
                             game._update_boss_fight(now)
                         self.assertTrue(boss.signature_opening_pending)
                         self.assertIsNone(boss.signature)
-                        with patch('game_core.config.game_ticks', return_value=now + 4999), \
+                        with patch('game_core.config.game_ticks', return_value=now + 2999), \
                                 patch.object(boss, 'should_attack', return_value=False):
-                            game._update_boss_fight(now + 4999)
+                            game._update_boss_fight(now + 2999)
                         self.assertIsNone(boss.signature)
-                        with patch('game_core.config.game_ticks', return_value=now + 5000), \
+                        with patch('game_core.config.game_ticks', return_value=now + 3000), \
                                 patch.object(boss, 'should_attack', return_value=False):
-                            game._update_boss_fight(now + 5000)
+                            game._update_boss_fight(now + 3000)
                         self.assertFalse(boss.signature_opening_pending)
-                        self.assertEqual(boss.signature.impact_at, now + 5000)
+                        self.assertEqual(boss.signature.impact_at, now + 3000)
                         opening = boss.signature
-                        due = (opening.end_at if opening.key == 'boss' else now + 5000) + 10000
+                        due = (opening.end_at if opening.key == 'boss' else now + 3000) + 10000
                         with patch.object(boss, 'should_attack', return_value=False), \
                                 patch('game_core.entities.random.random', return_value=1):
                             game._update_boss_fight(opening.end_at)
@@ -1689,6 +1808,7 @@ class MobileWebTests(unittest.TestCase):
     def test_abyss_dive_starts_at_current_position_and_moves_toward_target(self):
         from game_core.boss_skills import BossSignature, CHASE_MS
 
+        self.assertEqual(CHASE_MS, round(1520 / 1.15))
         game = self.game
         game._start_game('medium')
         boss = game._make_boss(config.BOSS_DEFS[5])
@@ -1732,6 +1852,8 @@ class MobileWebTests(unittest.TestCase):
             self.assertEqual((boss.x, boss.y), origin)
 
     def test_campaign_abyss_dives_then_surfaces_after_two_seconds(self):
+        from game_core.boss_skills import BITE_REPEAT_MS, CHASE_MS
+
         game = self.game
         game._start_game('medium')
         game._start_level(6)
@@ -1740,7 +1862,7 @@ class MobileWebTests(unittest.TestCase):
         self.assertTrue(game._try_boss_signature(1000, opening=True))
         attack = boss.signature
         first = attack.impact_at
-        second = first + 1520 + 2000
+        second = first + BITE_REPEAT_MS
         for start in (first, second):
             if start == second:
                 game.player.move(80, 0)
@@ -1755,7 +1877,7 @@ class MobileWebTests(unittest.TestCase):
                 self.assertGreater(boss.y - boss.h * .22, config.SCREEN_HEIGHT)
             if start == second:
                 self.assertEqual(boss.x, game.player.rect().centerx)
-            for now in range(start, start + 1520, 16):
+            for now in range(start, start + CHASE_MS, 16):
                 attack.move(boss, now, game.player)
                 if attack.hit(boss, game.player.rect(), now):
                     if start == first:

@@ -17,6 +17,7 @@ import pygame
 from game_core import config
 from game_core import game as core_game
 from game_core import orochi as core_orochi
+from game_core import special_bosses as core_special_bosses
 from game_core.game import Game, GameState, CONTACT_DAMAGE_COOLDOWN
 from game_core.entities import Player
 from game_core.boss_skills import BossSignature
@@ -86,7 +87,7 @@ class OnlineGame(Game):
         self._events = deque(maxlen=48)
         self._event_id = 0
         with self._capture_sounds():
-            super().__init__(desktop_controls=False)
+            super().__init__(desktop_controls=False, scroll_campaign_backgrounds=True)
         wallet = {'gold': 0}
         self.player = SharedPlayer(wallet)
         second = SharedPlayer(wallet)
@@ -117,15 +118,15 @@ class OnlineGame(Game):
         # Online runs a single synchronous world in its own process. Capture the
         # original core's sound calls as events, restore the binding before any
         # await, and let each browser play each event once. No core file changes.
-        original = core_game.play_sound, core_orochi.play_sound
+        original = core_game.play_sound, core_orochi.play_sound, core_special_bosses.play_sound
         def capture(key):
             self._event_id += 1
             self._events.append({'id': self._event_id, 'type': 'sound', 'key': key})
-        core_game.play_sound = core_orochi.play_sound = capture
+        core_game.play_sound = core_orochi.play_sound = core_special_bosses.play_sound = capture
         try:
             yield
         finally:
-            core_game.play_sound, core_orochi.play_sound = original
+            core_game.play_sound, core_orochi.play_sound, core_special_bosses.play_sound = original
 
     @property
     def all_players(self):
@@ -181,25 +182,34 @@ class OnlineGame(Game):
             self._inputs[slot] = (0., 0., False)
 
     def step(self):
-        if self.phase != 'playing' or self.paused:
+        finishing = self.phase == 'won' and round(self.tick * 1000 / 60) < self.victory_end
+        if not finishing and (self.phase != 'playing' or self.paused):
             self.clear_inputs()
             return
         fixed_world(self.orientation)
         self.tick += 1
         config.campaign_time_ms = round(self.tick * 1000 / 60)
         now = config.game_ticks()
-        for p in self.players if self.state != GameState.LEVEL_TRANSITION else ():
+        if finishing:
+            self._update_combat_effects()
+            self._expire_visuals(now)
+            return
+        accepting_input = self.state != GameState.LEVEL_TRANSITION and not self._whale_is_swallowing()
+        for p in self.players if accepting_input else ():
             dx, dy, shooting = self._inputs[p.slot]
-            if now >= p.niu_freeze_until:
+            if now >= max(p.niu_freeze_until, p.geyser_lift_until):
                 speed = self._player_speed(p, now)
                 p.move(dx * speed, dy * speed)
-            if shooting and p.can_shoot(now):
+            if shooting and p.can_shoot(now, self._player_fire_interval_multiplier(now)):
                 with self._capture_sounds():
                     self._shoot(now, p)
         self._damage_target = None
         with self._capture_sounds():
             with self._for_player(self.players[0], focus=False):
                 super().update()  # Exactly one world update per tick.
+            for player in self.all_players:
+                if not player.alive and self.lives > 0:
+                    self._action(player.slot, 'revive')
         self._expire_visuals(now)
         self._legacy_sync()
 
@@ -272,18 +282,26 @@ class OnlineGame(Game):
         if not p.alive or now < p.invincible_until:
             return False
         p.hp = max(0, p.hp - amount)
+        if amount > 0:
+            p.animation_hit_at = now
         p.invincible_until = now + (850, 650, 550)[self._campaign_tier()]
         if p.hp <= 0:
             p.alive = False
             self._inputs[p.slot] = (0., 0., False)
             self.game_over_reason = reason
             if not self.players:
-                if self.lives <= 0 and self.gold < REVIVE_COSTS[self.difficulty_key]:
+                if self.lives <= 0 and not self._can_buy_revive():
                     self.phase = 'lost'
                     self.state = GameState.GAME_OVER
                 return True
         self._legacy_sync()
         return False
+
+    def _defeat_players_by_suction(self, now):
+        for player in tuple(self.players):
+            with self._for_player(player):
+                player.invincible_until = min(player.invincible_until, now)
+                self._damage_player(now, player.hp, '被远古巨鲸吸入！')
 
     def _resolve_leak(self, enemy, now):
         self.enemies.remove(enemy)
@@ -321,6 +339,8 @@ class OnlineGame(Game):
                     continue
                 self._contact_hits[key] = now
                 self._damage_target = p
+                if not self._player_is_invincible(now):
+                    self._play_contact_impact(p, contact, heavy=entity is self.boss or entity.is_large)
                 if entity is self.boss:
                     p.move(0, contact.bottom - p.rect().top + 2)
                 amount = 2 if entity is self.boss else self._enemy_contact_damage(entity)
@@ -331,8 +351,7 @@ class OnlineGame(Game):
         boss = self.boss
         if boss:
             for p in tuple(self.players):
-                hit = (boss.laser_hits(p.rect(), now) if isinstance(boss, core_game.NiuBoss)
-                       else any(r.colliderect(p.rect()) for r in boss.death_laser_rects(now)))
+                hit = any(r.colliderect(p.rect()) for r in boss.death_laser_rects(now))
                 if hit:
                     self._area_damage(p, ('laser', boss.laser_active_until), now, 1,
                                       f'被{boss.name}毁灭激光击败！')
@@ -435,9 +454,9 @@ class OnlineGame(Game):
         with self._world_effects_only():
             super()._update_special_boss_hazards(now)
         for player in tuple(self.players):
-            if isinstance(boss, core_game.OrochiBoss) and boss.skill in ('slam', 'split', 'laser'):
+            if isinstance(boss, core_game.OrochiBoss) and boss.skill in ('slam', 'split', 'laser', 'storm'):
                 age = boss.age(now)
-                strike = age // (boss.SLAM_ROUND if boss.skill == 'slam' else 1000)
+                strike = boss.hazard_strike(age)
                 if boss.hazard_hits(player.rect(), age):
                     self._area_damage(player, ('orochi', now - age, boss.skill, strike), now, 2,
                                       f'被{boss.name}击败！')
@@ -530,6 +549,8 @@ class OnlineGame(Game):
             return '无效玩家'
         if self.phase != 'playing':
             return '对局已经结束'
+        if self._whale_is_swallowing():
+            return '等待巨鲸吞入动画结束'
         p = self.all_players[slot - 1]
         if action == 'shop_open':
             for other in self.all_players:
@@ -545,13 +566,16 @@ class OnlineGame(Game):
                 return '当前玩家无需复活'
             if self.lives > 0:
                 self.lives -= 1
-            elif self.gold >= REVIVE_COSTS[self.difficulty_key]:
+            elif self._can_buy_revive():
                 self.player.gold -= REVIVE_COSTS[self.difficulty_key]
+                self.revive_count += 1
+            elif not self._paid_revives_remaining():
+                return '共享金币复活次数已用完'
             else:
                 return '复活资源不足，请等待队友收集金币'
             p.alive, p.hp = True, p.max_hp
-            p.x, p.y = self.world_size[0] / 2 + (slot - 1.5) * 180, config.GAME_AREA_BOTTOM - 14
-            p.invincible_until = config.game_ticks() + 2000
+            self._place_revived_player(p)
+            p.invincible_until = config.game_ticks() + core_game.REVIVE_INVINCIBILITY_MS
             p.temp_hp_until = 0
             self._inputs[slot] = (0., 0., False)
             return None
@@ -623,6 +647,8 @@ class OnlineGame(Game):
                 'pause_reason': self.pause_reason, 'players': players, 'gold': self.gold,
                 'lives': self.lives, 'difficulty': self.difficulty_key,
                 'revive_cost': REVIVE_COSTS[self.difficulty_key], 'kills': self.level_kills,
-                'kills_needed': self._campaign_value(config.CAMPAIGN_KILLS),
+                'paid_revives_remaining': self._paid_revives_remaining(),
+                'boss_remaining_ms': (max(0, core_game.BACKGROUND_SCROLL_TICKS - self.background_scroll_ticks)
+                                      * 1000 // config.FPS if self.state == GameState.PLAYING else 0),
                 'catalog': {'weapons': weapons, 'characters': characters},
                 'events': list(self._events), 'world': encode_world(self)}

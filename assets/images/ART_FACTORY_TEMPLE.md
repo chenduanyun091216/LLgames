@@ -20,7 +20,6 @@ Shared direction: polished hand-painted, colorful 2D underwater arcade fantasy; 
 - `effects/mecha_guided_missile.png`: downward copper/gunmetal torpedo with cyan nose and orange/cyan exhaust above.
 - `effects/mecha_emp_ring.png`: perfectly front-on narrow cyan/white electric circle, transparent center and exterior.
 - `effects/mecha_molten_burst.png`: orange molten reactor orb, white/gold core, dark red lava ribbons, compact flame corona.
-- `effects/whale_sonar_ring.png`: front-on narrow luminous cyan/gold ring with geometric ornament, transparent center and exterior.
 - `effects/whale_tidal_crescent.png`: downward-moving aqua crescent, white frothy lower convex leading edge, upturned ends and transparent upper concavity.
 - `effects/whale_rune_geyser.png`: tall aqua geyser, twisting water streams, white foam and gold spiral energy above a rune pedestal.
 - `effects/whale_ancient_pearl.png`: ivory magical pearl, turquoise/violet iridescence, thin gold orbit rings and soft blue halo.
@@ -34,10 +33,23 @@ All 18 original files were visually inspected in a contact sheet. Both ring cent
 
 ## Ancient whale redraw
 
-The whale, all four skills, the worm, and the rift eye were redrawn using built-in image generation. The whale pose atlas adds a banking swim, side profile, open-mouth sonar, and forward lunge. Prompt details for the redrawn set follow.
+The whale, three skill sprites, the worm, and the rift eye were redrawn using built-in image generation. The whale pose atlas adds a banking swim, side profile, front-facing open mouth, and forward lunge. Prompt details for the redrawn set follow.
 
 - Whale and poses: indigo ancient whale, raised gold temple armor, turquoise runes, isolated front and side views on transparent alpha.
-- Skills: continuous cyan rune annulus, downward aqua crescent, vertical rising rune geyser, and round pearl with gold coral veins.
+- Skills: downward aqua crescent, vertical rising rune geyser, and round pearl with gold coral veins.
 - Enemies: a round indigo parasite covered in spines and a purple space tear with one pair of orange eyes.
 
-The delivered RGBA sheets and sprites have a long edge of at least 2048 px. The generated whale, pose atlas, sonar, pearl, and worm were resized for the 2K export. The crescent, geyser, and rift eye were generated at 2172 px on the long edge.
+The delivered RGBA sheets and sprites have a long edge of at least 2048 px. The generated whale, pose atlas, pearl, and worm were resized for the 2K export. The crescent, geyser, and rift eye were generated at 2172 px on the long edge.
+
+## Additional factory and temple enemies
+
+Each enemy was generated as a two-pose sheet using built-in image generation. Shared direction was a downward-facing three-quarter view, cartoon cel shading, dark outlines, and a transparent background. The normal and action poses were exported separately to `enemies/enemy_<key>.png` and `enemies/enemy_<key>_action.png` with matching canvases and a 384 px long edge.
+
+| Key | Character and action prompt |
+| --- | --- |
+| `mecha_drill` | Copper and steel treaded drill crab extends its retracted drill and spins it with turquoise trails. |
+| `mecha_eel` | Segmented copper eel coils around its head and lights up its cyan segments. |
+| `mecha_forge` | Round iron furnace puffer opens its orange vents and extends mechanical spikes. |
+| `ancient_turtle` | Jade stone turtle with gold shell trim tucks in its flippers and lights up its turquoise shell rune. |
+| `ancient_seahorse` | Indigo temple seahorse with a gold crown lashes its tail and flares its fins. |
+| `ancient_scallop` | Violet stone scallop with gold shell rims opens its shell to reveal a turquoise pearl. |

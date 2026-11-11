@@ -827,9 +827,14 @@ def make_enemy_surface(key):
         'seahorse': 'goldfish',
         'starfish': 'goldfish',
         'turtle': 'crab',
+        'puffer': 'goldfish', 'scallop': 'crab', 'mantis_shrimp': 'lobster',
+        'nudibranch': 'octopus', 'flounder': 'goldfish', 'anglerfish': 'goldfish',
+        'sea_cucumber': 'octopus', 'cuttlefish': 'octopus',
         # Keep missing-art/headless operation safe; release builds ship bespoke PNGs.
         'mecha_crab': 'crab', 'mecha_ray': 'shark', 'mecha_jelly': 'octopus',
+        'mecha_drill': 'crab', 'mecha_eel': 'shark', 'mecha_forge': 'goldfish',
         'ancient_nautilus': 'octopus', 'ancient_trilobite': 'lobster', 'ancient_ray': 'shark',
+        'ancient_turtle': 'crab', 'ancient_seahorse': 'goldfish', 'ancient_scallop': 'crab',
     }.get(key, key)
     return make_sprite(size, drawers[fallback_key])
 

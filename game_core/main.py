@@ -166,7 +166,9 @@ async def main():
             resized = True
         was_advancing = game.state in advancing_states
         running = game.handle_events(events)
-        if game.difficulty is None:
+        if game.exit_confirmation:
+            accumulator = 0.0
+        elif game.difficulty is None:
             config.campaign_time_ms = None
             accumulator = 0.0
             game.update()
@@ -280,8 +282,7 @@ async def main():
         warm_campaign = (game.state == GameState.LEVEL_TRANSITION
                          and game.level_transition_end - config.game_ticks() <= 1100)
         warm_infinite = (game.infinite_mode and use_hd and game.bg_transition_prev is None)
-        warm_scroll = (browser_window is not None and warm_campaign and not game.infinite_mode
-                       and not config.LEVEL_CONFIGS[next_index].get('boss_on_start'))
+        warm_scroll = browser_window is not None and warm_campaign and not game.infinite_mode
         if (not hidden and game.difficulty and background_key != warmed_background
                 and (warm_campaign or warm_infinite)):
             make_background(next_level, art_size=None if warm_scroll else config.VIEW_SIZE)

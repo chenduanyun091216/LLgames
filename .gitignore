@@ -8,6 +8,7 @@ __pycache__/
 /build/
 /dist/
 /.web-build/
+/assets/images_lg/
 
 # IDE and operating system files
 /.idea/

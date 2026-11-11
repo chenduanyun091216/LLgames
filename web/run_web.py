@@ -103,6 +103,8 @@ def _atlas_layout(image, name):
         return 2, 2, 768
     if name == 'anim_boss_orochi_idle':
         return 6, 4, 624
+    if re.fullmatch(r'anim_boss_(lobster|crab|octopus|shark|dragon)_(attack|laser)', name):
+        return max(1, image.width // image.height), 1, 512
     return max(1, image.width // image.height), 1, 384
 
 
@@ -130,7 +132,7 @@ DEFAULT_ASSET_SCALE = 0.75
 def prepare_image(path, target_images, hd_images):
     from PIL import Image
 
-    background = re.fullmatch(r'bg[0-9]+|bg1-scroll|background', path.stem)
+    background = re.fullmatch(r'bg[0-9]+|background', path.stem)
     atlas = path.stem.startswith('anim_')
     # UI icons are small on both tiers. A single copy also keeps the startup title shared.
     limits = {'enemies': 512, 'players': 512, 'bosses': 1024, 'effects': 768,

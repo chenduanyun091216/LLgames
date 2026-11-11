@@ -25,10 +25,14 @@ BOSS_COLORS = {key: values[1] for key, values in SIGNATURES.items()}
 BOSS_COLORS.update(boss_niu=(255, 117, 50), boss_zongzong=(116, 237, 255))
 TRIDENT_IMAGES = ('effects/boss_trident_gold.png', 'effects/boss_trident_red.png')
 TRIDENT_INTERVAL_MS = 220
-SKILL_IMAGES = ('effects/boss_bite.png', 'effects/boss_claw.png', *TRIDENT_IMAGES)
+CRAB_BURST_IMAGE = 'effects/boss_crab_burst.png'
+DRAGON_FIREBALL_IMAGE = 'effects/boss_dragon_fireball.png'
+SKILL_IMAGES = ('effects/boss_bite.png', 'effects/boss_claw.png', *TRIDENT_IMAGES,
+                CRAB_BURST_IMAGE, DRAGON_FIREBALL_IMAGE,
+                'effects/bubble_crab.png', 'effects/bubble_crab_red.png')
 
 LASH_MS = 680
-CHASE_MS = 1520
+CHASE_MS = 1322
 BITE_REPEAT_MS = CHASE_MS + 2000
 BITE_RETURN_MS = 600
 CRAB_BUBBLE_BURST_MS = 860
@@ -222,11 +226,16 @@ class BossSignature:
                     Draw.line(surface, (*self.color, 95), (x, y), (x, self.bottom), 1)
                 _draw_claw(surface, x, y, i)
         elif self.key == 'boss_crab':
-            if 0 <= age < CRAB_BUBBLE_BURST_MS:
+            if age >= 0:
                 for i, ((x, y, radius), color) in enumerate(zip(self._bubbles(age), CRAB_BUBBLE_COLORS)):
-                    if not self.bubble_released[i]:
+                    if age < CRAB_BUBBLE_BURST_MS and not self.bubble_released[i]:
                         _draw_bubble(surface, x, y, radius, now, color)
                         draw_bubble_crab(surface, x, y, radius, color, now)
+                    elif self.bubble_released[i] and age < CRAB_BUBBLE_BURST_MS + 180:
+                        burst = image_asset(CRAB_BURST_IMAGE)
+                        if burst is not None:
+                            size = round(radius * 2 + (age - CRAB_BUBBLE_BURST_MS) / 6)
+                            _blit_art(surface, burst, (x - size / 2, y - size / 2), (size, size))
         elif self.key == 'boss_octopus':
             for tentacle in self._tentacles(boss, max(0, age)):
                 _draw_tentacle(surface, tentacle)
@@ -238,8 +247,16 @@ class BossSignature:
                 _draw_trident(surface, x, y, index == 1)
         elif self.key == 'boss_dragon':
             if age >= 0:
-                Draw.circle(surface, (*self.color, 95), (boss.x, boss.y + boss.h * .65),
-                            12 + round(4 * math.sin(now * .02)), 2)
+                x, y = boss.x, boss.y + boss.h * .65
+                flash_age = now - self.next_fireball_at + 400
+                flash = 1 - _clamp(flash_age / 100, 0, 1)
+                spread = 6 + 8 * (1 - flash)
+                alpha = round(80 + 145 * flash)
+                for side in (-1, 1):
+                    Draw.line(surface, (255, 111, 41, alpha), (x + side * 4, y + 2),
+                              (x + side * spread, y + spread), 2)
+                Draw.circle(surface, (255, 224, 142, alpha), (round(x), round(y + 3)),
+                            2 + round(2 * flash))
         elif age < 0:
             _ripples(surface, boss.x, boss.y + boss.h * .8, boss.w * .30, self.color, phase)
         elif self.chasing:
@@ -273,6 +290,8 @@ def _draw_claw(surface, x, y, side):
     image = image_asset('effects/boss_claw.png')
     if image is not None:
         image = _claw_image(image, side)
+        Draw.line(surface, (255, 132, 113, 195), (x, y - 109), (x, y - 37), 4)
+        Draw.line(surface, (255, 90, 75, 130), (x - 8, y - 94), (x - 8, y - 46), 2)
         _blit_art(surface, image, (round(x - 103 / 2), round(y - 145 + 24)), (103, 145))
         return
     # Procedural fallback preserves the pincer silhouette if image assets are disabled.
@@ -297,12 +316,14 @@ def _tinted_crab(image, red):
 
 
 def draw_bubble_crab(surface, x, y, size, color, now):
-    image = image_asset('effects/bubble_crab.png')
+    red = color == CRAB_BUBBLE_COLORS[0]
+    red_image = image_asset('effects/bubble_crab_red.png') if red else None
+    image = red_image or image_asset('effects/bubble_crab.png')
     if image is not None:
         width = round(size * 1.35)
         height = round(width * image.get_height() / image.get_width())
         bob = math.sin(now * .018) * 2
-        _blit_art(surface, _tinted_crab(image, color == CRAB_BUBBLE_COLORS[0]),
+        _blit_art(surface, _tinted_crab(image, red and red_image is None),
                   (round(x - width / 2), round(y - height / 2 + bob)), (width, height))
         return
     r = size * .32
@@ -327,11 +348,13 @@ def _draw_bubble(surface, x, y, radius, now, tint):
     center = (round(x), round(y))
     bounds = (x - radius, y - radius, 2 * radius, 2 * radius)
     Draw.circle(surface, (*tint, 49), center, radius)
-    for color, start, width in (((*tint, 235), .32, 3),
-                                ((*tint, 154), 3.4, 4),
-                                ((229, 252, 255, 242), .81, 2)):
+    Draw.circle(surface, (35, 18, 50, 235), center, radius, 4)
+    Draw.circle(surface, (*tint, 216), center, radius - 2, 2)
+    for color, start, width in (((*tint, 218), .32, 3),
+                                ((255, 245, 248, 235), 1.66, 2)):
         Draw.arc(surface, color, bounds, start, start + 2.1, width)
-    Draw.ellipse(surface, (216, 251, 255, 184), (x - 24, y - 27, 18, 6))
+    Draw.ellipse(surface, (255, 248, 246, 222), (x - 25, y - 29, 19, 8))
+    Draw.circle(surface, (255, 248, 246, 206), (round(x - 28), round(y - 19)), 3)
     for i in range(4):
         phase = (now * .002 + i / 4) % 1
         Draw.circle(surface, (*tint, 155), (x + (i - 1.5) * 13, y + 27 - 53 * phase), 2 + i % 2, 1)
@@ -347,16 +370,17 @@ def _draw_tentacle(surface, points):
         nx, ny = dy / distance, -dx / distance
         left.append((x + nx * width, y + ny * width))
         right.append((x - nx * width, y - ny * width))
-    Draw.polygon(surface, (56, 23, 49), left + right[::-1])
+    outline = left + right[::-1]
+    Draw.polygon(surface, (115, 57, 163), outline)
     center = [(x, y) for x, y, _ in points]
-    Draw.polygon(surface, (132, 63, 91), left + center[::-1])
-    Draw.lines(surface, (204, 120, 135), False, left, 2)
+    Draw.polygon(surface, (177, 104, 222), left + center[::-1])
+    Draw.lines(surface, (41, 19, 64), True, outline, 2)
     for i, (x, y, width) in enumerate(points[1:-1], 1):
         rx, ry = right[i]
         x, y = (x + rx) / 2, (y + ry) / 2
         r = max(2, width * .28)
-        Draw.ellipse(surface, (219, 155, 137), (x - r, y - r * .8, 2 * r, 1.6 * r))
-        Draw.ellipse(surface, (112, 48, 63), (x - r * .54, y - r * .37, r * 1.08, r * .74))
+        Draw.ellipse(surface, (255, 163, 218), (x - r, y - r * .8, 2 * r, 1.6 * r))
+        Draw.ellipse(surface, (177, 72, 156), (x - r * .54, y - r * .37, r * 1.08, r * .74))
 
 
 @lru_cache(maxsize=2)

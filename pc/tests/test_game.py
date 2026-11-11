@@ -16,6 +16,59 @@ from run_pc import main
 
 
 class DesktopGameTests(unittest.TestCase):
+    def test_escape_exits_difficulty_selection_and_confirms_battle_exit(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        config.update_mobile_view((960, 720))
+        game = Game(desktop_controls=True)
+        escape = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE, mod=0)
+        enter = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)
+
+        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
+        self.assertFalse(game.handle_events([escape]))
+        self.assertFalse(game.exit_confirmation)
+
+        game = Game(desktop_controls=True)
+        game.state = GameState.BOSS_FIGHT
+        self.assertTrue(game.handle_events([escape]))
+        self.assertEqual(game.state, GameState.BOSS_FIGHT)
+        self.assertTrue(game.handle_events([escape]))
+        self.assertEqual(game.state, GameState.BOSS_FIGHT)
+        self.assertTrue(game.handle_events([escape]))
+        self.assertTrue(game.handle_events([enter]))
+        self.assertEqual(game.state, GameState.MENU)
+
+        self.assertFalse(Game().handle_events([escape]))
+
+    def test_infinite_background_scrolls_and_restarts_each_round(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        config.update_mobile_view((960, 720))
+        game = Game(desktop_controls=True, scroll_campaign_backgrounds=True)
+        game._begin_infinite_run(5)
+        size = game.bg.get_size()
+        start = game.scrolling_background(size)
+        self.assertIsNotNone(start)
+        with patch.object(game, '_update_playing'):
+            for _ in range(config.FPS):
+                game.update()
+        self.assertLess(game.scrolling_background(size).get_offset()[1], start.get_offset()[1])
+        game.background_scroll_ticks = 40 * config.FPS - 1
+        game.update()
+        self.assertEqual(game.state, GameState.BOSS_FIGHT)
+        self.assertEqual(game.scrolling_background(size).get_offset()[1], 0)
+        game._kill_boss()
+        self.assertEqual(game.infinite_background_level, 6)
+        self.assertEqual(game.state, GameState.BOSS_FIGHT)
+        self.assertEqual(game.boss.bdef['campaign_level'], 6)
+        self.assertGreater(game.scrolling_background(size).get_offset()[1], 0)
+        game._kill_boss()
+        self.assertEqual(game.infinite_background_level, 7)
+        self.assertEqual(game.background_scroll_ticks, 0)
+        self.assertGreater(game.scrolling_background(size).get_offset()[1], 0)
+
     def test_first_level_background_scrolls_at_constant_speed_until_top(self):
         pygame.init()
         self.addCleanup(pygame.quit)
@@ -28,42 +81,40 @@ class DesktopGameTests(unittest.TestCase):
         self.assertIsNotNone(start)
         self.assertEqual(start.get_masks()[3], 0)
         with patch.object(game, '_update_playing'):
-            for _ in range(config.FPS * 13):
-                game.update()
-        moving = game.scrolling_background(size)
-        self.assertEqual(moving.get_offset()[1], round(start.get_offset()[1] * 0.75))
-        game._trigger_boss()
-        self.assertIs(game.scrolling_background(size), moving)
-        with patch.object(game, '_update_boss_fight'):
-            for _ in range(config.FPS * 13):
+            for _ in range(config.FPS * 10):
                 game.update()
             self.assertEqual(game.scrolling_background(size).get_offset()[1],
-                             round(start.get_offset()[1] * 0.5))
-            for _ in range(config.FPS * 26):
+                             round(start.get_offset()[1] * 0.75))
+            for _ in range(config.FPS * 30 - 1):
                 game.update()
-            top = game.scrolling_background(size)
-            self.assertEqual(top.get_offset()[1], 0)
+            self.assertEqual(game.state, GameState.PLAYING)
             game.update()
-            self.assertIs(game.scrolling_background(size), top)
+        self.assertEqual(game.state, GameState.BOSS_FIGHT)
+        top = game.scrolling_background(size)
+        self.assertEqual(top.get_offset()[1], 0)
+        with patch.object(game, '_update_boss_fight'):
+            game.update()
+        self.assertIs(game.scrolling_background(size), top)
         for level in range(2, 12):
             with self.subTest(level=level):
                 game.state = GameState.PLAYING
                 game._start_level(level)
                 frame = game.scrolling_background(size)
-                if level in (6, 11):
-                    self.assertEqual(game.state, GameState.BOSS_FIGHT)
-                    self.assertIsNone(frame)
-                    with patch.object(game, '_update_boss_fight'):
+                boss_on_start = level in (6, 11)
+                self.assertEqual(game.state, GameState.BOSS_FIGHT if boss_on_start else GameState.PLAYING)
+                self.assertIsNotNone(frame)
+                self.assertEqual(frame.get_offset()[1], start.get_offset()[1])
+                update = '_update_boss_fight' if boss_on_start else '_update_playing'
+                with patch.object(game, update):
+                    for _ in range(config.FPS * 10):
                         game.update()
-                    self.assertEqual(game.background_scroll_ticks, 0)
-                else:
-                    self.assertIsNotNone(frame)
-                    self.assertGreater(frame.get_offset()[1], 0)
-                    with patch.object(game, '_update_playing'):
-                        for _ in range(config.FPS):
+                    self.assertEqual(game.scrolling_background(size).get_offset()[1],
+                                     round(frame.get_offset()[1] * 0.75))
+                    if boss_on_start:
+                        for _ in range(config.FPS * 30 + 1):
                             game.update()
-                    self.assertLess(game.scrolling_background(size).get_offset()[1],
-                                    frame.get_offset()[1])
+                        self.assertEqual(game.background_scroll_ticks, 40 * config.FPS)
+                        self.assertEqual(game.scrolling_background(size).get_offset()[1], 0)
         game._start_level(1)
         self.assertEqual(game.scrolling_background(size).get_offset(), start.get_offset())
 
@@ -147,6 +198,35 @@ class DesktopGameTests(unittest.TestCase):
                     game._draw_player_hit_impact()
                 self.assertIsNone(game.player_hit_impact)
 
+    def test_boss_defeat_clears_explosions_from_level_transition(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 540))
+        config.update_mobile_view((960, 540))
+        game = Game(desktop_controls=True)
+        game._start_game('medium')
+        game._trigger_boss()
+        game._spawn_hit_effect(game.boss.x, game.boss.y, (255, 200, 50), heavy=True)
+        enemy = Enemy(config.ENEMY_DEFS[0])
+        enemy.y = 150
+        game.enemies.append(enemy)
+        center = enemy.rect().center
+
+        game._kill_boss()
+
+        self.assertEqual(game.state, GameState.LEVEL_TRANSITION)
+        self.assertFalse(game.explosions)
+        self.assertFalse(game.enemies)
+        sparks = game.particles[-1].particles
+        self.assertTrue(sparks)
+        self.assertTrue(all((spark['x'], spark['y']) == center for spark in sparks))
+        life = sparks[0]['life']
+        with patch.object(config, 'game_ticks', return_value=game.level_transition_end - 1):
+            game.update()
+        self.assertEqual(sparks[0]['life'], life - 1)
+        self.assertEqual(game.state, GameState.LEVEL_TRANSITION)
+        self.assertEqual(game.player.gold, config.CAMPAIGN_REWARDS[0])
+
     def test_enemy_entry_halves_direct_and_burn_damage(self):
         pygame.init()
         self.addCleanup(pygame.quit)
@@ -192,6 +272,29 @@ class DesktopGameTests(unittest.TestCase):
         self.assertEqual(game.player_hp, hp - 1)
         game._damage_player_on_contacts(2300)
         self.assertEqual(game.player_hp, hp - 1)
+
+    def test_body_contacts_show_impact_and_play_sound(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 540))
+        config.update_mobile_view((960, 540))
+        for is_boss in (False, True):
+            with self.subTest(is_boss=is_boss):
+                game = Game(desktop_controls=True)
+                game._start_game('medium')
+                if is_boss:
+                    target = game.boss = game._make_boss(config.BOSS_DEFS[0])
+                else:
+                    target = Enemy(config.ENEMY_DEFS[0])
+                    game.enemies = [target]
+                target.x, target.y = game.player.x, game.player.rect().top
+                point = game.player.rect().clip(target.rect()).center
+
+                with patch('game_core.game.play_sound') as sound:
+                    game._damage_player_on_contacts(1000)
+                    game._damage_player_on_contacts(1001)
+                sound.assert_called_once_with('player_hit')
+                self.assertEqual([(e.x, e.y) for e in game.explosions], [point])
 
     def test_boss_bullet_hit_feedback_requires_damage(self):
         pygame.init()
@@ -265,9 +368,19 @@ class DesktopGameTests(unittest.TestCase):
         config.update_mobile_view(window.get_size())
         game = Game(desktop_controls=True)
         game._begin_infinite_run()
+        game._player_defeated('test')
+        game._continue_infinite()
+        game.state = GameState.PLAYING
+        game.score = 150
 
         with patch.object(game, '_draw_text_fit', wraps=game._draw_text_fit) as draw_text:
             game.draw()
+        score = next(call for call in draw_text.call_args_list if call.args[0] == '积分 150')
+        deaths = next(call for call in draw_text.call_args_list if call.args[0] == '死亡次数 1')
+        self.assertEqual(score.args[3].left, 17)
+        self.assertEqual(score.args[3].centery, deaths.args[3].centery)
+        self.assertLessEqual(score.args[3].right, deaths.args[3].left)
+        self.assertEqual(deaths.kwargs['align'], 'right')
         fps = next(call for call in draw_text.call_args_list if call.args[0].startswith('FPS '))
         elapsed = next(call for call in draw_text.call_args_list if call.args[0].startswith('用时 '))
         fps_rect, elapsed_rect = fps.args[3], elapsed.args[3]
@@ -315,7 +428,10 @@ class DesktopGameTests(unittest.TestCase):
         click(left.center)
         self.assertEqual(game.current_level, 1)
         click(health.center)
-        self.assertGreater(game.player.rage_until, config.game_ticks())
+        self.assertEqual(game.player.rage_until, 0)
+        game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_p, mod=pygame.KMOD_CTRL)])
+        self.assertEqual(game.player.rage_until, 0)
+        self.assertEqual(game.rage_banner_until, 0)
 
         joystick = (40, config.SCREEN_HEIGHT - 70)
         click(joystick)

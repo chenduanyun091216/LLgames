@@ -148,17 +148,20 @@ class OrochiTests(unittest.TestCase):
             x, y = path[len(path) // 2]
             self.assertTrue(self.boss.hazard_hits(pygame.Rect(x - 2, y - 2, 4, 4), 900))
         self.assertFalse(self.boss.hazard_hits(pygame.Rect(self.boss.x, 350, 5, 5), 500))
+        for i, path in enumerate(self.boss.laser_paths(900)):
+            point = pygame.Rect(path[0][0] + 14, 350, 1, 1)
+            self.assertEqual(self.boss.hazard_hits(point, 900), i == 1)
 
     def test_storm_lights_all_heads_in_original_positions_and_extinguishes_only_the_hit_head(self):
         self.start('storm')
         self.boss.hp = self.boss.max_hp / 2
         positions = [self.boss.head_rect(i) for i in range(8)]
         self.assertEqual(list(self.boss.hitboxes()), positions)
-        self.boss.hit_by('sniper', 10, hit_rect=positions[7])
+        self.boss.hit_by('sniper', self.boss.max_hp * .05, hit_rect=positions[7])
         self.assertEqual(list(self.boss.hitboxes()), positions[:7])
         self.assertEqual([self.boss.head_rect(i) for i in range(8)], positions)
         for rect in reversed(positions[:7]):
-            self.boss.hit_by('sniper', 10, hit_rect=rect)
+            self.boss.hit_by('sniper', self.boss.max_hp * .05, hit_rect=rect)
         self.assertIsNone(self.boss.skill)
         self.tick(10000)
         self.assertEqual(self.boss.hp, self.boss.max_hp / 2)
@@ -183,13 +186,13 @@ class OrochiTests(unittest.TestCase):
         self.tick(9999)
         self.assertEqual(self.boss.hp, self.boss.max_hp / 2)
         self.tick(10000)
-        self.assertEqual(self.boss.hp, self.boss.max_hp * .74)
+        self.assertEqual(self.boss.hp, self.boss.max_hp * .90)
         self.tick(12999)
         self.boss.hit_by('pistol')
-        self.assertEqual(self.boss.hp, self.boss.max_hp * .74)
+        self.assertEqual(self.boss.hp, self.boss.max_hp * .90)
         self.tick(13000)
         self.boss.hit_by('pistol')
-        self.assertEqual(self.boss.hp, self.boss.max_hp * .74 - 1)
+        self.assertEqual(self.boss.hp, self.boss.max_hp * .90 - 1)
 
     def test_level_ten_transitions_directly_to_orochi(self):
         self.game._start_level(10)
@@ -220,17 +223,17 @@ class OrochiTests(unittest.TestCase):
         self.assertEqual(self.game.state, GameState.BOSS_FIGHT)
         self.assertIsInstance(self.game.boss, OrochiBoss)
 
-    def test_random_opening_at_five_seconds_then_regular_order(self):
+    def test_random_opening_at_three_seconds_then_regular_order(self):
         self.boss.entered = False
         self.boss.y = 59
         config.campaign_time_ms = 3000
         self.game.update()
         self.assertTrue(self.boss.entered)
-        config.campaign_time_ms = 5999
+        config.campaign_time_ms = 3999
         self.game.update()
         self.assertIsNone(self.boss.skill)
         with patch('game_core.orochi.random.choice', return_value='laser') as pick:
-            config.campaign_time_ms = 6000
+            config.campaign_time_ms = 4000
             self.game.update()
             pick.assert_called_once_with(self.boss.SKILLS)
         self.assertEqual(self.boss.skill, 'laser')
@@ -246,7 +249,7 @@ class OrochiTests(unittest.TestCase):
             self.assertEqual(self.boss.skill, 'storm')
             config.campaign_time_ms += 2000
             for i in reversed(range(8)):
-                self.boss.hit_by('sniper', 10, hit_rect=self.boss.head_rect(i))
+                self.boss.hit_by('sniper', self.boss.max_hp * .05, hit_rect=self.boss.head_rect(i))
         self.assertEqual(self.boss.hp, 0)
         self.assertIsNotNone(self.boss.death_at)
         self.assertTrue(self.boss.death_particles)
@@ -268,7 +271,7 @@ class OrochiTests(unittest.TestCase):
         self.assertEqual(self.boss.skill, 'storm')
         self.assertTrue(self.boss.final_storm)
         self.tick(23000)
-        self.assertAlmostEqual(self.boss.hp, self.boss.max_hp * .25)
+        self.assertAlmostEqual(self.boss.hp, self.boss.max_hp * .41)
         self.tick(26000)
         self.boss.hit_by('sniper', self.boss.hp - final_hp)
         self.assertAlmostEqual(self.boss.hp, final_hp)
@@ -285,7 +288,12 @@ class OrochiTests(unittest.TestCase):
         for skill, age in (('volley', 400), ('slam', 1120), ('split', 1400), ('laser', 1300), ('storm', 2010)):
             config.campaign_time_ms = 1000
             self.start(skill)
+            if skill == 'storm':
+                self.boss.update(240, 380)
             self.tick(age)
+            if skill == 'storm':
+                self.boss.draw_storm_lightning(surface, config.game_ticks())
+                self.boss.draw_storm_lightning(scaled, config.game_ticks())
             self.boss.draw(surface)
             self.boss.draw(scaled)
         self.boss._start_death(config.game_ticks())
@@ -301,11 +309,8 @@ class OrochiTests(unittest.TestCase):
         self.assertEqual(game.chapter, 11)
         self.assertEqual(game.infinite_background_level, 11)
         self.assertTrue(game.level_enemy_defs)
-        self.assertEqual(game.state, GameState.PLAYING)
-        self.assertEqual(game.next_infinite_boss_time, 26000)
-
-        config.campaign_time_ms = game.next_infinite_boss_time
-        game.update()
+        self.assertEqual(game.state, GameState.BOSS_FIGHT)
+        self.assertGreater(game.level_title_until, config.game_ticks())
         self.assertIsInstance(game.boss, OrochiBoss)
         self.assertEqual(game.boss.bdef['campaign_level'], 11)
         game.boss._start_death(config.game_ticks())
@@ -328,7 +333,8 @@ class OrochiTests(unittest.TestCase):
                 self.assertTrue(game.infinite_mode)
                 self.assertEqual(game.chapter, chapter)
                 self.assertEqual(game.infinite_background_level, chapter)
-                game._trigger_infinite_boss()
+                if chapter != 11:
+                    game._trigger_infinite_boss()
                 self.assertEqual(game.boss.bdef['key'], boss)
 
     def test_idle_heads_animate_and_the_loop_returns_to_its_first_pose(self):
@@ -349,36 +355,37 @@ class OrochiTests(unittest.TestCase):
             self.assertEqual((shot.x, shot.y), self.boss._mouth(i, config.game_ticks()))
         self.assertNotEqual(self.boss._mouth(3, 1000), self.boss._mouth(3, 1600))
 
-    def test_storm_head_hp_and_healing_scale_with_max_hp_and_surviving_heads(self):
+    def test_storm_head_hp_and_healing_scale_with_max_hp_and_remaining_head_hp(self):
         self.boss.max_hp = 230
         self.boss.hp = 115
         self.start('storm')
         self.assertEqual(len(self.boss.head_hp), 8)
         for hp in self.boss.head_hp:
-            self.assertAlmostEqual(hp, 6.9)
+            self.assertAlmostEqual(hp, 11.5)
         for i in range(5):
-            self.boss.hit_by('sniper', 6.9, hit_rect=self.boss.head_rect(i))
+            self.boss.hit_by('sniper', 11.5, hit_rect=self.boss.head_rect(i))
         self.boss.hit_by('pistol', 1, hit_rect=self.boss.head_rect(5))
         self.assertEqual(len(self.boss.hitboxes()), 3)
         self.tick(9999)
         self.assertEqual(self.boss.hp, 115)
         self.tick(10000)
-        self.assertAlmostEqual(self.boss.hp, 115 + 230 * .09)
+        self.assertAlmostEqual(self.boss.hp, 115 + 230 * .15 - 1)
         self.assertEqual(self.boss.invincible_until, 14000)
 
-    def test_storm_flashes_between_thunderclaps_without_moving_heads(self):
+    def test_storm_locks_warning_and_strikes_after_one_second(self):
         self.start('storm')
-        canvas = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
-        positions = self.boss.hitboxes()
-        self.boss.draw_storm_lightning(canvas, 1000)
-        self.assertGreater(canvas.get_bounding_rect().height, config.GAME_AREA_BOTTOM // 2)
-        canvas.fill((0, 0, 0, 0))
-        self.boss.draw_storm_lightning(canvas, 1500)
-        self.assertFalse(canvas.get_bounding_rect())
-        with patch('game_core.orochi.play_sound') as sound:
-            self.tick(0)
-            self.tick(500)
-            self.tick(self.boss.THUNDER_INTERVAL)
-        self.assertEqual([call.args for call in sound.call_args_list],
-                         [('orochi_thunder',), ('orochi_thunder',)])
-        self.assertEqual(self.boss.hitboxes(), positions)
+        player = self.game.player
+        self.boss.update(player.x, player.y)
+        self.assertFalse(self.boss.hazard_hits(player.rect(), 999))
+        self.assertTrue(self.boss.hazard_hits(player.rect(), 1000))
+        corner = pygame.Rect(round(player.x + 49), round(player.y - 34), 1, 1)
+        self.assertFalse(self.boss.hazard_hits(corner, 1000))
+        self.assertFalse(self.boss.hazard_hits(player.rect().move(-150, 0), 1000))
+        self.game.player_invincible_until = 0
+        self.game.player_hp = 5
+        config.campaign_time_ms = 2000
+        self.boss.update(player.x - 150, player.y)
+        self.game._update_special_boss_hazards(2000)
+        self.game._update_special_boss_hazards(2000)
+        self.assertEqual(self.game.player_hp, 3)
+        self.assertFalse(self.boss.hazard_hits(player.rect(), self.boss.THUNDER_INTERVAL))

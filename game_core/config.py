@@ -12,6 +12,7 @@ BASE_SCREEN_HEIGHT = 720
 SCREEN_WIDTH = BASE_SCREEN_WIDTH
 SCREEN_HEIGHT = BASE_SCREEN_HEIGHT
 FPS = 60
+BOSS_OPENING_DELAY_MS = 3000
 BEACH_HEIGHT = 60
 GAME_AREA_BOTTOM = SCREEN_HEIGHT - BEACH_HEIGHT
 GAME_AREA_LEFT = 0
@@ -182,6 +183,14 @@ ENEMY_DEFS = [
     {'key': 'seahorse', 'name': '海马',   'is_large': False, 'base_speed': 0.52,  'gold': 1},
     {'key': 'starfish', 'name': '海星',   'is_large': False, 'base_speed': 0.36,  'gold': 1},
     {'key': 'turtle',   'name': '海龟',   'is_large': False, 'base_speed': 0.22,  'gold': 1},
+    {'key': 'puffer', 'name': '泡泡河豚', 'is_large': False, 'base_speed': 0.34, 'gold': 1},
+    {'key': 'scallop', 'name': '珍珠扇贝', 'is_large': False, 'base_speed': 0.28, 'gold': 1},
+    {'key': 'mantis_shrimp', 'name': '拳拳皮皮虾', 'is_large': False, 'base_speed': 0.46, 'gold': 1},
+    {'key': 'nudibranch', 'name': '花瓣海蛞蝓', 'is_large': False, 'base_speed': 0.24, 'gold': 1},
+    {'key': 'flounder', 'name': '拖鞋比目鱼', 'is_large': False, 'base_speed': 0.42, 'gold': 1},
+    {'key': 'anglerfish', 'name': '灯笼鮟鱇', 'is_large': False, 'base_speed': 0.35, 'gold': 1},
+    {'key': 'sea_cucumber', 'name': '暖炉海参', 'is_large': False, 'base_speed': 0.24, 'gold': 1},
+    {'key': 'cuttlefish', 'name': '糯糯墨鱼', 'is_large': False, 'base_speed': 0.40, 'gold': 1},
     {'key': 'zongzong', 'name': '小棕棕', 'is_large': False, 'base_speed': 0.28,  'gold': 3,
      'health_mult': 3.0, 'zongzong': True},
     {'key': 'mecha_crab', 'name': '铁钳巡卫', 'is_large': False, 'base_speed': 0.29, 'gold': 2,
@@ -190,20 +199,43 @@ ENEMY_DEFS = [
      'campaign_hp': 3},
     {'key': 'mecha_jelly', 'name': '电核水母', 'is_large': False, 'base_speed': 0.36, 'gold': 2,
      'campaign_hp': 3},
+    {'key': 'mecha_drill', 'name': '液压钻蟹', 'is_large': False, 'base_speed': 0.32, 'gold': 2,
+     'campaign_hp': 4},
+    {'key': 'mecha_eel', 'name': '电缆机鳗', 'is_large': False, 'base_speed': 0.53, 'gold': 2,
+     'campaign_hp': 3},
+    {'key': 'mecha_forge', 'name': '熔炉河豚', 'is_large': False, 'base_speed': 0.28, 'gold': 2,
+     'campaign_hp': 4},
     {'key': 'ancient_nautilus', 'name': '符纹鹦鹉螺', 'is_large': False, 'base_speed': 0.28, 'gold': 2,
      'campaign_hp': 5},
     {'key': 'ancient_trilobite', 'name': '遗迹三叶虫', 'is_large': False, 'base_speed': 0.39, 'gold': 2,
      'campaign_hp': 4},
     {'key': 'ancient_ray', 'name': '圣殿古鳐', 'is_large': False, 'base_speed': 0.57, 'gold': 2,
      'campaign_hp': 3},
-    {'key': 'octopus',  'name': '章鱼',   'is_large': True,  'base_speed': 0.25,  'gold': 3},
+    {'key': 'ancient_turtle', 'name': '镇殿石龟', 'is_large': False, 'base_speed': 0.27, 'gold': 2,
+     'campaign_hp': 5},
+    {'key': 'ancient_seahorse', 'name': '玉冠海马', 'is_large': False, 'base_speed': 0.49, 'gold': 2,
+     'campaign_hp': 3},
+    {'key': 'ancient_scallop', 'name': '藏珠灵贝', 'is_large': False, 'base_speed': 0.36, 'gold': 2,
+     'campaign_hp': 4},
+    {'key': 'octopus',  'name': '章鱼',   'is_large': True,  'base_speed': 0.25,  'gold': 3,
+     'size': (100, 87), 'sprite_asset': 'enemies/enemy_octopus.png'},
     {'key': 'shark',    'name': '鲨鱼',   'is_large': True,  'base_speed': 0.35,  'gold': 3},
 ]
 
-NEW_ENEMY_KEYS = ['crab_red', 'jellyfish', 'octopus_pink', 'seahorse', 'starfish', 'turtle']
+OCEAN_ENEMY_KEYS = [
+    'puffer', 'scallop', 'mantis_shrimp', 'nudibranch',
+    'flounder', 'anglerfish', 'sea_cucumber', 'cuttlefish',
+]
+NEW_ENEMY_KEYS = ['crab_red', 'jellyfish', 'octopus_pink', 'seahorse', 'starfish', 'turtle'] + OCEAN_ENEMY_KEYS
 SPECIAL_ENEMY_KEYS = ['zongzong']
-FACTORY_ENEMY_KEYS = ['mecha_crab', 'mecha_ray', 'mecha_jelly']
-TEMPLE_ENEMY_KEYS = ['ancient_nautilus', 'ancient_trilobite', 'ancient_ray']
+FACTORY_ENEMY_KEYS = ['mecha_crab', 'mecha_ray', 'mecha_jelly', 'mecha_drill', 'mecha_eel', 'mecha_forge']
+TEMPLE_ENEMY_KEYS = [
+    'ancient_nautilus', 'ancient_trilobite', 'ancient_ray',
+    'ancient_turtle', 'ancient_seahorse', 'ancient_scallop',
+]
+ENEMY_ACTION_KEYS = frozenset(NEW_ENEMY_KEYS + FACTORY_ENEMY_KEYS + TEMPLE_ENEMY_KEYS + [
+    'lobster', 'crab', 'goldfish', 'octopus', 'shark', 'ancient_worm',
+])
 NORMAL_ENEMIES = [e for e in ENEMY_DEFS if not e['is_large']]
 LARGE_ENEMIES  = [e for e in ENEMY_DEFS if e['is_large']]
 
@@ -273,7 +305,7 @@ BOSS_DEFS = [
      'homing_chance': 0.28, 'laser_chance': 0.035, 'final_boss': True, 'size': (180, 160)},
     {'key': 'boss_niu',      'name': '牛魔王', 'enemy_key': 'shark',
      'base_hp': 105, 'fixed_hp': 300, 'speed': 1.65, 'attack_interval': 3000, 'projectile_count': 6,
-     'laser_chance': 0.035, 'size': (168, 150)},
+     'size': (168, 150)},
     {'key': 'boss_zongzong', 'name': '小粽粽', 'enemy_key': 'zongzong',
      'base_hp': 150, 'fixed_hp': 400, 'speed': 1.18, 'attack_interval': 1900, 'projectile_count': 6,
      'size': (128, 118), 'sprite_asset': 'bosses/zongzong.png', 'sprite_key': 'zongzong'},
