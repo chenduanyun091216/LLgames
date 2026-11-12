@@ -4663,7 +4663,6 @@ class Game:
         blue = ((30, 63, 85), (93, 145, 171), (237, 249, 255))
         amber = ((230, 156, 89), (255, 219, 176), (57, 31, 32))
         if glass:
-            Draw.rect(config.SCR, (5, 22, 35), (px, py + 4, pw, ph), width=4, border_radius=21)
             self._draw_panel(px, py, pw, ph, accent=(118, 215, 231), fill=(14, 41, 59), r=21, alpha=221)
             for x, y, radius in ((px + 20, py + 18, 7), (px + 32, py + 29, 3)):
                 Draw.circle(config.SCR, (99, 154, 173), (x, y), radius, width=1)
@@ -4919,11 +4918,11 @@ class Game:
             fill = tuple((26 if hovered else 10) + c // 4 for c in color)
             border = tuple(min(255, (96 if hovered else 62) + c * 3 // 4) for c in color)
             ink = WHITE
+            Draw.rect(config.SCR, (3, 13, 22), btn.move(0, 2), border_radius=9)
         else:
             fill, border, ink = palette
             if hovered:
                 fill = tuple(min(255, channel + 12) for channel in fill)
-        Draw.rect(config.SCR, (3, 13, 22), btn.move(0, 2), border_radius=9)
         self._draw_panel(*btn, accent=border, fill=fill, r=9, alpha=251)
         label_rect = btn.inflate(-12, -6)
         if self.desktop_controls and key is not None:

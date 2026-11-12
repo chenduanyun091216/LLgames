@@ -549,7 +549,7 @@ def main():
         try:
             tls.load_cert_chain(args.cert, args.key, password=lambda: b'')
         except OSError as exc:
-            parser.error(f'无法加载 HTTPS 证书或私钥：{exc}。请按 docs/WEB.md 配置证书，或用 --http 调试。')
+            parser.error(f'无法加载 HTTPS 证书或私钥：{exc}。请按 docs/网页版使用与部署.md 配置证书，或用 --http 调试。')
         ca = args.setup_ca
         if ca is None and args.cert.resolve() == (TLS_DIR / 'cert.pem').resolve():
             local_ca = TLS_DIR / 'rootCA.pem'
