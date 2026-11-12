@@ -1,4 +1,16 @@
 (() => {
+    let activeTouches = new Set();
+    window.ttgamesTouchActive = id => activeTouches.has(id);
+    for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+        window.addEventListener(type, event => {
+            activeTouches = new Set(Array.from(event.touches, touch => touch.identifier));
+        }, {capture: true, passive: true});
+    }
+    window.addEventListener('blur', () => activeTouches.clear());
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) activeTouches.clear();
+    });
+
     const box = document.getElementById('infobox');
     const loading = document.getElementById('ttgames-loading');
     const progress = loading.querySelector('progress');
@@ -178,7 +190,7 @@
             const safeRight = parseFloat(style.getPropertyValue('--quality-safe-right'));
             quality.toggleAttribute('data-side', canvas.clientWidth - pauseRight >= menuWidth + 20 + safeRight);
             quality.style.left = `${canvas.clientWidth / 2 + 100 * scaleX}px`;
-            quality.style.setProperty('--quality-top', `${canvas.clientHeight / 2 - 61 * scaleY}px`);
+            quality.style.setProperty('--quality-top', `${canvas.clientHeight / 2 - 139 * scaleY}px`);
             quality.style.setProperty('--pause-right', `${pauseRight}px`);
             quality.style.setProperty('--pause-bottom', `${canvas.clientHeight / 2 + 75 * scaleY}px`);
         } else {

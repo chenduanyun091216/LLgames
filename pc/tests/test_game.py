@@ -16,6 +16,28 @@ from run_pc import main
 
 
 class DesktopGameTests(unittest.TestCase):
+    def test_infinite_shop_doubles_each_weapon_upgrade_price(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        config.update_mobile_view((960, 720))
+        game = Game(desktop_controls=True)
+        game._begin_infinite_run()
+        game._open_shop()
+        for weapon in ('rifle', 'shotgun', 'sniper'):
+            base = game._weapon_cost(weapon)
+            for level, price in enumerate((base, 2 * base, 4 * base), 1):
+                position = game._mobile_shop_rects()[f'upgrade:{weapon}'].center
+                game.player.gold = price - 1
+                game._handle_shop_click(*position)
+                self.assertEqual(game.player.weapon_upgrades.get(weapon, 0), level - 1)
+                self.assertEqual(game.player.gold, price - 1)
+                game.player.gold = price
+                game._handle_shop_click(*position)
+                self.assertEqual(game.player.weapon_upgrades[weapon], level)
+                self.assertEqual(game.player.gold, 0)
+            self.assertNotIn(f'upgrade:{weapon}', game._mobile_shop_rects())
+
     def test_rage_banner_shows_forge_panel_and_duration_until_expiry(self):
         pygame.init()
         self.addCleanup(pygame.quit)
@@ -617,6 +639,12 @@ class DesktopGameTests(unittest.TestCase):
         self.assertEqual(game.state, GameState.PLAYING)
         press(pygame.K_h)
         press(pygame.K_n)
+        self.assertTrue(game.exit_confirmation)
+        press(pygame.K_ESCAPE)
+        self.assertFalse(game.exit_confirmation)
+        self.assertEqual(game.state, GameState.PAUSED)
+        press(pygame.K_n)
+        press(pygame.K_RETURN)
         self.assertEqual(game.state, GameState.MENU)
 
     def test_infinite_fps_is_inside_status_panel_beside_elapsed_time(self):

@@ -6,7 +6,7 @@ import math
 import random
 from functools import lru_cache
 import pygame
-from .render import Draw, RenderSurface, blit_effect, effect_layer
+from .render import Draw, RenderSurface, blit_effect, effect_layer, scale_rect
 from . import config
 from .visuals import blit_label, draw_electric_arc, draw_glow
 from .boss_skills import BOSS_COLORS, DRAGON_FIREBALL_IMAGE, SIGNATURES, draw_bubble_crab
@@ -561,11 +561,12 @@ class Enemy:
         if getattr(self, 'factory_kind', '') == 'mini_boss':
             factory_sprite = animation.frame('boss_mecha_lizard', 2 + int(self.x / 20) % 2)
         if self.chase_color is not None:
-            draw_bubble_crab(surf, self.x, self.y + self.h * .5, self.w,
+            draw_bubble_crab(surf, self.x, self.y + self.h * .5, round(self.w * visual_scale),
                              self.chase_color, now)
         elif factory_sprite is not None:
-            image = scale_surface_cached(factory_sprite, (self.w, self.h))
-            blit_lit_sprite(surf, image, self.rect().topleft,
+            rect = scale_rect(self.rect(), visual_scale)
+            image = scale_surface_cached(factory_sprite, rect.size)
+            blit_lit_sprite(surf, image, rect.topleft,
                             (255, 163, 108), 105, source=factory_sprite)
         elif self.is_zongzong:
             sw, sh = self.surface.get_size()
@@ -577,6 +578,9 @@ class Enemy:
                 sprite = animation.frame('zongzong_hurt', index)
                 if sprite is not None:
                     image = scale_surface_cached(sprite, (sw, sh))
+            if visual_scale != 1:
+                sw, sh = round(sw * visual_scale), round(sh * visual_scale)
+                image = scale_surface_cached(sprite or self.surface, (sw, sh))
             blit_lit_sprite(surf, image, (self.x - sw // 2, self.y + self.h // 2 - sh // 2),
                             (101, 237, 150), 125, source=sprite or self.sprite_asset)
         else:
@@ -2263,7 +2267,7 @@ class Boss:
     def _body_frame(self, now):
         return animation.boss_frame(self, now)
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         now = config.game_ticks()
         size_scale = self.size_scale
         scale = _breathing_scale(now - self.breath_start_time, 0.30, 2800)
@@ -2299,6 +2303,7 @@ class Boss:
         if sprite is not None:
             size = self.surface.get_size() if mouth_laser else body_size
             action_size = animation.boss_action_size(sprite, self.surface, size)
+            action_size = tuple(round(value * visual_scale) for value in action_size)
             if mouth_laser:
                 # Anchor the drawn mouth to the existing beam without moving the hitbox.
                 mouth_x, mouth_y = animation.LASER_ART_MOUTHS.get(self.bdef['key'], mouth_laser[1:])
@@ -2306,6 +2311,7 @@ class Boss:
                 sprite_y += size[1] * (mouth_laser[2] - .5) - action_size[1] * (mouth_y - .5)
             breathing_surface = scale_surface_cached(sprite, action_size)
         else:
+            body_size = tuple(round(value * visual_scale) for value in body_size)
             idle_base = self.breath_base
             if isinstance(surf, RenderSurface) and self.bdef['key'] in animation.IDLE_BODY_TRAVEL:
                 source = image_asset(self.sprite_asset)

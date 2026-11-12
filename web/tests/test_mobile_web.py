@@ -34,6 +34,55 @@ class MobileWebTests(unittest.TestCase):
         config.update_mobile_view((480, 850))
         self.game = Game()
 
+    def test_pause_settings_change_actor_size_without_moving_hitboxes(self):
+        self.addCleanup(sounds.set_music_volume_percent, sounds.music_volume_percent())
+        for desktop in (False, True):
+            game = Game(web=not desktop, desktop_controls=desktop)
+            game._begin_infinite_run(7)
+            game._trigger_infinite_boss()
+            game.enemies = [Enemy(config.ENEMY_DEFS[0])]
+            game._handle_mobile_action('pause')
+            (quieter, louder), (zoom_out, zoom_in) = game._pause_settings_rects()
+            hitboxes = game.player.rect(), game.enemies[0].rect(), game.boss.rect()
+
+            def click(rect):
+                if desktop:
+                    event = pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=rect.center, button=1)
+                else:
+                    event = pygame.event.Event(pygame.FINGERDOWN, finger_id=7,
+                                               x=rect.centerx / 480, y=rect.centery / 850)
+                game.handle_events([event])
+
+            sounds.set_music_volume_percent(80)
+            click(quieter)
+            self.assertEqual(sounds.music_volume_percent(), 70)
+            click(louder)
+            self.assertEqual(sounds.music_volume_percent(), 80)
+            sounds.set_music_volume_percent(0)
+            click(quieter)
+            self.assertEqual(sounds.music_volume_percent(), 0)
+            sounds.set_music_volume_percent(100)
+            click(louder)
+            self.assertEqual(sounds.music_volume_percent(), 100)
+            widths = []
+            with patch.object(config, 'game_ticks', return_value=1000):
+                for expected in (95, 90, 85, 85):
+                    click(zoom_out)
+                    self.assertEqual(game.actor_scale_percent, expected)
+                for expected in range(85, 116, 5):
+                    if expected > 85:
+                        click(zoom_in)
+                    self.assertEqual(game.actor_scale_percent, expected)
+                    with patch('game_core.entities.blit_lit_sprite') as blit:
+                        game.draw(draw_background=False)
+                    widths.append([call.args[1].get_width() for call in blit.call_args_list])
+                    self.assertEqual((game.player.rect(), game.enemies[0].rect(), game.boss.rect()), hitboxes)
+                    self.assertEqual(game.state, GameState.PAUSED)
+                click(zoom_in)
+                self.assertEqual(game.actor_scale_percent, 115)
+            self.assertEqual(len(widths[0]), 3)
+            self.assertTrue(all(small < normal < large for small, normal, large in zip(widths[0], widths[3], widths[-1])))
+
     def test_web_level_title_is_centered_and_blocks_input_for_three_seconds(self):
         game = Game(web=True)
         with patch('pygame.time.get_ticks', return_value=1000) as clock:
@@ -296,6 +345,34 @@ class MobileWebTests(unittest.TestCase):
                     game.update()
                     self.assertEqual(game.player.gold, starting_gold + enemy.gold_value)
                     self.assertFalse(game.coins)
+
+    def test_infinite_enemy_coins_fund_weapon_upgrades(self):
+        for boss_fight in (False, True):
+            with self.subTest(boss_fight=boss_fight), patch.object(config, 'campaign_time_ms', 1000):
+                game = Game(web=True)
+                game._begin_infinite_run()
+                if boss_fight:
+                    game._trigger_infinite_boss()
+                enemy = Enemy(config.ENEMY_DEFS[0])
+                enemy.x, enemy.y = game.player.x, 100
+                game.enemies.append(enemy)
+                cost = game._weapon_upgrade_cost('rifle')
+                starting_gold = cost - enemy.gold_value
+                game.player.gold = starting_gold
+                game._kill_enemy(enemy)
+                game.update()
+                self.assertEqual(game.player.gold, starting_gold)
+                self.assertEqual(sum(coin.value for coin in game.coins), enemy.gold_value)
+                for coin in game.coins:
+                    coin.x, coin.y = game.player.rect().center
+                game.update()
+                game.update()
+                self.assertEqual(game.player.gold, cost)
+                self.assertFalse(game.coins)
+                game._open_shop()
+                game._handle_click(game._mobile_shop_rects()['upgrade:rifle'].center)
+                self.assertEqual(game.player.gold, 0)
+                self.assertEqual(game.player.weapon_upgrades['rifle'], 1)
 
     def test_campaign_boss_credits_gold_directly_and_advances_level(self):
         game = self.game
@@ -994,7 +1071,25 @@ class MobileWebTests(unittest.TestCase):
             self.assertAlmostEqual(game._player_speed(game.player, 0), 5.2)
         game.state = GameState.PAUSED
         game.draw()
-        game._handle_click(game._choice_rects()[1].center)
+        cancel, confirm = game._choice_rects()
+
+        def tap(rect):
+            event = pygame.event.Event(pygame.FINGERDOWN, finger_id=7,
+                                       x=rect.centerx / 480, y=rect.centery / 850)
+            self.assertTrue(game.handle_events([event]))
+
+        tap(confirm)
+        self.assertTrue(game.exit_confirmation)
+        game.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=confirm.center,
+                                               button=1, touch=True)])
+        self.assertTrue(game.exit_confirmation)
+        game.draw()
+        tap(cancel)
+        self.assertFalse(game.exit_confirmation)
+        self.assertEqual(game.state, GameState.PAUSED)
+        tap(confirm)
+        tap(confirm)
+        self.assertFalse(game.exit_confirmation)
         self.assertEqual(game.state, GameState.MENU)
         self.assertEqual(game.lives, 3)
 
@@ -1419,12 +1514,13 @@ class MobileWebTests(unittest.TestCase):
                 sounds.advance_music()
                 previous = channel.get_sound()
                 self.assertIsNotNone(previous)
-                self.assertAlmostEqual(previous.get_volume(), .72, delta=.01)
+                volume = .72 * sounds.music_volume_percent() / 100
+                self.assertAlmostEqual(previous.get_volume(), volume, delta=.01)
                 sounds.start_music(1, boss=True)
                 sounds.advance_music()
                 self.assertIsNotNone(channel.get_sound())
                 self.assertIsNot(channel.get_sound(), previous)
-                self.assertAlmostEqual(channel.get_sound().get_volume(), .72, delta=.01)
+                self.assertAlmostEqual(channel.get_sound().get_volume(), volume, delta=.01)
                 self.assertEqual(previous.get_num_channels(), 0)
         finally:
             pygame.mixer.stop()
@@ -1452,6 +1548,38 @@ class MobileWebTests(unittest.TestCase):
             pygame.time.wait(400)
             self.assertTrue(channel.get_busy())
             self.assertEqual(channel.get_volume(), menu_volume)
+
+    def test_music_volume_preserves_effects_and_survives_track_changes(self):
+        pcm = b'\0\0' * sounds.SAMPLE_RATE
+        self.assertTrue(sounds.ensure_audio())
+        self.addCleanup(sounds.set_music_volume_percent, sounds.music_volume_percent())
+        sounds.set_music_volume_percent(80)
+        self.addCleanup(sounds.stop_music)
+        sounds.stop_music()
+        effect = pygame.mixer.Sound(buffer=pcm)
+        effect_channel = effect.play(loops=-1)
+        self.addCleanup(effect_channel.stop)
+        music_channel = pygame.mixer.Channel(0)
+        def track(*args):
+            yield
+            return pcm
+
+        with patch.object(sounds, '_music_pcm', side_effect=track):
+            sounds.start_music()
+            sounds.advance_music()
+            self.assertAlmostEqual(music_channel.get_sound().get_volume(), .72 * .8, delta=.01)
+            sounds.set_music_volume_percent(40)
+            pygame.time.wait(65)
+            self.assertAlmostEqual(music_channel.get_sound().get_volume(), .72 * .4, delta=.01)
+            sounds.stop_music()
+            sounds.start_music(1, boss=True)
+            sounds.advance_music()
+            pygame.time.wait(65)
+            self.assertAlmostEqual(music_channel.get_sound().get_volume(), .72 * .4, delta=.01)
+            self.assertTrue(effect_channel.get_busy())
+            self.assertEqual(effect_channel.get_volume(), 1)
+            sounds.set_music_volume_percent(90)
+            self.assertAlmostEqual(music_channel.get_sound().get_volume(), .72 * .9, delta=.01)
 
     def test_web_audio_mixer_can_retry_after_initialization_failure(self):
         with patch.object(sounds.pygame.mixer, 'get_init', side_effect=[None, (22050, -16, 1)]), \
@@ -1721,6 +1849,18 @@ class MobileWebTests(unittest.TestCase):
         self.assertEqual(controls.fingers, {})
         self.assertIsNone(controls.joystick_id)
         self.assertEqual(controls.axis, (0.0, 0.0))
+
+    def test_browser_touch_state_recovers_a_missing_fingerup(self):
+        controls = self.game.mobile_controls
+        controls.handle_touch(pygame.event.Event(pygame.FINGERDOWN, finger_id=7, x=.4, y=.9), self.game)
+        controls.handle_touch(pygame.event.Event(pygame.FINGERMOTION, finger_id=7, x=.55, y=.9), self.game)
+        controls.fingers[8] = 'attack'
+        controls.release_inactive_touches({8}.__contains__)
+        self.assertEqual(controls.fingers, {8: 'attack'})
+        self.assertIsNone(controls.joystick_id)
+        self.assertEqual(controls.axis, (0.0, 0.0))
+        controls.handle_touch(pygame.event.Event(pygame.FINGERDOWN, finger_id=9, x=.4, y=.9), self.game)
+        self.assertEqual(controls.joystick_id, 9)
 
     def test_touch_takes_over_synthetic_mouse_joystick(self):
         self.game.state = GameState.PLAYING

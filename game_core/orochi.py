@@ -9,7 +9,7 @@ from . import asset_loader, config
 from .asset_loader import image_asset, scale_surface_cached
 from .boss_skills import circle_hits_rect
 from .entities import Boss, BossProjectile, Enemy, Particle
-from .render import Draw, RenderSurface, blit_effect, effect_layer
+from .render import Draw, RenderSurface, blit_effect, effect_layer, scale_rect
 from .sounds import play_sound
 from .sprites import blit_lit_sprite
 from .visuals import draw_electric_arc, draw_glow
@@ -641,16 +641,16 @@ class OrochiBoss(Boss):
             px = x + side * half * (1 - drift / length)
             Draw.line(surf, (255, 211, 140, 170), (px, y - drift), (px, y - drift - 13), 2)
 
-    def _draw_idle(self, surf, now):
+    def _draw_idle(self, surf, now, visual_scale):
         art = self._idle_frame(now)
         if art is None:
-            super().draw(surf)
+            super().draw(surf, visual_scale=visual_scale)
             return
         body = self._body_art_rect()
         pad = self.IDLE_PADDING
         pad_x = round(body.w * pad / (self.IDLE_ART_SIZE[0] - 2 * pad))
         pad_y = round(body.h * pad / (self.IDLE_ART_SIZE[1] - 2 * pad))
-        rect = body.inflate(2 * pad_x, 2 * pad_y)
+        rect = scale_rect(body.inflate(2 * pad_x, 2 * pad_y), visual_scale)
         if now < self.invincible_until:
             glow = 125 + round(100 * (.5 + .5 * math.sin(now * .012)))
             draw_glow(surf, body.center, max(body.w, body.h) // 2, (89, 169, 255), glow)
@@ -660,11 +660,12 @@ class OrochiBoss(Boss):
         else:
             _blit_art(surf, art, rect)
 
-    def _draw_storm(self, surf, now):
+    def _draw_storm(self, surf, now, visual_scale):
         art = image_asset(self.sprite_asset)
-        body = self._body_art_rect()
+        body = scale_rect(self._body_art_rect(), visual_scale)
         _blit_art(surf, art or self.surface, body)
         for i, rect in self._active_heads(now):
+            rect = scale_rect(rect, visual_scale)
             art = self.bubble_art[i]
             if art is not None:
                 _blit_art(surf, art, rect)
@@ -688,12 +689,12 @@ class OrochiBoss(Boss):
         for particles in self.bubble_breaks:
             particles.draw(surf)
 
-    def _draw_split_snake(self, surf, index, age, rect):
+    def _draw_split_snake(self, surf, index, age, rect, visual_scale=1):
         frames = self.split_frames
         art = frames[(age // self.SPLIT_STEP + index * 3) % len(frames)] if frames else None
-        self._draw_skill_sprite(surf, art, rect)
+        self._draw_skill_sprite(surf, art, scale_rect(rect, visual_scale))
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         if self._hd_artwork != asset_loader.web_hd_assets:
             self._load_artwork()
         now = config.game_ticks()
@@ -713,20 +714,20 @@ class OrochiBoss(Boss):
                 for i, (x, y) in enumerate(self.split_positions()):
                     tx, ty = self._mouth(i, now)
                     rect = self._snake_rect(x + (tx - x) * progress, y + (ty - y) * progress)
-                    self._draw_split_snake(surf, i, age, rect)
+                    self._draw_split_snake(surf, i, age, rect, visual_scale)
             else:
                 for i, (hp, (x, y)) in enumerate(zip(self.split_hp, self.split_positions())):
                     if hp > 0:
-                        self._draw_split_snake(surf, i, age, self._snake_rect(x, y))
+                        self._draw_split_snake(surf, i, age, self._snake_rect(x, y), visual_scale)
         elif self.skill == 'laser':
             heads = self._laser_head_rects(age)
             small = max(22, heads[0].w * 2 // 3)
             for i in range(5):
                 rect = pygame.Rect(0, 0, small, small)
                 rect.center = (round(heads[0].centerx + i * (heads[-1].centerx - heads[0].centerx) / 4), 48)
-                self._draw_skill_sprite(surf, self.laser_art, rect)
+                self._draw_skill_sprite(surf, self.laser_art, scale_rect(rect, visual_scale))
             for head in heads:
-                self._draw_skill_sprite(surf, self.laser_art, head)
+                self._draw_skill_sprite(surf, self.laser_art, scale_rect(head, visual_scale))
             for left, right in zip(heads, heads[1:]):
                 draw_electric_arc(surf, left.center, right.center, (150, 196, 255), 220, now, left.x, 2)
             for i, (path, width) in enumerate(zip(self.laser_paths(age), self._laser_widths())):
@@ -748,10 +749,10 @@ class OrochiBoss(Boss):
                     Draw.circle(surf, (*color, 225), (x, y), 8)
                     Draw.circle(surf, (255, 247, 220), (x, y), 4)
         elif self.skill == 'storm':
-            self._draw_storm(surf, now)
+            self._draw_storm(surf, now, visual_scale)
         elif self.skill == 'slam':
-            self._draw_idle(surf, now)
+            self._draw_idle(surf, now, visual_scale)
             self._draw_slam(surf, age)
         else:
-            self._draw_idle(surf, now)
+            self._draw_idle(surf, now, visual_scale)
         self._draw_bubble_breaks(surf, now)

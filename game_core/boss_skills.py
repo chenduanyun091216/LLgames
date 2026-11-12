@@ -274,14 +274,16 @@ class BossSignature:
                                  (origin, (origin[0] + side * 8, origin[1] - 3),
                                   (origin[0] + side * 18, origin[1] - 24)))
 
-    def draw_bite(self, surface, boss):
+    def draw_bite(self, surface, boss, *, visual_scale=1):
         if not self.chasing:
             return False
-        image = image_asset('effects/boss_bite.png', (round(boss.w * 1.47), round(boss.h * 1.45)))
+        width, height = round(boss.w * 1.47), round(boss.h * 1.45)
+        size = round(width * visual_scale), round(height * visual_scale)
+        image = image_asset('effects/boss_bite.png', size)
         if image is None:
             return False
         blit_lit_sprite(surface, image, (boss.x - image.get_width() / 2,
-                                        boss.y - boss.h * .22), (130, 189, 207), 84,
+                                        boss.y - boss.h * .22 + (height - size[1]) / 2), (130, 189, 207), 84,
                         source='effects/boss_bite.png')
         return True
 

@@ -643,8 +643,8 @@ class NiuBoss(Boss):
             Draw.line(effect, (255, 245, 170, round(240 * fade)), (x, y - size), (x + size, y), 2)
         blit_effect(surf, effect, (round(self.x - cx), round(self.y + self.h - cy)))
 
-    def draw(self, surf):
-        super().draw(surf)
+    def draw(self, surf, *, visual_scale=1):
+        super().draw(surf, visual_scale=visual_scale)
         now = config.game_ticks()
         cx, cy = int(self.x), int(self.y + self.h // 2)
         for i in range(12):
@@ -1019,7 +1019,7 @@ class ZongBoss(Boss):
         blit_effect(surf, panel, box.topleft)
         blit_label(surf, font, message, (225, 250, 255), box.center, 20)
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         now = config.game_ticks()
         labels = ('子弹免疫', '技能免疫')
         if self.easy_campaign:
@@ -1079,6 +1079,9 @@ class ZongBoss(Boss):
                     image = _zong_crescent_flash(image)
             accent = (255, 172, 96) if self.fusion_mode == 'rage' else (
                 (107, 226, 255) if x <= self.x else (211, 153, 255))
+            if visual_scale != 1:
+                size = tuple(round(value * visual_scale) for value in size)
+                image = scale_surface_cached(image, size)
             blit_lit_sprite(surf, image, (x - size[0] // 2, cy - size[1] // 2), accent, 185,
                             source=source, angle=wobble)
             if not self.fusion_mode:

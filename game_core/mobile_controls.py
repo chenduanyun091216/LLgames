@@ -260,6 +260,12 @@ class MobileControls:
             self._joystick_anchor = None
             self.axis = (0.0, 0.0)
 
+    def release_inactive_touches(self, touch_active):
+        # SDL uses the browser's Touch.identifier as the finger ID.
+        for finger_id in tuple(self.fingers):
+            if finger_id != -1 and not touch_active(finger_id):
+                self.release(finger_id)
+
     def reset(self):
         self.fingers.clear()
         self.joystick_id = None

@@ -151,7 +151,7 @@ html, body {
     --quality-safe-right: env(safe-area-inset-right, 0px);
     position: fixed;
     z-index: 21;
-    top: var(--quality-top, calc(50% - 61px));
+    top: var(--quality-top, calc(50% - 139px));
     left: calc(50% + 100px);
     font: 14px/1.4 system-ui, sans-serif;
     color: #e6fcff;

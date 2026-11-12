@@ -95,6 +95,7 @@ async def main():
     warmed_boss = None
     running = True
     draw_ui = getattr(browser_window, 'ttgamesDrawUI', None)
+    touch_active = getattr(browser_window, 'ttgamesTouchActive', None)
     previous_ui = None
     fps_started = None
     fps_frames = 0
@@ -170,6 +171,8 @@ async def main():
         running = game.handle_events(events)
         if not running:
             break
+        if touch_active is not None:
+            game.mobile_controls.release_inactive_touches(touch_active)
         if game.state in cutscene_states:
             accumulator = 0.0
             game.update()
@@ -303,7 +306,8 @@ async def main():
                 displayed_fps = None
                 update_seconds = draw_seconds = compose_seconds = submit_seconds = 0.0
                 timing_label = ''
-            frame = (labels, config.SCREEN_WIDTH, config.SCREEN_HEIGHT, in_battle, game.state == GameState.PAUSED)
+            paused = game.state == GameState.PAUSED and not game.exit_confirmation
+            frame = (labels, config.SCREEN_WIDTH, config.SCREEN_HEIGHT, in_battle, paused)
             if frame != previous_ui:
                 draw_ui(json.dumps(labels, separators=(",", ":")), *frame[1:])
                 previous_ui = frame

@@ -530,12 +530,12 @@ class AbyssBoss(Boss):
     def _shot(self, skill, x, y, **kwargs):
         return AbyssProjectile(skill, x, y, scale=self.size_scale, **kwargs)
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         art = image_asset(self.sprite_asset)
         if art is None:
-            super().draw(surf)
+            super().draw(surf, visual_scale=visual_scale)
             return
-        pulse = 1 + .018 * math.sin((config.game_ticks() - self.breath_start_time) * .003)
+        pulse = visual_scale * (1 + .018 * math.sin((config.game_ticks() - self.breath_start_time) * .003))
         _blit(surf, art, (self.x, self.y + self.h / 2), (self.w * pulse, self.h * pulse))
 
 
@@ -596,7 +596,7 @@ class MechaLizardBoss(AbyssBoss):
     def hitboxes(self):
         return self._emp_dash_hitboxes or super().hitboxes()
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         now = config.game_ticks()
         age = now - self.skill_started_at
         pose, duration = self.CAST_POSES.get(self.current_skill, (0, 0))
@@ -617,10 +617,10 @@ class MechaLizardBoss(AbyssBoss):
             stretch = 1 + .018 * math.sin(elapsed * .005)
         sprite = animation.frame('boss_mecha_lizard', pose)
         if sprite is None:
-            super().draw(surf)
+            super().draw(surf, visual_scale=visual_scale)
             return
         _blit(surf, sprite, (self.x, self.y + self.h / 2 + y_offset),
-              (self.w / stretch, self.h * stretch))
+              (self.w * visual_scale / stretch, self.h * visual_scale * stretch))
 
     def sync_weapon_mount(self, shot, now):
         if shot.skill == 'plasma_rail':
@@ -753,9 +753,9 @@ class AncientWhaleBoss(AbyssBoss):
             self._pending_attack_skill = self._choose_attack_skill(('tidal_crescent', 'rune_geyser', 'ancient_pearl'))
         return super()._next_attack_skill()
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         scale = surf.scale if isinstance(surf, RenderSurface) else 1
-        height = max(1, round(self.h * scale))
+        height = max(1, round(self.h * scale * visual_scale))
         now = config.game_ticks()
         age = now - self.skill_started_at
         skill = self.current_skill if self._casting(now) or self.swallowing else ''
@@ -771,7 +771,7 @@ class AncientWhaleBoss(AbyssBoss):
         if atlas is None:
             art = image_asset(self.sprite_asset, (height, height))
             if art is None:
-                super().draw(surf)
+                super().draw(surf, visual_scale=visual_scale)
                 return
         else:
             edge = atlas.get_width() // 8

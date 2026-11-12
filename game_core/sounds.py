@@ -410,6 +410,25 @@ _MUSIC_THEMES = (
 _pending_music = None
 _requested_music = None
 _music_volume = 1.0
+_music_volume_percent = 80
+_MUSIC_TRACK_GAIN = 0.72
+
+
+def music_volume_percent():
+    return _music_volume_percent
+
+
+def _music_sound_volume():
+    return _MUSIC_TRACK_GAIN * _music_volume_percent / 100
+
+
+def set_music_volume_percent(percent):
+    global _music_volume_percent
+    _music_volume_percent = max(0, min(100, percent))
+    if pygame.mixer.get_init():
+        sound = pygame.mixer.Channel(_MUSIC_CHANNEL).get_sound()
+        if sound is not None:
+            sound.set_volume(_music_sound_volume())
 
 
 def set_music_volume(volume):
@@ -456,7 +475,7 @@ def advance_music(budget=0.004):
             return
         try:
             snd = pygame.mixer.Sound(buffer=finished.value)
-            snd.set_volume(0.72)
+            snd.set_volume(_music_sound_volume())
             channel = pygame.mixer.Channel(_MUSIC_CHANNEL)
             # SDL captures the channel volume when the fade-in starts.
             channel.stop()

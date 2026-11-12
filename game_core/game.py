@@ -27,7 +27,7 @@ from .mobile_controls import MobileControls
 from .ending import Ending
 from .opening import CUTS as OPENING_CUTS, Opening
 from .visuals import blit_label, draw_electric_arc, draw_glow, draw_water_drift, panel_surface, small_desktop_label
-from .sounds import play_sound, start_music
+from .sounds import music_volume_percent, play_sound, set_music_volume_percent, start_music
 from .entities import (
     Player, Enemy, Bullet, Coin, GiftBox, Particle, Explosion,
     FireWall, IceFloor, SkillProjectile,
@@ -119,6 +119,7 @@ DESKTOP_BATTLE_KEYS = {'shop': pygame.K_b, 'pause': pygame.K_h, 'auto_fire': pyg
 SHOP_KEYPAD_KEYS = (pygame.K_KP1, pygame.K_KP2, pygame.K_KP3, pygame.K_KP4,
                     pygame.K_KP5, pygame.K_KP6, pygame.K_KP7, pygame.K_KP8)
 DESKTOP_HUD_KEYS = (pygame.K_LEFTBRACKET, pygame.K_p, pygame.K_RIGHTBRACKET)
+ACTOR_SCALE_MIN, ACTOR_SCALE_MAX, ACTOR_SCALE_STEP = 85, 115, 5
 
 
 class Game:
@@ -130,6 +131,7 @@ class Game:
         self.desktop_controls = desktop_controls
         self.campaign_ending = campaign_ending
         self.exit_confirmation = False
+        self.actor_scale_percent = 100
         self.clock = pygame.time.Clock()
         self.font_large = make_font(48, bold=True)
         self.font_med = make_font(28, bold=True)
@@ -414,24 +416,33 @@ class Game:
             if self.web_level_intro_active() or self.campaign_boss_intro_active():
                 continue
             if self.exit_confirmation:
+                if event.type == pygame.MOUSEMOTION and not getattr(event, 'touch', False):
+                    self.cursor_pos = config.window_to_game(event.pos)
                 if event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_RETURN):
                     self.exit_confirmation = False
-                    if event.key == pygame.K_RETURN and not self._handle_escape():
-                        return False
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    cancel, confirm = self._choice_rects()
+                    if event.key == pygame.K_RETURN:
+                        self.reset()
+                    continue
+                if not self.desktop_controls and event.type == pygame.FINGERDOWN:
+                    self._last_touch_event = pygame.time.get_ticks()
+                    position = self.mobile_controls.event_position(event)
+                elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+                      and not getattr(event, 'touch', False)
+                      and pygame.time.get_ticks() - self._last_touch_event >= 120):
                     position = config.window_to_game(event.pos)
-                    if cancel.collidepoint(position):
-                        self.exit_confirmation = False
-                    elif confirm.collidepoint(position):
-                        self.exit_confirmation = False
-                        if not self._handle_escape():
-                            return False
+                else:
+                    continue
+                cancel, confirm = self._choice_rects()
+                if cancel.collidepoint(position):
+                    self.exit_confirmation = False
+                elif confirm.collidepoint(position):
+                    self.exit_confirmation = False
+                    self.reset()
                 continue
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 self.mobile_controls.release(-1)
             if not self.desktop_controls and event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION, pygame.FINGERUP):
-                self._last_touch_event = config.game_ticks()
+                self._last_touch_event = pygame.time.get_ticks()
                 if self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
                     if event.type == pygame.FINGERDOWN and self._handle_hud_click(self.mobile_controls.event_position(event)):
                         continue
@@ -444,7 +455,7 @@ class Game:
                     self._handle_click(self.mobile_controls.event_position(event))
                 continue
             if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION):
-                if getattr(event, 'touch', False) or config.game_ticks() - self._last_touch_event < 120:
+                if getattr(event, 'touch', False) or pygame.time.get_ticks() - self._last_touch_event < 120:
                     continue
                 if self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
                     if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1 and self._handle_hud_click(config.window_to_game(event.pos)):
@@ -594,7 +605,7 @@ class Game:
             return
         if self.desktop_controls and s == GameState.PAUSED:
             if k == pygame.K_RETURN: self._handle_mobile_action('pause')
-            elif k == pygame.K_n: self.reset()
+            elif k == pygame.K_n: self.exit_confirmation = True
             return
         if self.desktop_controls and s in (GameState.PLAYING, GameState.BOSS_FIGHT):
             for index, key in enumerate(DESKTOP_HUD_KEYS):
@@ -685,7 +696,17 @@ class Game:
         elif s == GameState.PAUSED:
             resume, exit_run = self._choice_rects()
             if resume.collidepoint(pos): self.state = self.pause_prev_state
-            elif exit_run.collidepoint(pos): self.reset()
+            elif exit_run.collidepoint(pos): self.exit_confirmation = True
+            else:
+                (quieter, louder), (zoom_out, zoom_in) = self._pause_settings_rects()
+                if quieter.collidepoint(pos):
+                    set_music_volume_percent(music_volume_percent() - 10)
+                elif louder.collidepoint(pos):
+                    set_music_volume_percent(music_volume_percent() + 10)
+                elif zoom_out.collidepoint(pos):
+                    self.actor_scale_percent = max(ACTOR_SCALE_MIN, self.actor_scale_percent - ACTOR_SCALE_STEP)
+                elif zoom_in.collidepoint(pos):
+                    self.actor_scale_percent = min(ACTOR_SCALE_MAX, self.actor_scale_percent + ACTOR_SCALE_STEP)
         elif s == GameState.PAID_REVIVE:
             revive, end_run = self._choice_rects()
             if revive.collidepoint(pos): self._paid_revive()
@@ -1420,7 +1441,7 @@ class Game:
         level = self.player.weapon_upgrades.get(key, 0)
         if key == 'pistol' or key not in self.player.owned_weapons or level >= config.WEAPON_UPGRADE_LIMIT:
             return None
-        return self._weapon_cost(key) * (level + 1)
+        return self._weapon_cost(key) * (2 ** level if self.infinite_mode else level + 1)
 
     def _upgrade_weapon(self, key):
         cost = self._weapon_upgrade_cost(key)
@@ -3705,8 +3726,7 @@ class Game:
             self.spawn_interval = max(self.min_spawn_interval, self.spawn_interval - self.spawn_decrease)
         play_sound('kill')
         cx, cy = e.x, e.y+e.h//2
-        if not self.infinite_mode:
-            for _ in range(e.gold_value): self.coins.append(Coin(cx+random.randint(-10,10), cy+random.randint(-5,5), 1))
+        for _ in range(e.gold_value): self.coins.append(Coin(cx+random.randint(-10,10), cy+random.randint(-5,5), 1))
         if e.frozen:
             self.explosions.append(Explosion(cx, cy, (137, 220, 255), 28 if e.is_large else 18, element='ice'))
         else:
@@ -3880,7 +3900,10 @@ class Game:
         elif s == GameState.INFINITE_CONTINUE: self._draw_game(); self._draw_infinite_continue()
         elif s == GameState.INFINITE_COUNTDOWN: self._draw_game(); self._draw_infinite_countdown()
         elif s == GameState.VICTORY: self._draw_game(); self._draw_victory()
-        elif s == GameState.PAUSED: self._draw_game(); self._draw_pause_overlay()
+        elif s == GameState.PAUSED:
+            self._draw_game()
+            if not self.exit_confirmation:
+                self._draw_pause_overlay()
         elif s == GameState.PAID_REVIVE: self._draw_game(); self._draw_pause_overlay()
         if self.player_hit_impact is not None:
             self._draw_player_hit_impact()
@@ -4033,6 +4056,7 @@ class Game:
 
     def _draw_game(self):
         ui_labels = self._ui_labels
+        actor_scale = self.actor_scale_percent / 100
         active = self.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
         if not active:
             self._ui_labels = None  # Keep all labels behind the modal, like the scene itself.
@@ -4048,10 +4072,8 @@ class Game:
             for end in linked[index + 1:]:
                 draw_electric_arc(config.SCR, start, end, (110, 230, 255), 235, config.game_ticks(), index)
         for e in self.enemies:
-            if self.mobile_web and e.edef['key'] == 'octopus':
-                e.draw(config.SCR, visual_scale=1.10)
-            else:
-                e.draw(config.SCR)
+            visual_scale = 1.10 if self.mobile_web and e.edef['key'] == 'octopus' else 1
+            e.draw(config.SCR, visual_scale=visual_scale * actor_scale)
             if not self.infinite_mode:
                 if self.boss and self.boss.absorb_target is e:
                     Draw.rect(config.SCR, (190, 85, 255), e.rect().inflate(12, 12), 2)
@@ -4092,8 +4114,8 @@ class Game:
         for bp in self.boss_projectiles: bp.draw(config.SCR)
         if self.boss:
             signature = self.boss.signature
-            if not signature or not signature.draw_bite(config.SCR, self.boss):
-                self.boss.draw(config.SCR)
+            if not signature or not signature.draw_bite(config.SCR, self.boss, visual_scale=actor_scale):
+                self.boss.draw(config.SCR, visual_scale=actor_scale)
             self.boss._draw_hit_flashes(config.SCR, now)
             if not self.infinite_mode:
                 now = config.game_ticks()
@@ -4123,6 +4145,7 @@ class Game:
         self._draw_hud()
         for i, player in enumerate(self._players_to_draw(), 1):
             visual_scale = 1.18 if self.mobile_web and player.character in CHARACTER_DEFS else 1
+            visual_scale *= actor_scale
             downed_age = self._player_downed_age(player, now)
             if downed_age is not None and player.character in CHARACTER_DEFS:
                 player.draw(config.SCR, visual_scale=visual_scale, downed_age=downed_age)
@@ -4624,25 +4647,61 @@ class Game:
         x, y = config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2 + 19
         return pygame.Rect(x - 150, y, 142, 42), pygame.Rect(x + 8, y, 142, 42)
 
+    def _pause_settings_rects(self):
+        x, y = config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2
+        return tuple((pygame.Rect(x + 2, row_y, 42, 36), pygame.Rect(x + 108, row_y, 42, 36))
+                     for row_y in (y - 91, y - 45))
+
     def _draw_pause_overlay(self):
         ov = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
         ov.fill((0, 10, 28, 145))
         config.SCR.blit(ov, (0, 0))
-        pw, ph = 320, 150
-        px, py = config.SCREEN_WIDTH // 2 - pw // 2, config.SCREEN_HEIGHT // 2 - ph // 2
-        self._draw_panel(px, py, pw, ph, accent=(106, 214, 218), fill=(8, 30, 46), r=18, alpha=232)
+        settings = self.state == GameState.PAUSED and not self.exit_confirmation
+        glass = settings or self.exit_confirmation
+        pw, ph = 320, 228 if settings else 150
+        px, py = config.SCREEN_WIDTH // 2 - pw // 2, config.SCREEN_HEIGHT // 2 + 75 - ph
+        blue = ((30, 63, 85), (93, 145, 171), (237, 249, 255))
+        amber = ((230, 156, 89), (255, 219, 176), (57, 31, 32))
+        if glass:
+            Draw.rect(config.SCR, (5, 22, 35), (px, py + 4, pw, ph), width=4, border_radius=21)
+            self._draw_panel(px, py, pw, ph, accent=(118, 215, 231), fill=(14, 41, 59), r=21, alpha=221)
+            for x, y, radius in ((px + 20, py + 18, 7), (px + 32, py + 29, 3)):
+                Draw.circle(config.SCR, (99, 154, 173), (x, y), radius, width=1)
+        else:
+            self._draw_panel(px, py, pw, ph, accent=(106, 214, 218), fill=(8, 30, 46), r=18, alpha=232)
         if self.exit_confirmation:
-            self._draw_title_text('退出本局？', pygame.Rect(px+20, py+26, pw-40, 58), accent=(115, 205, 255))
+            self._draw_title_text('退出本局？', pygame.Rect(px+20, py+21, pw-40, 58), accent=(115, 205, 255))
             cancel, confirm = self._choice_rects()
-            self._draw_button('取消', *cancel, key=pygame.K_ESCAPE)
-            self._draw_button('确认退出', *confirm, (180, 60, 60), key=pygame.K_RETURN)
+            self._draw_button('取消', *cancel, key=pygame.K_ESCAPE, palette=blue)
+            self._draw_button('确认退出', *confirm, key=pygame.K_RETURN, palette=amber)
             return
         paid = self.state == GameState.PAID_REVIVE
         title = f'花 {self._revive_cost()} 金币复活？' if paid else '暂停'
-        self._draw_title_text(title, pygame.Rect(px+20, py+26, pw-40, 58), accent=(115, 205, 255))
+        title_rect = pygame.Rect(px+20, py+26, pw-40, 58)
+        if settings:
+            title_rect.y = py + 10
+            title_rect.h = 42
+        self._draw_title_text(title, title_rect, accent=(115, 205, 255))
+        if settings:
+            volume, zoom = self._pause_settings_rects()
+            for y in (volume[0].top - 8, zoom[0].bottom + 8):
+                Draw.line(config.SCR, (62, 112, 133), (px + 14, y), (px + pw - 14, y))
+            disabled = ((21, 39, 52), (53, 79, 94), (142, 170, 183))
+            rows = (('背景音乐', music_volume_percent(), 0, 100, volume),
+                    ('画面缩放', self.actor_scale_percent, ACTOR_SCALE_MIN, ACTOR_SCALE_MAX, zoom))
+            for label, value, minimum, maximum, (decrease, increase) in rows:
+                self._draw_text_fit(label, self.font_small, WHITE,
+                                    pygame.Rect(px + 10, decrease.y, 134, decrease.h))
+                self._draw_button('-', *decrease, palette=blue if value > minimum else disabled)
+                self._draw_text_fit(f'{value}%', self.font_small, WHITE,
+                                    pygame.Rect(decrease.right, decrease.y, increase.left - decrease.right, decrease.h),
+                                    align='center')
+                self._draw_button('+', *increase, palette=blue if value < maximum else disabled)
         left, right = self._choice_rects()
-        self._draw_button('复活' if paid else '继续游戏', *left, key=pygame.K_y if paid else pygame.K_RETURN)
-        self._draw_button('结束游戏' if paid else '退出本局', *right, (180, 60, 60), key=pygame.K_n)
+        self._draw_button('复活' if paid else '继续游戏', *left,
+                          key=pygame.K_y if paid else pygame.K_RETURN, palette=blue if settings else None)
+        self._draw_button('结束游戏' if paid else '退出本局', *right, (180, 60, 60), key=pygame.K_n,
+                          palette=amber if settings else None)
 
     def _game_over_choice_rects(self):
         x = config.SCREEN_WIDTH // 2
@@ -4853,11 +4912,17 @@ class Game:
         self._draw_text_fit(self._keycap_text(key), self.font_keycap, (221, 240, 250),
                             rect.inflate(-6, -2), align='center')
 
-    def _draw_button(self, text, x, y, w, h, color=(40, 130, 210), *, key=None):
+    def _draw_button(self, text, x, y, w, h, color=(40, 130, 210), *, key=None, palette=None):
         btn = pygame.Rect(x, y, w, h)
         hovered = self._hit(*self.cursor_pos, x, y, w, h)
-        fill = tuple((26 if hovered else 10) + c // 4 for c in color)
-        border = tuple(min(255, (96 if hovered else 62) + c * 3 // 4) for c in color)
+        if palette is None:
+            fill = tuple((26 if hovered else 10) + c // 4 for c in color)
+            border = tuple(min(255, (96 if hovered else 62) + c * 3 // 4) for c in color)
+            ink = WHITE
+        else:
+            fill, border, ink = palette
+            if hovered:
+                fill = tuple(min(255, channel + 12) for channel in fill)
         Draw.rect(config.SCR, (3, 13, 22), btn.move(0, 2), border_radius=9)
         self._draw_panel(*btn, accent=border, fill=fill, r=9, alpha=251)
         label_rect = btn.inflate(-12, -6)
@@ -4874,8 +4939,8 @@ class Game:
                 Draw.line(config.SCR, WHITE, (cx - 6, cy - 6), (cx + 6, cy + 6), 2)
                 Draw.line(config.SCR, WHITE, (cx - 6, cy + 6), (cx + 6, cy - 6), 2)
             else:
-                Draw.line(config.SCR, WHITE, (cx - 7, cy), (cx + 7, cy), 2)
+                Draw.line(config.SCR, ink, (cx - 7, cy), (cx + 7, cy), 2)
                 if text == '+':
-                    Draw.line(config.SCR, WHITE, (cx, cy - 7), (cx, cy + 7), 2)
+                    Draw.line(config.SCR, ink, (cx, cy - 7), (cx, cy + 7), 2)
             return
-        self._draw_text_fit(text, self.font_med, WHITE, label_rect, align='center')
+        self._draw_text_fit(text, self.font_med, ink, label_rect, align='center')

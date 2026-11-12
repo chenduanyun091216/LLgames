@@ -4,6 +4,12 @@ from functools import lru_cache
 import pygame
 
 
+def scale_rect(rect, scale):
+    resized = pygame.Rect(0, 0, round(rect.w * scale), round(rect.h * scale))
+    resized.center = rect.center
+    return resized
+
+
 @lru_cache(maxsize=24)
 def _scaled_static_image(image, size):
     return pygame.transform.smoothscale(image, size)

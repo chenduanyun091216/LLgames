@@ -37,17 +37,36 @@ const elements = {infobox: box, 'ttgames-loading': loading, progress: nativeProg
     'ttgames-fullscreen': button, 'ttgames-ui': canvas, 'ttgames-quality': quality,
     'ttgames-offline': offlineStatus};
 const observers = [];
+const windowEvents = {};
+const documentEvents = {};
 let callback;
 const context = {window: {isSecureContext: true, localStorage: {getItem: key => storage.get(key),
-    setItem: (key, value) => storage.set(key, value)}},
+    setItem: (key, value) => storage.set(key, value)},
+    addEventListener: (event, handler) => { windowEvents[event] = handler; }},
     navigator: {serviceWorker: {register: async () => ({installing: worker})}}, console,
     getComputedStyle: () => ({getPropertyValue: name => ({
         '--quality-menu-width': '216px', '--quality-safe-right': '0px',
     })[name]}),
     requestAnimationFrame: fn => { callback = fn; },
-    document: {getElementById: id => elements[id], documentElement: {}, addEventListener() {}},
+    document: {getElementById: id => elements[id], documentElement: {},
+        addEventListener: (event, handler) => { documentEvents[event] = handler; }},
     MutationObserver: class { constructor(fn) { this.callback = fn; observers.push(this); } observe() {} }};
 vm.runInNewContext(fs.readFileSync('web/shell.js', 'utf8'), context);
+const touch = identifier => ({identifier});
+windowEvents.touchstart({touches: [touch(7), touch(8)]});
+assert(context.window.ttgamesTouchActive(7));
+windowEvents.touchend({touches: [touch(8)]});
+assert(!context.window.ttgamesTouchActive(7));
+assert(context.window.ttgamesTouchActive(8));
+windowEvents.touchcancel({touches: []});
+assert(!context.window.ttgamesTouchActive(8));
+windowEvents.touchstart({touches: [touch(9)]});
+windowEvents.blur();
+assert(!context.window.ttgamesTouchActive(9));
+windowEvents.touchstart({touches: [touch(10)]});
+context.document.hidden = true;
+documentEvents.visibilitychange();
+assert(!context.window.ttgamesTouchActive(10));
 assert.strictEqual(context.window.ttgamesRenderDensity, 1.5);
 quality.open = true;
 qualityHandlers.change({target: choices[1]});
@@ -83,6 +102,7 @@ assert.strictEqual(loading.hidden, true);
 context.window.ttgamesDrawUI('[]', 480, 850, false, false);
 assert.strictEqual(quality.hidden, true);
 assert.deepStrictEqual(cleared, [[0, 0, 480, 850], [13, 93, 73, 21]]);
+assert.strictEqual(quality.style['--quality-top'], '286px');
 assert.strictEqual(quality.style['--pause-bottom'], '500px');
 assert(!qualityAttributes.has('data-side'));
 canvas.clientWidth = 844;
