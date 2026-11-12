@@ -20,7 +20,7 @@ SURFACE = (11, 37, 47)
 HOME_ACTIONS = (
     ('easy', '简单', pygame.K_1), ('medium', '中等', pygame.K_2),
     ('hard', '困难', pygame.K_3), ('infinite', '无限', pygame.K_4),
-    ('custom', '自定义难度', pygame.K_c), ('keys', '按键设置', pygame.K_k),
+    ('keys', '按键设置', pygame.K_k),
 )
 
 # Percentages of the poster area, ordered from the first Boss to the final Boss.
@@ -133,8 +133,8 @@ def _home_boxes():
 
 def home_rects():
     actions = _home_boxes()[2]
-    columns, gap = (6, 8) if config.MOBILE_LANDSCAPE_VIEW else (2, 6)
-    rows = len(HOME_ACTIONS) // columns
+    columns, gap = (len(HOME_ACTIONS), 8) if config.MOBILE_LANDSCAPE_VIEW else (2, 6)
+    rows = (len(HOME_ACTIONS) + columns - 1) // columns
     width = (actions.w - gap * (columns - 1)) // columns
     height = (actions.h - gap * (rows - 1)) // rows
     left = actions.centerx - (width * columns + gap * (columns - 1)) // 2

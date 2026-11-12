@@ -8,7 +8,7 @@ from functools import lru_cache
 import pygame
 from .render import Draw, RenderSurface, blit_effect, effect_layer, scale_rect
 from . import config
-from .visuals import blit_label, draw_electric_arc, draw_glow
+from .visuals import blit_label, draw_electric_arc, draw_glow, draw_missile_trail
 from .boss_skills import BOSS_COLORS, DRAGON_FIREBALL_IMAGE, SIGNATURES, draw_bubble_crab
 from .asset_loader import image_asset, image_asset_supersampled, scale_surface_cached
 from . import animation
@@ -745,7 +745,7 @@ class Bullet:
         if sub or getattr(self, 'sniper_missile', False):
             if not hasattr(self, 'sniper_trail'):
                 self.sniper_trail = []
-            rear = 16 if sub else 32
+            rear = 9 if sub else 18
             self.sniper_trail.append((round(self.x - math.sin(rad) * rear),
                                       round(self.y + math.cos(rad) * rear)))
             limit = 17 if sub else 23
@@ -757,27 +757,13 @@ class Bullet:
                 self.y < -20 or self.y > config.SCREEN_HEIGHT + 20 or
                 self.x < -20 or self.x > config.SCREEN_WIDTH + 20)
 
-    def _draw_sniper_trail(self, surf):
-        trail = getattr(self, 'sniper_trail', ())
-        if len(trail) < 2:
-            return
-        xs, ys = zip(*trail)
-        left, top = min(xs) - 5, min(ys) - 5
-        layer = effect_layer(surf, (max(xs) - left + 6, max(ys) - top + 6))
-        width = 6 if getattr(self, 'sniper_submissile', False) else 9
-        for i, ((x1, y1), (x2, y2)) in enumerate(zip(trail, trail[1:]), 1):
-            strength = i / (len(trail) - 1)
-            _line(layer, (255, round(100 + 125 * strength), 65, round(190 * strength)),
-                  (x1 - left, y1 - top), (x2 - left, y2 - top),
-                  max(1, round(width * strength)))
-        blit_effect(surf, layer, (left, top))
-
     def draw(self, surf):
         rad = math.radians(self.angle)
         dx, dy = -math.sin(rad), math.cos(rad)
         head = (int(self.x), int(self.y))
         if getattr(self, 'sniper_missile', False) or getattr(self, 'sniper_submissile', False):
-            self._draw_sniper_trail(surf)
+            draw_missile_trail(surf, getattr(self, 'sniper_trail', ()),
+                               6 if getattr(self, 'sniper_submissile', False) else 9, blue=True)
             size = (54, 18) if getattr(self, 'sniper_submissile', False) else (108, 36)
             high_res = isinstance(surf, RenderSurface)
             pixel_length = surf.length if high_res else round

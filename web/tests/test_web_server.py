@@ -17,6 +17,15 @@ from web.run_web import OfflineHandler, SetupHandler, prepare_image
 
 
 class WebServerTests(unittest.TestCase):
+    def test_lan_addresses_use_certificate_ip_when_hostname_only_resolves_virtual_adapter(self):
+        certificate = {'subjectAltName': (
+            ('DNS', 'localhost'), ('IP Address', '127.0.0.1'), ('IP Address', '172.20.10.4'),
+        )}
+        virtual_adapter = [(socket.AF_INET, 0, 0, '', ('198.18.0.1', 0))]
+        with patch.object(socket, 'getaddrinfo', return_value=virtual_adapter), \
+                patch.object(ssl._ssl, '_test_decode_cert', return_value=certificate):
+            self.assertEqual(run_web.lan_addresses(Path('cert.pem')), ['172.20.10.4'])
+
     @unittest.skipUnless(os.name == 'nt', 'Windows locks the current directory')
     def test_prepare_sources_reuses_staging_held_open_on_windows(self):
         with tempfile.TemporaryDirectory() as directory:

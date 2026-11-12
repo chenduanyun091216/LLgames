@@ -449,7 +449,20 @@ class SetupHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
 
 
-def lan_addresses():
+def lan_addresses(cert=None):
+    if cert is not None:
+        # CPython 的证书解析可读取已签发的 IP，避免主机名解析只返回虚拟网卡。
+        try:
+            names = ssl._ssl._test_decode_cert(os.fspath(cert)).get('subjectAltName', ())
+        except (OSError, ValueError):
+            names = ()
+        signed_addresses = {
+            address for kind, address in names
+            if kind == 'IP Address' and ':' not in address and not address.startswith('127.')
+        }
+        if signed_addresses:
+            return sorted(signed_addresses)
+
     addresses = set()
     try:
         for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
@@ -486,7 +499,7 @@ def release_port(port):
         print(f'已结束占用端口 {port} 的进程：{pid}')
 
 
-def serve(host, port, tls=None, setup_port=8000, setup_certificate=None):
+def serve(host, port, tls=None, setup_port=8000, setup_certificate=None, cert=None):
     release_port(port)
     handler = partial(OfflineHandler, directory=str(WEBROOT))
     # SIGKILL 已发送后，给操作系统最多一秒释放监听套接字。
@@ -512,10 +525,12 @@ def serve(host, port, tls=None, setup_port=8000, setup_certificate=None):
             setup_thread.start()
             print(f'证书安装入口本机地址：http://127.0.0.1:{setup_server.server_port}/')
         print(f'浏览器游戏本机地址：{scheme}://127.0.0.1:{server.server_port}/')
-        for address in lan_addresses():
+        for address in lan_addresses(cert):
             if setup_server:
-                print(f'手机首次使用入口：http://{address}:{setup_server.server_port}/')
-            print(f'手机同一 Wi-Fi 访问：{scheme}://{address}:{server.server_port}/')
+                print(f'1. 首次安装证书 → http://{address}:{setup_server.server_port}/')
+                print(f'2. 打开游戏 → {scheme}://{address}:{server.server_port}/')
+            else:
+                print(f'打开游戏 → {scheme}://{address}:{server.server_port}/')
         print('按 Ctrl+C 停止服务。')
         server.serve_forever()
     except KeyboardInterrupt:
@@ -580,7 +595,8 @@ def main():
     else:
         print('复用已构建的离线网页包。')
     if not args.build_only:
-        serve(args.host, args.port, tls, args.setup_port, setup_certificate)
+        serve(args.host, args.port, tls, args.setup_port, setup_certificate,
+              cert=args.cert if tls else None)
 
 
 if __name__ == '__main__':

@@ -229,6 +229,9 @@ class DesktopGameTests(unittest.TestCase):
                 old_alpha = surface.get_at(old).a
                 self.assertGreater(old_alpha, 0)
                 self.assertGreater(surface.get_at(recent).a, old_alpha)
+                color = surface.get_at(recent)
+                self.assertGreater(color.b, color.g)
+                self.assertGreater(color.g, color.r)
 
     def test_shop_number_row_and_keypad_purchase_or_equip(self):
         pygame.init()
@@ -682,6 +685,12 @@ class DesktopGameTests(unittest.TestCase):
         config.update_mobile_view(window.get_size())
         game = Game(desktop_controls=True)
         game._start_game('medium')
+
+        for infinite_mode in (False, True):
+            with patch.object(game, 'infinite_mode', infinite_mode):
+                for action, (_, y), radius, _, _ in game.mobile_controls._buttons(game):
+                    if action.startswith('weapon:'):
+                        self.assertGreaterEqual(y - radius, game.hud_diagnostics_y + 8)
 
         with patch.object(game.mobile_controls, 'draw', wraps=game.mobile_controls.draw) as draw, \
                 patch.object(game, '_draw_button', wraps=game._draw_button) as draw_button:

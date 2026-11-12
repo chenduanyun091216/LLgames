@@ -66,11 +66,11 @@ class MobileWebTests(unittest.TestCase):
             self.assertEqual(sounds.music_volume_percent(), 100)
             widths = []
             with patch.object(config, 'game_ticks', return_value=1000):
-                for expected in (95, 90, 85, 85):
+                for expected in (*range(95, 49, -5), 50):
                     click(zoom_out)
                     self.assertEqual(game.actor_scale_percent, expected)
-                for expected in range(85, 116, 5):
-                    if expected > 85:
+                for expected in range(50, 151, 5):
+                    if expected > 50:
                         click(zoom_in)
                     self.assertEqual(game.actor_scale_percent, expected)
                     with patch('game_core.entities.blit_lit_sprite') as blit:
@@ -79,9 +79,9 @@ class MobileWebTests(unittest.TestCase):
                     self.assertEqual((game.player.rect(), game.enemies[0].rect(), game.boss.rect()), hitboxes)
                     self.assertEqual(game.state, GameState.PAUSED)
                 click(zoom_in)
-                self.assertEqual(game.actor_scale_percent, 115)
+                self.assertEqual(game.actor_scale_percent, 150)
             self.assertEqual(len(widths[0]), 3)
-            self.assertTrue(all(small < normal < large for small, normal, large in zip(widths[0], widths[3], widths[-1])))
+            self.assertTrue(all(small < normal < large for small, normal, large in zip(widths[0], widths[10], widths[-1])))
 
     def test_web_level_title_is_centered_and_blocks_input_for_three_seconds(self):
         game = Game(web=True)
@@ -1220,6 +1220,7 @@ class MobileWebTests(unittest.TestCase):
             with self.subTest(size=size):
                 config.update_mobile_view(size)
                 rects = self.game._mobile_menu_rects()
+                self.assertEqual(set(rects), {'easy', 'medium', 'hard', 'infinite', 'keys'})
                 cards = list(rects.values())
                 self.assertEqual(len({rect.top for rect in cards}),
                                  1 if config.MOBILE_LANDSCAPE_VIEW else 3)
@@ -1230,7 +1231,7 @@ class MobileWebTests(unittest.TestCase):
                 self.assertTrue(all(rect.collidelist(cards[index + 1:]) == -1
                                     for index, rect in enumerate(cards)))
 
-    def test_keyboard_home_settings_custom_campaign_and_endless(self):
+    def test_keyboard_home_settings_campaign_and_endless(self):
         game = self.game
 
         def press(key):
@@ -1260,16 +1261,7 @@ class MobileWebTests(unittest.TestCase):
         press(pygame.K_ESCAPE)
         self.assertEqual(game.state, GameState.MENU)
         press(pygame.K_c)
-        self.assertEqual(game.state, GameState.CUSTOM_DIFFICULTY)
-        press(pygame.K_RIGHT)
-        press(pygame.K_RETURN)
-        self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
-        self.assertEqual(game.selected_level, 1)
-        press(pygame.K_RETURN)
-        self.assertEqual(game.current_level, 1)
-        self.assertEqual(game.difficulty.name, '自定义')
-        self.assertEqual(game.difficulty.spawn_interval_start, 2500)
-        game.reset()
+        self.assertEqual(game.state, GameState.MENU)
         press(pygame.K_4)
         self.assertTrue(game.infinite_mode)
 

@@ -119,7 +119,7 @@ DESKTOP_BATTLE_KEYS = {'shop': pygame.K_b, 'pause': pygame.K_h, 'auto_fire': pyg
 SHOP_KEYPAD_KEYS = (pygame.K_KP1, pygame.K_KP2, pygame.K_KP3, pygame.K_KP4,
                     pygame.K_KP5, pygame.K_KP6, pygame.K_KP7, pygame.K_KP8)
 DESKTOP_HUD_KEYS = (pygame.K_LEFTBRACKET, pygame.K_p, pygame.K_RIGHTBRACKET)
-ACTOR_SCALE_MIN, ACTOR_SCALE_MAX, ACTOR_SCALE_STEP = 85, 115, 5
+ACTOR_SCALE_MIN, ACTOR_SCALE_MAX, ACTOR_SCALE_STEP = 50, 150, 5
 
 
 class Game:
@@ -740,8 +740,6 @@ class Game:
     def _activate_home_action(self, action):
         if action == 'infinite':
             self._start_infinite_game()
-        elif action == 'custom':
-            self.state = GameState.CUSTOM_DIFFICULTY
         elif action == 'keys':
             self.state = GameState.KEY_SETTINGS
         elif action in DIFFICULTY_PRESETS:

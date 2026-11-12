@@ -287,6 +287,25 @@ class AbyssBossTests(unittest.TestCase):
         self.assertEqual(first.x, first_x)
         self.assertAlmostEqual(second.x, second_x + 70)
 
+    def test_factory_missiles_leave_trails_and_take_separate_paths(self):
+        boss = self.boss(MechaLizardBoss)
+        target_x = boss.x
+        with patch.object(config, 'game_ticks', return_value=1000):
+            shots = boss._skill_shots('guided_missile', target_x, 600)
+        crossings = {}
+        for now in range(1000, 6500, 20):
+            with patch.object(config, 'game_ticks', return_value=now):
+                for shot in shots:
+                    shot.update(target_x, 600)
+                    if shot.is_active() and shot.y >= 550 and shot.missile_pass == 0:
+                        crossings.setdefault(shot, shot.x)
+        xs = [crossings[shot] for shot in shots]
+        self.assertGreater(xs[1] - xs[0], 45)
+        self.assertGreater(xs[2] - xs[1], 45)
+        for shot in shots:
+            self.assertEqual(len(shot.missile_trail), 23)
+            self.assertNotEqual(shot.missile_trail[0], shot.missile_trail[-1])
+
     def test_factory_charge_does_not_draw_position_guides(self):
         surface = pygame.Surface((960, 720), pygame.SRCALPHA)
         boss = self.boss(MechaLizardBoss)

@@ -12,7 +12,7 @@ from . import animation, config
 from .asset_loader import image_asset
 from .entities import Boss, BossProjectile
 from .render import Draw, RenderSurface, blit_effect, effect_layer
-from .visuals import draw_glow
+from .visuals import draw_glow, draw_missile_trail
 
 
 ABYSS_PROJECTILE_FIELDS = (
@@ -94,6 +94,7 @@ class AbyssProjectile(BossProjectile):
         self.whip_directions = random.randrange(8) if skill == 'plasma_rail' else 0
         self.missile_pass = 0
         self.missile_turn_rate = 150
+        self.missile_tracking_offset = 0
         self.unblockable = skill in RINGS + LANES or skill == 'guided_missile'
         self.persistent = self.unblockable or skill == 'ancient_pearl'
         self._hit_players = set()
@@ -198,7 +199,7 @@ class AbyssProjectile(BossProjectile):
         if self.missile_pass == 1:
             desired = 180
         else:
-            dx = 0 if target_x is None else target_x - self.x
+            dx = 0 if target_x is None else target_x + self.missile_tracking_offset - self.x
             dy = config.GAME_AREA_BOTTOM if target_y is None else target_y
             desired = max(-50, min(50, math.degrees(math.atan2(dx, max(85, dy - self.y)))))
         delta = (desired - self.angle + 180) % 360 - 180
@@ -209,6 +210,12 @@ class AbyssProjectile(BossProjectile):
         self.x = max(config.GAME_AREA_LEFT + self.r, min(config.GAME_AREA_RIGHT - self.r,
                      self.x + math.sin(rad) * self.speed * 60 * dt))
         self.y += math.cos(rad) * self.speed * 60 * dt
+        if dt and hasattr(self, 'missile_trail'):
+            rear = self.r * 6
+            self.missile_trail.append((round(self.x - math.sin(rad) * rear),
+                                       round(self.y - math.cos(rad) * rear)))
+            if len(self.missile_trail) > 23:
+                del self.missile_trail[0]
 
     def _active_age(self):
         return max(0, self.last_update - self.spawn_time - self.warning_ms)
@@ -441,6 +448,8 @@ class AbyssProjectile(BossProjectile):
                 else:
                     _blit(surf, preview, (self.x, self.y), (self.r * 3, self.r * 3))
             return
+        if self.skill == 'guided_missile':
+            draw_missile_trail(surf, getattr(self, 'missile_trail', ()), 9)
         if image is None:
             Draw.rect(surf, color, self.bounds(), 2)
             return
@@ -645,10 +654,15 @@ class MechaLizardBoss(AbyssBoss):
             self.sync_weapon_mount(shot, shot.spawn_time)
             return [shot]
         if skill == 'guided_missile':
-            return [self._shot(skill, self.x + a * self.size_scale, origin_y, angle=a,
-                               speed=4.5 + tier * .25,
-                               warning_ms=MISSILE_WINDUP_MS + i * MISSILE_LAUNCH_GAP_MS, active_ms=20000)
-                    for i, a in enumerate((-32, 0, 32))]
+            shots = []
+            for i, angle in enumerate((-32, 0, 32)):
+                shot = self._shot(skill, self.x + angle * self.size_scale, origin_y, angle=angle,
+                                  speed=4.5 + tier * .25,
+                                  warning_ms=MISSILE_WINDUP_MS + i * MISSILE_LAUNCH_GAP_MS, active_ms=20000)
+                shot.missile_tracking_offset = (i - 1) * 90
+                shot.missile_trail = []
+                shots.append(shot)
+            return shots
         if skill == 'emp_ring':
             self._emp_dash_origin = self.x, self.y
             shot = self._shot(skill, config.SCREEN_WIDTH / 2, config.SCREEN_HEIGHT / 2,

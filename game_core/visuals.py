@@ -6,7 +6,23 @@ from functools import lru_cache
 import pygame
 
 from .config import make_font
-from .render import Draw, RenderSurface
+from .render import Draw, RenderSurface, blit_effect, effect_layer
+
+
+def draw_missile_trail(surf, trail, width, *, blue=False):
+    if len(trail) < 2:
+        return
+    xs, ys = zip(*trail)
+    left, top = min(xs) - 5, min(ys) - 5
+    layer = effect_layer(surf, (max(xs) - left + 6, max(ys) - top + 6))
+    for i, ((x1, y1), (x2, y2)) in enumerate(zip(trail, trail[1:]), 1):
+        strength = i / (len(trail) - 1)
+        color = ((55, round(105 + 100 * strength), 255) if blue
+                 else (255, round(100 + 125 * strength), 65))
+        Draw.line(layer, (*color, round(190 * strength)),
+                  (x1 - left, y1 - top), (x2 - left, y2 - top),
+                  max(1, round(width * strength)))
+    blit_effect(surf, layer, (left, top))
 
 
 @lru_cache(maxsize=96)

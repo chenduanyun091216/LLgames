@@ -155,7 +155,8 @@ class MobileControls:
             utility_y += 5
             char_radius = weapon_radius = 20
             char_positions = [(right, 104 + index * 48) for index in range(len(_CHAR_KEYS_ORDERED))]
-            weapon_positions = [(36, 144 + index * 48) for index in range(len(_WEAPON_KEYS_ORDERED))]
+            weapon_y = game.hud_diagnostics_y + 8 + weapon_radius
+            weapon_positions = [(36, weapon_y + index * 48) for index in range(len(_WEAPON_KEYS_ORDERED))]
         else:
             if compact:
                 char_y, char_gap, char_radius = 102, 62, 21

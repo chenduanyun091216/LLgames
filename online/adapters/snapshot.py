@@ -43,7 +43,7 @@ SCHEMA['NiuFanBullet'] = SCHEMA['BossProjectile'] + ['red']
 SCHEMA['OrochiFireball'] = SCHEMA['BossProjectile'] + ['color']
 SCHEMA['MechaLizardBoss'] = SCHEMA['Boss'] + 'skill_index current_skill skill_started_at self_telegraphed'.split()
 SCHEMA['AncientWhaleBoss'] = SCHEMA['MechaLizardBoss'] + ['suction_start_hp', 'swim_direction', 'swim_turn_at']
-SCHEMA['AbyssProjectile'] = SCHEMA['BossProjectile'] + list(A.ABYSS_PROJECTILE_FIELDS)
+SCHEMA['AbyssProjectile'] = SCHEMA['BossProjectile'] + list(A.ABYSS_PROJECTILE_FIELDS) + ['missile_trail']
 SCHEMA['Enemy'] += ['factory_kind', 'factory_link_until', 'temple_kind']
 CLASSES = {name: getattr(E, name) for name in (
     'Player Enemy Bullet Coin GiftBox Particle Explosion FireWall IceFloor SkillProjectile '
