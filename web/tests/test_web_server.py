@@ -17,14 +17,15 @@ from web.run_web import OfflineHandler, SetupHandler, prepare_image
 
 
 class WebServerTests(unittest.TestCase):
-    def test_lan_addresses_use_certificate_ip_when_hostname_only_resolves_virtual_adapter(self):
-        certificate = {'subjectAltName': (
-            ('DNS', 'localhost'), ('IP Address', '127.0.0.1'), ('IP Address', '172.20.10.4'),
-        )}
-        virtual_adapter = [(socket.AF_INET, 0, 0, '', ('198.18.0.1', 0))]
-        with patch.object(socket, 'getaddrinfo', return_value=virtual_adapter), \
+    def test_lan_addresses_use_current_network_instead_of_stale_certificate_ip(self):
+        certificate = {'subjectAltName': (('IP Address', '172.20.10.3'),)}
+        interfaces = ('en0: flags=1<UP>\n\tinet 192.168.1.10 netmask 0xffffff00\n'
+                      '\tstatus: active\nutun8: flags=1<UP>\n\tinet 172.29.0.1\n')
+        with patch.object(run_web.sys, 'platform', 'darwin'), \
+                patch.object(run_web.subprocess, 'run') as ifconfig, \
                 patch.object(ssl._ssl, '_test_decode_cert', return_value=certificate):
-            self.assertEqual(run_web.lan_addresses(Path('cert.pem')), ['172.20.10.4'])
+            ifconfig.return_value.stdout = interfaces
+            self.assertEqual(run_web.lan_addresses(Path('cert.pem')), ['192.168.1.10'])
 
     @unittest.skipUnless(os.name == 'nt', 'Windows locks the current directory')
     def test_prepare_sources_reuses_staging_held_open_on_windows(self):

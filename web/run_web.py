@@ -449,7 +449,7 @@ class SetupHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
 
 
-def lan_addresses(cert=None):
+def certificate_addresses(cert):
     if cert is not None:
         # CPython 的证书解析可读取已签发的 IP，避免主机名解析只返回虚拟网卡。
         try:
@@ -460,10 +460,42 @@ def lan_addresses(cert=None):
             address for kind, address in names
             if kind == 'IP Address' and ':' not in address and not address.startswith('127.')
         }
-        if signed_addresses:
-            return sorted(signed_addresses)
+        return signed_addresses
+    return set()
+
+
+def lan_addresses(cert=None):
+    if sys.platform == 'darwin':
+        try:
+            result = subprocess.run(['/sbin/ifconfig', '-a'], capture_output=True,
+                                    text=True, check=True, timeout=5)
+            addresses = set()
+            for interface in re.split(r'(?m)^(?=\S)', result.stdout):
+                if re.match(r'en\d+:', interface) and 'status: active' in interface:
+                    addresses.update(re.findall(r'(?m)^\s+inet (\S+)', interface))
+            if addresses:
+                return sorted(addresses)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    # UDP connect selects a local address without sending a packet.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
+            route.connect(('1.1.1.1', 443))
+            return [route.getsockname()[0]]
+    except OSError:
+        pass
 
     addresses = set()
+    for address in certificate_addresses(cert):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+                probe.bind((address, 0))
+            addresses.add(address)
+        except OSError:
+            continue
+    if addresses:
+        return sorted(addresses)
     try:
         for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             address = result[4][0]
@@ -525,7 +557,13 @@ def serve(host, port, tls=None, setup_port=8000, setup_certificate=None, cert=No
             setup_thread.start()
             print(f'证书安装入口本机地址：http://127.0.0.1:{setup_server.server_port}/')
         print(f'浏览器游戏本机地址：{scheme}://127.0.0.1:{server.server_port}/')
-        for address in lan_addresses(cert):
+        signed_addresses = certificate_addresses(cert)
+        for address in ([host] if host != '0.0.0.0' else lan_addresses(cert)):
+            if address.startswith('127.'):
+                continue
+            if cert is not None and address not in signed_addresses:
+                print(f'当前局域网 IP：{address}。HTTPS 证书未覆盖该地址，请重新签发证书后重启。')
+                continue
             if setup_server:
                 print(f'1. 首次安装证书 → http://{address}:{setup_server.server_port}/')
                 print(f'2. 打开游戏 → {scheme}://{address}:{server.server_port}/')

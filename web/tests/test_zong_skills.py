@@ -84,6 +84,8 @@ class ZongSkillsTests(unittest.TestCase):
             self.assertEqual(boss.x, start_x)
             self.assertEqual(len(boss.crescent_projectiles), count)
         shots = boss.crescent_projectiles
+        width_scale = (config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT) / 480
+        self.assertTrue(all(0 < shot.r < 25 * width_scale for shot in shots))
         self.assertGreater(shots[0].angle, 0)
         self.assertAlmostEqual(shots[1].angle, 0)
         self.assertLess(shots[2].angle, 0)
@@ -96,6 +98,14 @@ class ZongSkillsTests(unittest.TestCase):
         from game_core.special_bosses import CrescentWave
         shot = CrescentWave(200, 200, 70, angle=90)
         before = shot.rect()
+        frames = []
+        for age in (0, 150):
+            surface = pygame.Surface((440, 440), pygame.SRCALPHA)
+            with patch('game_core.config.game_ticks', return_value=shot.spawn_time + age):
+                shot.draw(surface)
+            frames.append(pygame.image.tobytes(surface, 'RGBA'))
+            self.assertTrue(surface.get_bounding_rect().collidepoint(200, 200))
+        self.assertNotEqual(*frames)
         shot.update()
         self.assertGreater(shot.x, 200)
         self.assertAlmostEqual(shot.y, 200)
@@ -118,7 +128,9 @@ class ZongSkillsTests(unittest.TestCase):
 
     def test_three_bombs_detonate_immediately_only_near_player(self):
         boss = self.make_boss()
-        bombs = boss.attack(1000, 200)
+        with patch.object(boss, '_choose_attack_skill', return_value='bomb'):
+            bombs = boss.attack(1000, 200)
+        self.assertEqual([bomb.color for bomb in bombs], ['black', 'yellow', 'red'])
         for bomb in bombs:
             with self.subTest(color=bomb.color):
                 bomb.x, bomb.y = 300, 300
@@ -132,7 +144,9 @@ class ZongSkillsTests(unittest.TestCase):
                 self.assertEqual(bomb.explode_radius, round(bomb.r * 1.5))
 
     def test_expired_bomb_does_not_proximity_detonate(self):
-        bomb = self.make_boss().attack(1000, 200)[0]
+        boss = self.make_boss()
+        with patch.object(boss, '_choose_attack_skill', return_value='bomb'):
+            bomb = boss.attack(1000, 200)[0]
         bomb.spawn_time = 1000
         with patch('game_core.config.game_ticks', return_value=7000):
             bomb.update(9000, 9000)

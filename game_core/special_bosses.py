@@ -158,14 +158,18 @@ class NiuShieldShard(BossProjectile):
 
 
 class CrescentWave(BossProjectile):
-    def __init__(self, x, y, half_width=112, angle=0):
+    def __init__(self, x, y, half_width=30, angle=0):
         super().__init__(x, y, angle, 8.5, damage=1)
         self.r = max(1, round(half_width * .65))
         self.unblockable = True
 
     def draw(self, surf):
         scale = surf.scale if isinstance(surf, RenderSurface) else 1
-        image = _taiji_art(self.r, scale)
+        sprite = image_asset('bosses/zongzong.png')
+        if sprite is None:
+            super().draw(surf)
+            return
+        image = _small_zongzi_art(sprite, self.r, scale)
         image = pygame.transform.rotate(image, (config.game_ticks() - self.spawn_time) * .6 % 360)
         center = surf.point((self.x, self.y)) if isinstance(surf, RenderSurface) else (round(self.x), round(self.y))
         position = image.get_rect(center=center).topleft
@@ -176,26 +180,11 @@ class CrescentWave(BossProjectile):
 
 
 @lru_cache(maxsize=16)
-def _taiji_art(radius, scale):
-    # Draw at twice the output resolution for smooth circular edges.
-    r = max(4, round(radius * scale * 2))
-    margin = max(3, r // 8)
-    size = 2 * (r + margin)
-    cx = cy = size // 2
-    art = pygame.Surface((size, size), pygame.SRCALPHA)
-    pygame.draw.circle(art, (98, 213, 255, 55), (cx, cy), r + margin)
-    pygame.draw.circle(art, (196, 244, 255, 210), (cx, cy), r + max(2, r // 22))
-    pygame.draw.circle(art, (18, 33, 52), (cx, cy), r)
-    white = (243, 250, 247)
-    black = (18, 33, 52)
-    art.set_clip(pygame.Rect(cx, cy-r, r, 2*r))
-    pygame.draw.circle(art, white, (cx, cy), r)
-    art.set_clip(None)
-    pygame.draw.circle(art, white, (cx, cy-r//2), r//2)
-    pygame.draw.circle(art, black, (cx, cy+r//2), r//2)
-    pygame.draw.circle(art, black, (cx, cy-r//2), max(2, r//7))
-    pygame.draw.circle(art, white, (cx, cy+r//2), max(2, r//7))
-    return pygame.transform.smoothscale(art, (max(1, size // 2), max(1, size // 2)))
+def _small_zongzi_art(sprite, radius, scale):
+    sprite = sprite.subsurface(sprite.get_bounding_rect())
+    factor = max(1, round(2 * radius * scale)) / max(sprite.get_size())
+    size = tuple(max(1, round(length * factor)) for length in sprite.get_size())
+    return pygame.transform.smoothscale(sprite, size)
 
 
 class ZongBomb(BossProjectile):
@@ -218,7 +207,11 @@ class ZongBomb(BossProjectile):
     def draw(self, surf):
         center = (int(self.x), int(self.y))
         scale = surf.scale if isinstance(surf, RenderSurface) else 1
-        image = _zong_bomb_art(getattr(self, 'color', 'black'), self.r, scale)
+        color = getattr(self, 'color', 'black')
+        size = max(1, round((self.r * 2 + 28) * scale))
+        image = image_asset(f'effects/zong_bomb_{color}.png', (size, size))
+        if image is None:
+            image = _zong_bomb_art(color, self.r, scale)
         pixel_center = surf.point(center) if isinstance(surf, RenderSurface) else center
         position = image.get_rect(center=(pixel_center[0], pixel_center[1] - round(6 * scale))).topleft
         if isinstance(surf, RenderSurface):
@@ -811,7 +804,7 @@ class ZongBoss(Boss):
         tier = self.bdef.get('campaign_tier')
         if self.crescent_started_at is not None:
             width_scale = (config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT) / 480
-            half_width = 112 if tier is None else round(70 * width_scale)
+            half_width = 30 if tier is None else round(30 * width_scale)
             while self.crescent_count < 4 and now >= self.crescent_started_at + 1500 + self.crescent_count * 300:
                 x, y = self.crescent_target if target_x is None or target_y is None else (target_x, target_y)
                 angle = math.degrees(math.atan2(x - self.crescent_origin, y - (self.y + self.h - 8)))
