@@ -5,11 +5,13 @@ from online.server.app import allowed_host
 
 class ProtocolTests(unittest.TestCase):
     def test_valid(self):
-        self.assertEqual(decode('{"type":"hello","version":1,"code":"ABC"}')['version'], 1)
+        self.assertEqual(decode('{"type":"hello","version":1,"code":"0123"}')['version'], 1)
         decode(json.dumps(dict(type='input',seq=1,match_id='a',dx=0.3,dy=-1,shoot=False)))
 
     def test_invalid(self):
-        messages = [None, '[]', '{"type":"ready","ready":1}', '{"type":"hello","version":2,"code":"ABC"}', '{"type":"ready","ready":true,"slot":1}', '{"type":"ready","ready":true,"ready":false}', '{"type":"hello","version":true,"code":"a"}']
+        messages = [None, '[]', '{"type":"ready","ready":1}', '{"type":"hello","version":2,"code":"0123"}', '{"type":"ready","ready":true,"slot":1}', '{"type":"ready","ready":true,"ready":false}', '{"type":"hello","version":true,"code":"a"}']
+        for code in ['', '123', '12345', 'ABCD', '１２３４', 1234]:
+            messages.append(json.dumps(dict(type='hello', version=1, code=code)))
         for axis in [True, float('nan'), float('inf'), 2, '0', 10**1000]:
             messages.append(json.dumps(dict(type='input',seq=1,match_id='a',dx=axis,dy=0,shoot=False)))
         for raw in messages:

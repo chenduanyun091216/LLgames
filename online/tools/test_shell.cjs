@@ -1,10 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs');
 function fixture(){const nodes={};function node(id){return nodes[id]??=( {hidden:false,textContent:'',value:'',style:{},dataset:{},firstChild:{style:{}},listeners:{},addEventListener(k,f){this.listeners[k]=f;},querySelector(s){return node(id+s);},append(){},replaceChildren(){},focus(){this.focused=true;}} );}
-class Bridge{constructor(o){this.options=o;this.slot=1;this.code='AAAA';this.actions=[];this.resets=[];this.sent=[];this.welcomed=true;}getOrientation(){return this.orientation||'landscape';}reportOrientation(){this.reported=true;}input(){}action(a){this.actions.push(a);}send(m){this.sent.push(m);}connect(code){this.lastConnect=code;}disconnect(){this.disconnected=true;}resetRejectedToken(code){this.resets.push(code);return true;}}
+class Bridge{constructor(o){this.options=o;this.slot=1;this.code='0123';this.actions=[];this.resets=[];this.sent=[];this.welcomed=true;}getOrientation(){return this.orientation||'landscape';}reportOrientation(){this.reported=true;}input(){}action(a){this.actions.push(a);}send(m){this.sent.push(m);}connect(code){this.lastConnect=code;}disconnect(){this.disconnected=true;}resetRejectedToken(code){this.resets.push(code);return true;}}
 const document={documentElement:{dataset:{}},hidden:false,body:{insertAdjacentHTML(){}},getElementById:node,querySelector:node,createElement:()=>node(Math.random()),listeners:{},addEventListener(k,f){this.listeners[k]=f;}};
 const context={window:{LLBridge:Bridge},document,addEventListener(){},setInterval(){},setTimeout(){}};vm.createContext(context);vm.runInContext(fs.readFileSync('online/web/shell.js','utf8'),context);return{context,nodes,node,bridge:context.window.LLOnline};}
-function state(lives){return {orientation:'landscape',phase:'playing',players:[{slot:1,alive:false,ready:true,hp:0,max_hp:5,character:'fisher'}],gold:100,lives,revive_cost:75,world:null};}
-test('revive UI consumes shared life before gold and terminal recovery remains accessible',()=>{const f=fixture();f.context.renderState(state(2));assert.equal(f.node('[data-action="revive"]').textContent,'复活（消耗 1 条共享生命）');f.context.renderState(state(0));assert.equal(f.node('[data-action="revive"]').textContent,'复活 75 金币');f.bridge.options.onStatus('stopped','invalid_reconnect_token');assert.equal(f.node('recovery').hidden,false);assert.equal(f.node('reset-token').hidden,false);f.node('retry').onclick();assert.equal(f.bridge.lastConnect,'AAAA');assert.equal(f.bridge.resets.length,0);f.node('reset-token').onclick();assert.deepEqual(f.bridge.resets,['AAAA']);f.node('change-room').onclick();assert.equal(f.node('join').hidden,false);assert.equal(f.node('lobby').hidden,false);assert.equal(f.node('room').hidden,true);});
+function state(lives){return {orientation:'landscape',phase:'playing',players:[{slot:1,alive:false,ready:true,hp:0,max_hp:5,character:'fisher'}],gold:100,lives,revive_cost:75,paid_revives_remaining:3,world:null};}
+test('revive UI consumes shared life before gold and terminal recovery remains accessible',()=>{const f=fixture();f.context.renderState(state(2));assert.equal(f.node('[data-action="revive"]').textContent,'复活（消耗 1 条共享生命）');f.context.renderState(state(0));assert.equal(f.node('[data-action="revive"]').textContent,'复活 75 金币（全队剩余 3 次）');f.bridge.options.onStatus('stopped','invalid_reconnect_token');assert.equal(f.node('recovery').hidden,false);assert.equal(f.node('reset-token').hidden,false);f.node('retry').onclick();assert.equal(f.bridge.lastConnect,'0123');assert.equal(f.bridge.resets.length,0);f.node('reset-token').onclick();assert.deepEqual(f.bridge.resets,['0123']);f.node('change-room').onclick();assert.equal(f.node('join').hidden,false);assert.equal(f.node('lobby').hidden,false);assert.equal(f.node('room').hidden,true);});
 test('non-token terminal failures never offer credential reset',()=>{const f=fixture();f.bridge.options.onStatus('stopped','room_full');assert.equal(f.node('reset-token').hidden,true);assert.equal(f.node('recovery').hidden,false);});
 test('Pygbag first-tap prompt sits above lobby and recovery',()=>{const css=fs.readFileSync('online/web/shell.css','utf8');assert.match(css,/#infobox\{z-index:40!important;pointer-events:auto\}/);assert.match(css,/#recovery\{z-index:35\}/);});
 
@@ -14,6 +14,63 @@ test('server error shows host restart and guest waiting recovery',()=>{const f=f
 
 test('pre-render reconnect stays suspended until visible renderer readiness',()=>{const f=fixture();assert.equal(f.bridge.options.isHidden(),true);f.bridge.options.onStatus('connected');f.context.document.listeners.visibilitychange();assert.equal(f.bridge.actions.at(-1),'suspend');f.bridge.readyRenderer();assert.equal(f.bridge.actions.at(-1),'resume');assert.equal(f.bridge.options.isHidden(),false);const hidden=fixture();hidden.bridge.options.onStatus('connected');hidden.context.document.hidden=true;hidden.bridge.readyRenderer();assert.equal(hidden.bridge.actions.length,0);assert.equal(hidden.bridge.options.isHidden(),true);hidden.context.document.hidden=false;hidden.context.document.listeners.visibilitychange();assert.equal(hidden.bridge.actions.at(-1),'resume');});
 
-test('eleven-stage progress and paused transition suppress combat commands',()=>{const f=fixture();const s=state(2);s.current_level=4;s.level_title='龙虾来袭';s.stage='transition';s.paused=true;f.context.renderState(s);assert.match(f.node('status').textContent,/第 4\/11 关/);assert.match(f.node('status').textContent,/龙虾来袭/);assert.equal(f.node('controls').hidden,true);assert.equal(f.nodes['transition-info'],undefined);f.context.sendAction('skill1');f.context.sendAction('shop_open');assert.equal(f.bridge.actions.length,0);s.stage='playing';s.paused=false;f.context.renderState(s);f.context.sendAction('skill1');assert.equal(f.bridge.actions.at(-1),'skill1');s.phase='won';s.current_level=11;f.context.renderState(s);assert.equal(f.node('result-title').textContent,'十一关战役全部通关！');assert.doesNotMatch(f.node('result-detail').textContent,/仅包含第一关/);});
+test('eleven-stage progress and paused transition suppress combat commands',()=>{const f=fixture();const s=state(2);s.current_level=4;s.level_title='龙虾来袭';s.stage='transition';s.paused=true;f.context.renderState(s);assert.match(f.node('online-status').textContent,/第 4\/11 关/);assert.match(f.node('online-status').textContent,/龙虾来袭/);assert.equal(f.node('controls').hidden,true);assert.equal(f.nodes['transition-info'],undefined);f.context.sendAction('skill1');f.context.sendAction('shop_open');assert.equal(f.bridge.actions.length,0);s.stage='playing';s.paused=false;f.context.renderState(s);f.context.sendAction('skill1');assert.equal(f.bridge.actions.at(-1),'skill1');s.phase='won';s.current_level=11;f.context.renderState(s);assert.equal(f.node('result-title').textContent,'十一关战役全部通关！');assert.doesNotMatch(f.node('result-detail').textContent,/仅包含第一关/);});
 
 test('orientation selection, mismatch instructions and start gate',()=>{const f=fixture();f.bridge.readyRenderer();const s=state(2);s.phase='lobby';s.players=[{slot:1,ready:true,connected:true,orientation:'landscape'},{slot:2,ready:true,connected:true,orientation:'portrait'}];f.context.renderState(s);assert.equal(f.node('start').disabled,true);assert.equal(f.node('orientation-warning').hidden,false);s.players[1].orientation='landscape';f.context.renderState(s);assert.equal(f.node('start').disabled,false);assert.equal(f.node('orientation-warning').hidden,true);f.node('orientation').value='portrait';f.node('orientation').onchange();assert.equal(f.bridge.sent.at(-1).type,'room_orientation');assert.equal(f.bridge.sent.at(-1).orientation,'portrait');s.orientation='portrait';f.context.renderState(s);assert.equal(f.context.document.documentElement.dataset.orientation,'portrait');s.phase='playing';f.context.renderState(s);assert.equal(f.context.combatAvailable(),false);f.bridge.orientation='portrait';assert.equal(f.context.combatAvailable(),true);});
+
+test('room code requires four ASCII digits and preserves leading zero',()=>{
+  const f=fixture();
+  for(const code of ['', '123', '12345', 'ABCD', '１２３４']){
+    f.node('code').value=code;
+    f.node('connect').onclick();
+    assert.equal(f.bridge.lastConnect,undefined);
+  }
+  f.node('code').value=' 0123 ';
+  f.node('connect').onclick();
+  assert.equal(f.bridge.lastConnect,'0123');
+});
+
+test('room code keyboard events stay in the input instead of reaching SDL',()=>{
+  const f=fixture();
+  for(const type of ['keydown','keypress','keyup']){
+    let stopped=false;
+    f.node('code').listeners[type]?.({stopPropagation(){stopped=true;}});
+    assert.equal(stopped,true,type);
+  }
+});
+
+test('startup button releases the Pygbag wait and hides when the lobby opens',()=>{
+  const f=fixture();
+  const button=f.node('launch-game');
+  f.context.window.MM={UME:false};
+  f.context.window.ttgamesLoadStage(3);
+  assert.equal(f.node('launch').hidden,false);
+  button.onclick();
+  assert.equal(f.context.window.MM.UME,true);
+  assert.equal(button.disabled,true);
+  f.bridge.readyRenderer();
+  assert.equal(f.node('launch').hidden,true);
+  assert.equal(f.node('lobby').hidden,false);
+});
+
+test('renderer readiness updates the game status without overwriting Pygbag status',()=>{
+  const f=fixture();
+  f.node('status').textContent='Downloading...';
+  f.bridge.readyRenderer();
+  assert.equal(f.node('online-status').textContent,'引擎已就绪，请输入房间码');
+  assert.equal(f.node('status').textContent,'Downloading...');
+});
+
+test('disconnected player is not shown as an orientation mismatch',()=>{
+  const f=fixture();
+  f.bridge.readyRenderer();
+  const s=state(2);
+  s.players[0].connected=true;
+  s.players[0].orientation='landscape';
+  s.players.push({slot:2,connected:false,orientation:null});
+  s.paused=true;
+  s.pause_reason='disconnected';
+  f.context.renderState(s);
+  assert.equal(f.node('orientation-warning').hidden,true);
+  assert.match(f.node('online-status').textContent,/等待队友重新连接/);
+});

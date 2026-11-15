@@ -33,7 +33,7 @@ class Peer:
 
 class Room:
     def __init__(self, factory=None, code=None):
-        self.code = code or secrets.token_hex(3).upper()
+        self.code = code or f"{secrets.randbelow(10_000):04d}"
         self.factory = factory
         self.players = []
         self.game = None

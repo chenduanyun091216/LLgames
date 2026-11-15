@@ -16,7 +16,7 @@ class Bridge {
     this.schedule = options.schedule || ((fn, ms) => setTimeout(fn, ms));
   }
   connect(code) {
-    this.disconnect(); this.retryCount = 0; this.lastError = ''; this.stopped = false; this.code = code.toUpperCase().trim();
+    this.disconnect(); this.retryCount = 0; this.lastError = ''; this.stopped = false; this.code = code.trim();
     this.open();
   }
   open() {

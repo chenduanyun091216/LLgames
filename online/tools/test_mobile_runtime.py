@@ -80,23 +80,21 @@ class Client:
                 error = await self.page.locator('#error').inner_text()
                 if '加载失败' in error:
                     raise AssertionError(f'{self.label}: {error}')
-            box = self.page.locator('#infobox')
-            if await box.count() and await box.is_visible():
-                text = await box.inner_text()
-                if 'click/touch' in text and not tapped:
-                    await box.tap()
-                    tapped = True
+            launch = self.page.locator('#launch-game')
+            if not tapped and await launch.is_visible():
+                await launch.click()
+                tapped = True
             await asyncio.sleep(.2)
         raise AssertionError(f'{self.label}: real WASM/Pygame renderer not ready in {timeout}s')
 
     async def join(self, code, slot):
         await self.page.locator('#code').fill(code)
-        await self.page.locator('#connect').tap()
+        await self.page.locator('#connect').click()
         await until(lambda: self.state is not None and len(self.state['players']) >= slot,
                     f'{self.label} joins room')
         # On reconnect the match is already playing, so the lobby/#players is
         # correctly hidden. The live status remains visible in both phases.
-        await self.page.locator('#status').filter(has_text=f' · P{slot} · ').wait_for(state='visible')
+        await self.page.locator('#online-status').filter(has_text=f' · P{slot} · ').wait_for(state='visible')
 
 
 async def screenshot(client, output, name):
@@ -110,6 +108,10 @@ async def check_canvas(client):
     box = await canvas.bounding_box()
     width,height=client.state['world_size']
     assert box and abs(box['width'] / box['height'] - width/height) < .015, box
+    controls = client.page.locator('#controls')
+    if await controls.is_visible():
+        overlay = await controls.bounding_box()
+        assert all(abs(overlay[key] - box[key]) < 1 for key in ('x', 'y', 'width', 'height')), (box, overlay)
     assert await canvas.get_attribute('width') == str(width)
     assert await canvas.get_attribute('height') == '720'
     # Screenshot pixels, not a fabricated canvas or a readiness-only claim.
@@ -118,6 +120,22 @@ async def check_canvas(client):
     assert variation > 8, f'{client.label}: canvas appears blank (variation={variation:.2f})'
     return {'css_width': round(box['width'], 2), 'css_height': round(box['height'], 2),
             'pixel_stddev': round(variation, 2)}
+
+
+async def keyboard_play(client, room):
+    page = client.page
+    assert await page.locator('#stick').is_hidden()
+    assert await page.locator('#shoot').is_hidden()
+    before = room.snapshot()['world']['players'][0]
+    await page.keyboard.down('d')
+    await page.keyboard.down('Space')
+    try:
+        await until(lambda: room.snapshot()['world']['players'][0]['x'] > before['x'] and
+                    room.snapshot()['world']['players'][0]['last_shot_time'] > before['last_shot_time'],
+                    'desktop movement and firing reach the server')
+    finally:
+        await page.keyboard.up('Space')
+        await page.keyboard.up('d')
 
 
 async def multi_touch(client, context, room, slot):
@@ -155,8 +173,9 @@ async def run(args, report):
     if not index.is_file():
         raise RuntimeError('Build missing. Run python -m online.tools.build_web first.')
     report['index_sha256'] = hashlib.sha256(index.read_bytes()).hexdigest()
-    report['scope'] = 'Actual Pygbag build; two Chromium mobile touch emulators, not physical phones'
-    app = create_app(code='MOBILE12')
+    report['scope'] = ('Actual Pygbag build; desktop P1 and emulated touch P2' if args.desktop_p1
+                       else 'Actual Pygbag build; two emulated touch clients')
+    app = create_app(code='0123')
     room = app[ROOM_KEY]
     runner = web.AppRunner(app)
     await runner.setup()
@@ -178,9 +197,11 @@ async def run(args, report):
         report['browser_version'] = browser.version
         contexts = []
         viewport = {'width':844,'height':390} if args.orientation=='landscape' else {'width':390,'height':844}
+        desktop_viewport = {'width':1280,'height':720} if args.orientation=='landscape' else {'width':650,'height':900}
         for slot in (1,2):
-            context = await browser.new_context(viewport=viewport, is_mobile=True,
-                                                has_touch=True, device_scale_factor=1)
+            touch = slot != 1 or not args.desktop_p1
+            context = await browser.new_context(viewport=viewport if touch else desktop_viewport, is_mobile=touch,
+                                                has_touch=touch, device_scale_factor=1)
             contexts.append(context)
             client = Client(await context.new_page(), f'P{slot}')
             clients.append(client)
@@ -190,24 +211,28 @@ async def run(args, report):
             await screenshot(client, args.output, f'p{slot}-lobby')
             await client.join(room.code, slot)
             await client.page.wait_for_function("document.querySelector('#ready')?.disabled === false")
-            await client.page.locator('#ready').tap()
+            await client.page.locator('#ready').click()
             await until(lambda: room.players[slot - 1].ready, f'P{slot} ready')
             report['checks'].append(f'P{slot}: real renderer loaded, joined and readied')
         p1, p2 = clients
         await p1.page.locator('#difficulty').select_option('easy')
-        await p1.page.locator('#start').tap()
+        await p1.page.locator('#start').click()
         await until(lambda: all(c.state and c.state['phase'] == 'playing' and
                                not c.state['paused'] for c in clients), 'both clients running')
         for slot, (client, context) in enumerate(zip(clients, contexts), 1):
             await client.page.locator('#controls').wait_for(state='visible')
-            await multi_touch(client, context, room, slot)
-            report['checks'].append(f'P{slot}: simultaneous joystick/fire, server movement/fire, release reset')
+            if slot == 1 and args.desktop_p1:
+                await keyboard_play(client, room)
+                report['checks'].append('P1: desktop joystick hidden, keyboard moves and fires on server')
+            else:
+                await multi_touch(client, context, room, slot)
+                report['checks'].append(f'P{slot}: simultaneous joystick/fire, server movement/fire, release reset')
             report['canvases'][f'p{slot}-initial'] = await check_canvas(client)
             await screenshot(client, args.output, f'p{slot}-playing')
         assert p1.state['match_id'] == p2.state['match_id']
         report['checks'].append('Both clients receive the same match')
 
-        await p1.page.locator('[data-action="shop_open"]').tap()
+        await p1.page.locator('[data-action="shop_open"]').click()
         await until(lambda: all(c.state and c.state.get('pause_reason') == 'shop' for c in clients),
                     'shop pause reaches both clients')
         for client in clients:
@@ -216,10 +241,10 @@ async def run(args, report):
         await asyncio.sleep(.4)
         assert room.game.tick == tick, 'Simulation advanced while both shops were open'
         await screenshot(p1, args.output, 'p1-shop-paused')
-        await p1.page.locator('[data-action="shop_close"]').tap()
+        await p1.page.locator('[data-action="shop_close"]').click()
         await asyncio.sleep(.2)
         assert room.game.tick == tick, 'Closing only one shop resumed the game'
-        await p2.page.locator('[data-action="shop_close"]').tap()
+        await p2.page.locator('[data-action="shop_close"]').click()
         await until(lambda: room.game.tick > tick, 'closing both shops resumes game')
         report['checks'].append('Shop pauses both clients; one close stays paused; both close resumes')
 
@@ -242,9 +267,9 @@ async def run(args, report):
         await screenshot(p2, args.output, 'p2-reconnected')
         report['checks'].append('Real reload pauses match; original P2 reconnects and preserves match')
 
-        rotated={'width':viewport['height'],'height':viewport['width']}
         for slot,client in enumerate(clients,1):
-            await client.page.set_viewport_size(rotated)
+            original = client.page.viewport_size
+            await client.page.set_viewport_size({'width':original['height'],'height':original['width']})
             await until(lambda: room.pause_reason()=='orientation_mismatch','rotation pauses authority')
             tick=room.game.tick
             await asyncio.sleep(.2)
@@ -252,7 +277,7 @@ async def run(args, report):
             assert await client.page.locator('#controls').is_hidden()
             report['canvases'][f'p{slot}-rotated']=await check_canvas(client)
             await screenshot(client,args.output,f'p{slot}-rotated')
-            await client.page.set_viewport_size(viewport)
+            await client.page.set_viewport_size(original)
             await until(lambda: not room.pause_reason() and room.game.tick>tick,'matching orientation resumes')
         report['checks'].append(f'Both clients use {args.orientation}; either rotation pauses authority, geometry stays fixed, matching restores play')
         for client in clients:
@@ -286,6 +311,7 @@ async def run(args, report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--orientation',choices=('landscape','portrait'),default='landscape')
+    parser.add_argument('--desktop-p1', action='store_true', help='Use a keyboard desktop client for P1')
     parser.add_argument('--output', type=Path, default=Path('online/.test-mobile-runtime'))
     parser.add_argument('--timeout', type=int, default=180, help='Real renderer startup limit in seconds')
     browser = parser.add_mutually_exclusive_group()

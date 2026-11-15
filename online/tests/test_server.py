@@ -22,7 +22,7 @@ class FakeGame:
 
 class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.client=TestClient(TestServer(create_app(FakeGame, code='ABC123')))
+        self.client=TestClient(TestServer(create_app(FakeGame, code='0123')))
         await self.client.start_server()
         self.origin=str(self.client.make_url('/')).rstrip('/')
         self.room=self.client.app[ROOM_KEY]
@@ -37,7 +37,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
             if msg['type']==kind:
                 return msg
         self.fail('message not received')
-    async def join(self, token=None, code='ABC123'):
+    async def join(self, token=None, code='0123'):
         ws=await self.client.ws_connect('/ws', origin=self.origin)
         self.sockets.append(ws)
         msg=dict(type='hello',version=1,code=code)
@@ -73,7 +73,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(self.room.game.tick,tick)
         await b.close();await asyncio.sleep(.03)
         ws=await self.client.ws_connect('/ws',origin=self.origin);self.sockets.append(ws)
-        await ws.send_json(dict(type='hello',version=1,code='ABC123',token=wb['token']))
+        await ws.send_json(dict(type='hello',version=1,code='0123',token=wb['token']))
         self.assertEqual((await ws.receive_json(timeout=2))['type'],'welcome')
         tick=self.room.game.tick
         await asyncio.sleep(.06)
@@ -194,7 +194,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((2,'laser',None),self.room.game.actions)
 
     async def test_malformed_and_wrong_code(self):
-        a,msg=await self.join(code='wrong')
+        a,msg=await self.join(code='0124')
         self.assertEqual(msg['error'],'wrong_room_code')
         a,wa=await self.join()
         await a.send_json(dict(type='ready',ready=True,slot=1))
@@ -210,7 +210,7 @@ class RealAdapterTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from online.adapters.core_adapter import OnlineGame
-        self.client=TestClient(TestServer(create_app(OnlineGame, code='ABC123')))
+        self.client=TestClient(TestServer(create_app(OnlineGame, code='0123')))
         await self.client.start_server()
         self.origin=str(self.client.make_url('/')).rstrip('/')
         self.room=self.client.app[ROOM_KEY]

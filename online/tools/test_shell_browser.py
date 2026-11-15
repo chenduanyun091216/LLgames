@@ -28,8 +28,15 @@ async def main():
             browser=await p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,chromium_sandbox=True)
             page=await browser.new_page(viewport={'width':390,'height':844},has_touch=True)
             errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-            await page.goto(f'http://127.0.0.1:{port}/');await page.evaluate('LLOnline.readyRenderer()')
-            await page.fill('#code','ABCD');await page.click('#connect');await page.wait_for_function("document.querySelector('#start').disabled===false")
+            await page.goto(f'http://127.0.0.1:{port}/')
+            assert await page.locator('#code').is_hidden()
+            await page.evaluate('LLOnline.readyRenderer()')
+            await page.evaluate("window.cancelSDLKey = event => event.preventDefault(); document.addEventListener('keydown', cancelSDLKey)")
+            await page.locator('#code').click()
+            await page.keyboard.type('0123')
+            assert await page.locator('#code').input_value() == '0123'
+            await page.evaluate("document.removeEventListener('keydown', cancelSDLKey)")
+            await page.click('#connect');await page.wait_for_function("document.querySelector('#start').disabled===false")
             await page.click('#start');await page.wait_for_selector('#controls',state='visible')
             box=await page.locator('#canvas').bounding_box();assert abs(box['width']/box['height']-2/3)<.01
             await page.keyboard.down('KeyW');await page.keyboard.down('Space');await page.wait_for_timeout(100)

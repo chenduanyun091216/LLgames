@@ -37,7 +37,7 @@ def decode(raw):
     if kind == 'hello':
         if type(msg['version']) is not int or msg['version'] != VERSION:
             raise ProtocolError('unsupported_version')
-        if not isinstance(msg['code'], str) or len(msg['code']) > 32 or not msg['code'].isascii():
+        if not isinstance(msg['code'], str) or len(msg['code']) != 4 or not msg['code'].isascii() or not msg['code'].isdigit():
             raise ProtocolError('invalid_code')
         if 'token' in msg and (not isinstance(msg['token'], str) or len(msg['token']) > 128 or not msg['token'].isascii()):
             raise ProtocolError('invalid_token')
