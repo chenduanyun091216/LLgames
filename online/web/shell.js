@@ -81,7 +81,7 @@ function renderState(s) {
   $('result-detail').textContent=s.pause_reason==='server_error'?(bridge.slot===1?'请重新开始战役；本次进度将重置。':'请等待 P1 重新开始战役。'):'协作完成全部十一关普通战役，不含无限模式。';
   $('result').querySelector('button').disabled=bridge.slot!==1;
   const difficulty = $('difficulty').querySelector(`option[value="${s.difficulty}"]`)?.textContent;
-  const pauseMessages={disconnected:'等待队友重新连接',suspended:'等待队友返回游戏页面',orientation_mismatch:'等待双方屏幕方向一致',shop:'等待双方关闭商店',revive:'等待复活',server_error:'主机运行异常'};
+  const pauseMessages={disconnected:'等待队友重新连接',suspended:'等待队友返回游戏页面',orientation_mismatch:'等待双方屏幕方向一致',shop:'等待开店玩家关闭商店',revive:'等待复活',server_error:'主机运行异常'};
   $('online-status').textContent=`房间 ${bridge.code} · P${bridge.slot}${difficulty?' · 难度 '+difficulty:''} · 第 ${s.current_level||1}/${s.total_levels||11} 关${s.level_title?' '+s.level_title:''} · 金币 ${s.gold} · 生命 ${s.lives} | `+s.players.map(p=>`P${p.slot} ${p.alive?`${Math.ceil(p.hp)}/${p.max_hp}`:'等待复活'}`).join(' · ')+(s.paused?` | 已暂停：${pauseMessages[s.pause_reason]||'等待玩家'}`:'');
   const boss=s.world?.objects?.find(o=>o.id===s.world.boss)?.fields;
   if(!boss&&combatAvailable()) $('online-status').textContent+=` | Boss 倒计时 ${Math.ceil((s.boss_remaining_ms||0)/1000)} 秒`;

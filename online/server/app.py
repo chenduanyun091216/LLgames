@@ -4,7 +4,6 @@ import contextlib
 import ipaddress
 import json
 import logging
-from copy import deepcopy
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from online.shared.protocol import decode, ProtocolError, MAX_MESSAGE, VERSION
 
 STATIC_ROOT = Path(__file__).resolve().parents[1] / 'build' / 'web'
 ROOM_KEY = web.AppKey('room', object)
+HOST_KEY = web.AppKey('host', object)
 
 @dataclass
 class Peer:
@@ -28,8 +28,11 @@ class Peer:
     suspended: bool = False
     seq: int = -1
     last_input: float = 0
+    input_seq: int = -1
     queue: object = None
     sender: object = None
+    dropped_at: float = None
+    manual_pause: bool = False
 
 class Room:
     def __init__(self, factory=None, code=None):
@@ -42,7 +45,7 @@ class Room:
         self.orientation = None
         self.difficulty = 'medium'
         self.failed = False
-        self.last_state = None
+        self.last_state_json = None
 
     def clear_input(self):
         if self.game:
@@ -59,23 +62,26 @@ class Room:
     def pause_reason(self):
         if self.failed:
             return 'server_error'
-        if len(self.players) < 2 or any(p.ws is None for p in self.players):
+        minimum = 1 if self.game and getattr(self.game, 'infinite_mode', False) else 2
+        if len(self.players) < minimum or any(p.ws is None for p in self.players):
             return 'disconnected'
         if any(p.suspended for p in self.players):
             return 'suspended'
         if self.orientation not in WORLD_SIZES or any(p.orientation != self.orientation for p in self.players):
             return 'orientation_mismatch'
+        if any(p.manual_pause for p in self.players):
+            return 'manual_pause'
         return None
 
-    def start(self, difficulty):
+    def start(self, difficulty, **options):
         if self.factory is None:
             from online.adapters.core_adapter import OnlineGame
             factory = OnlineGame
         else:
             factory = self.factory
-        self.game = factory(difficulty=difficulty, orientation=self.orientation)
+        self.game = factory(difficulty=difficulty, orientation=self.orientation, **options)
         self.failed = False
-        self.last_state = None
+        self.last_state_json = None
         self.difficulty = difficulty
         self.match_id = secrets.token_hex(16)
         for p in self.players:
@@ -85,18 +91,18 @@ class Room:
     def snapshot(self):
         empty = {'tick':0, 'phase':'lobby', 'players':[], 'gold':0, 'lives':0, 'world':{}}
         if self.failed:
-            state = deepcopy(self.last_state or empty)
+            state = json.loads(self.last_state_json) if self.last_state_json else dict(empty)
         else:
             try:
                 state = self.game.snapshot() if self.game else empty
-                json.dumps(state, allow_nan=False)
-                self.last_state = deepcopy(state)
+                self.last_state_json = json.dumps(state, allow_nan=False, separators=(',', ':'))
             except Exception:
                 self.fail()
-                state = deepcopy(self.last_state or empty)
+                state = json.loads(self.last_state_json) if self.last_state_json else dict(empty)
         state = dict(state)
         game_players = {p['slot']:p for p in state.get('players', [])}
-        state['players'] = [dict(game_players.get(p.slot, {'slot':p.slot,'alive':True,'hp':0,'max_hp':0,'shop_open':False}), connected=p.ws is not None, ready=p.ready, orientation=p.orientation) for p in self.players]
+        state['players'] = [dict(game_players.get(p.slot, {'slot':p.slot,'alive':True,'hp':0,'max_hp':0,'shop_open':False}), connected=p.ws is not None, ready=p.ready, orientation=p.orientation,
+                                 input_seq=p.input_seq, input_age_ms=max(0, (time.monotonic() - p.last_input) * 1000)) for p in self.players]
         reason = self.pause_reason() or state.get('pause_reason')
         state.update(orientation=self.orientation, world_size=list(WORLD_SIZES[self.orientation]) if self.orientation else None, type='state', version=VERSION, match_id=self.match_id, difficulty=self.difficulty, paused=bool(reason or state.get('paused')), pause_reason=reason)
         return state
@@ -125,7 +131,7 @@ class Room:
                 except Exception:
                     self.fail()
             count += 1
-            if count % 3 == 0:
+            if count % 2 == 0:  # Publish 30 snapshots per second from the 60 Hz simulation.
                 self.broadcast()
             next_tick += 1/60
             if next_tick < now - .1:
@@ -189,10 +195,15 @@ class Room:
                 return 'players_not_ready'
             self.start(self.difficulty)
             return None
-        if self.pause_reason():
+        if kind == 'action' and msg['action'] in ('pause', 'unpause'):
+            peer.manual_pause = msg['action'] == 'pause'
+            self.clear_input()
+            return None
+        if self.pause_reason() and not (kind == 'action' and msg['action'] == 'shop_close'):
             return 'paused'
         if kind == 'input':
             peer.last_input = time.monotonic()
+            peer.input_seq = msg["seq"]
             self.game.set_input(peer.slot, msg['dx'], msg['dy'], msg['shoot'])
             return None
         return self.game.action(peer.slot, msg['action'], msg.get('key'))
@@ -217,7 +228,7 @@ async def guard(request, handler):
     if not allowed_host(request.host):
         raise web.HTTPForbidden(text='Host must be a loopback or private LAN IP')
     origin = request.headers.get('Origin')
-    if request.path == '/ws' and origin != f'{request.scheme}://{request.host}':
+    if (request.path == '/ws' or request.method == 'POST') and origin != f'{request.scheme}://{request.host}':
         raise web.HTTPForbidden(text='Same-origin browser connection required')
     response = await handler(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -238,7 +249,9 @@ async def send_states(peer):
         await ws.close()
 
 async def websocket(request):
-    room = request.app[ROOM_KEY]
+    host = request.app.get(HOST_KEY)
+    room = request.app[ROOM_KEY] if host is None else None
+    version = VERSION if host is None else host.version
     ws = web.WebSocketResponse(max_msg_size=MAX_MESSAGE, heartbeat=10, receive_timeout=30, compress=False)
     await ws.prepare(request)
     peer = None
@@ -246,13 +259,17 @@ async def websocket(request):
         await asyncio.wait_for(ws.send_json({'type':'error','error':message}), 2)
     try:
         first = await asyncio.wait_for(ws.receive(), 5)
-        hello = decode(first.data if first.type == WSMsgType.TEXT else None)
+        hello = decode(first.data if first.type == WSMsgType.TEXT else None, version)
         if hello['type'] != 'hello':
             raise ProtocolError('hello_required')
-        if not secrets.compare_digest(hello['code'], room.code):
+        if host is not None:
+            room, peer = host.admit(hello)
+        if room is None or not secrets.compare_digest(hello['code'], room.code):
             raise ProtocolError('wrong_room_code')
         token = hello.get('token')
-        if token:
+        if host is not None:
+            pass  # Admission is atomic in the unified host.
+        elif token:
             peer = next((p for p in room.players if secrets.compare_digest(p.token, token)), None)
             if peer is None:
                 raise ProtocolError('invalid_reconnect_token')
@@ -266,9 +283,10 @@ async def websocket(request):
             room.players.append(peer)
         peer.ws, peer.seq, peer.suspended = ws, -1, False
         peer.orientation = None
+        peer.dropped_at = None
         peer.last_input = 0
         peer.queue = asyncio.Queue(maxsize=1)
-        await ws.send_json({'type':'welcome','version':VERSION,'slot':peer.slot,'token':peer.token,'match_id':room.match_id})
+        await ws.send_json({'type':'welcome','version':version,'slot':peer.slot,'token':peer.token,'match_id':room.match_id, **({'room_id':room.id} if host else {})})
         peer.sender = asyncio.create_task(send_states(peer))
         room.clear_input()
         room.broadcast()
@@ -281,7 +299,9 @@ async def websocket(request):
             last = now
             if credit < 0:
                 raise ProtocolError('rate_limit')
-            msg = decode(incoming.data)
+            msg = decode(incoming.data, version)
+            if host is not None and msg['type'] == 'orientation' and peer.slot == 1:
+                room.host_token = None
             try:
                 problem = room.handle(peer, msg)
             except Exception:
@@ -294,11 +314,13 @@ async def websocket(request):
             await error(str(exc) or 'timeout')
     finally:
         if peer is not None and peer.ws is ws:
+            sender = peer.sender
             peer.ws = None
-            if peer.sender:
-                peer.sender.cancel()
+            peer.dropped_at = host.clock() if host else time.monotonic()
+            if sender:
+                sender.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
-                    await peer.sender
+                    await sender
             room.clear_input()
             room.broadcast()
         await ws.close()
@@ -306,8 +328,10 @@ async def websocket(request):
 
 async def static_file(request):
     rel = request.match_info.get('path', '') or 'index.html'
-    target = (STATIC_ROOT / rel).resolve()
-    if not target.is_relative_to(STATIC_ROOT.resolve()) or not target.is_file():
+    host = request.app.get(HOST_KEY)
+    root = STATIC_ROOT if host is None else host.static_root
+    target = (root / rel).resolve()
+    if not target.is_relative_to(root.resolve()) or not target.is_file():
         raise web.HTTPNotFound()
     return web.FileResponse(target)
 

@@ -55,10 +55,13 @@ class RenderSurface:
         size = self.length(width), self.length(height)
         if min(size) == 0:
             return
+        destination = self.point(position[:2])
+        if not self.desktop_ui and not self.surface.get_clip().colliderect((*destination, *size)):
+            return
         if size != image.get_size():
             image = (_scaled_static_image(image, size) if static
                      else pygame.transform.smoothscale(image, size))
-        self.blit_pixels(image, self.point(position[:2]))
+        self.blit_pixels(image, destination)
 
     def mark(self, rect):
         rows = self._dirty_rows
@@ -86,20 +89,29 @@ class RenderSurface:
             if visible:
                 target.blit(background, visible.topleft, visible.move(-bounds.x, -bounds.y))
 
-    def composite_onto(self, target):
+    def composite_onto(self, target, *, offset=(0, 0), blit_flags=pygame.BLEND_ALPHA_SDL2):
         """Blend only touched tiles, then clear them for the next frame."""
         tile = self.tile
         bounds = self.surface.get_rect()
         self._previous_areas.clear()
         for row, mask in enumerate(self._dirty_rows):
+            height = tile
+            if mask and not self.desktop_ui:
+                # Identical rows cover exactly the same pixels; merge their SDL calls.
+                next_row = row + 1
+                while next_row < len(self._dirty_rows) and self._dirty_rows[next_row] == mask:
+                    self._dirty_rows[next_row] = 0
+                    height += tile
+                    next_row += 1
             while mask:
                 left = (mask & -mask).bit_length() - 1
                 end = left
                 while mask & (1 << end):
                     end += 1
                 mask &= ~(((1 << (end - left)) - 1) << left)
-                area = pygame.Rect(left * tile, row * tile, (end - left) * tile, tile).clip(bounds)
-                target.blit(self.surface, area.topleft, area, special_flags=pygame.BLEND_ALPHA_SDL2)
+                area = pygame.Rect(left * tile, row * tile, (end - left) * tile, height).clip(bounds)
+                destination = (area.x + offset[0], area.y + offset[1])
+                target.blit(self.surface, destination, area, special_flags=blit_flags)
                 self.surface.fill((0, 0, 0, 0), area)
                 self._previous_areas.append(area)
             self._dirty_rows[row] = 0

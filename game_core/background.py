@@ -77,6 +77,28 @@ def scrolling_background_art(level, size, progress):
     return None
 
 
+def draw_scrolling_background_art(target, offset, level, size, progress):
+    panorama = _background_panorama(level, size)
+    if panorama is None:
+        return False
+    position = (panorama.get_height() - size[1]) * (1 - max(0, min(1, progress)))
+    y = math.floor(position)
+    opacity = round((position - y) * 255)
+    if opacity == 255:
+        y, opacity = y + 1, 0
+    target.blit(_panorama_frame(panorama, size, y), offset)
+    if opacity:
+        # Blend adjacent crops to translate the panorama by a fraction of a pixel.
+        next_row = _panorama_frame(panorama, size, y + 1)
+        original_alpha = next_row.get_alpha()
+        next_row.set_alpha(opacity)
+        try:
+            target.blit(next_row, offset, special_flags=pygame.BLEND_ALPHA_SDL2)
+        finally:
+            next_row.set_alpha(original_alpha)
+    return True
+
+
 def make_background(level=1, *, art_size=None):
     cache_key = (level, config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
     # Prepare the display-sized art even if a logical surface survived a previous visit.

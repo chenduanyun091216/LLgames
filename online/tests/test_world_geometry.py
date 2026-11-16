@@ -28,12 +28,22 @@ class WorldGeometryTests(unittest.TestCase):
                         view.apply(snapshot, slot)
                         view.draw()
                         self.assertEqual(view.surface.get_size(), size)
-                        self.assertEqual(config.GAME_AREA_RIGHT, 720 if orientation == 'landscape' else 480)
+                        self.assertEqual((config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT),
+                                         (180, 780) if orientation == 'landscape' else (0, 480))
                         self.assertEqual(config.GAME_AREA_BOTTOM, 591)
                         self.assertEqual(view.view.boss.x, game.boss.x)
                         self.assertEqual(view.view.player.slot, slot)
                     game.step()
                     self.assertEqual((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), size)
+
+    def test_two_players_can_reach_the_expanded_landscape_edges(self):
+        game = OnlineGame()
+        game.set_input(1, -1, 0, False)
+        game.set_input(2, 1, 0, False)
+        for _ in range(80):
+            game.step()
+        left, right = (player.rect() for player in game.all_players)
+        self.assertEqual((left.left, right.right), (180, 780))
 
     def test_orientation_changes_geometry_not_damage_speed_or_hp(self):
         landscape = OnlineGame('hard', orientation='landscape')

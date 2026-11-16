@@ -28,14 +28,14 @@
 - 两位都已准备后，P1 才能 start；新 match_id 隔离旧输入/旧渲染对象。
 - input 和一次性 action 使用每连接单调 seq；输入超400ms过期清零。
 - 断线/隐藏暂停整个世界，重新连接/回前台后恢复。只有一份权威状态，没有房主迁移。
-- 商店是双方关闭确认，不是任意一个关闭就恢复。
+- 商店由开店玩家结束；队友可以提前关闭自己的面板，战斗仍保持暂停。
 - 异常时记录服务端日志、清空输入、暂停并发送 server_error，不继续静默计算。
 
 ## 状态同步
 
 白名单列出每一种可视实体及字段，包括原动画时钟、Boss攻击姿态、技能owner、弹幕与预警。图片、Surface、Font、任意 Python属性不会被发送。稳定编号不是 `id(object)`，旧对象消失后客户端回收。客户端收到新对局会重建缓存。服务端不接受客户端视觉状态，伤害、金币、资源没有网络写入口。
 
-性能采样包含 JSON序列化但不代表手机帧率或真实网络延迟。当前采取完整快照、20Hz视觉状态、60Hz绘制，无预测/插值。客户端/真机验证是后续验收关卡，不能靠 Python 模拟或构建成功替代。
+性能采样包含 JSON序列化但不代表手机帧率或真实网络延迟。当前采取完整快照、30Hz视觉状态、60Hz绘制，无预测/插值。客户端/真机验证是后续验收关卡，不能靠 Python 模拟或构建成功替代。
 
 ## 十一关特殊视觉
 
@@ -48,4 +48,4 @@
 ## Shared orientation
 P1 selects `room_orientation` (`landscape` or `portrait`) before starting; selection resets both ready flags. Each browser independently reports its actual viewport aspect using `orientation` (including after reconnect). Room snapshots carry top-level `orientation` and `world_size`, and each player's actual `orientation`. Landscape uses 960×720 and portrait uses 480×720 for both authoritative simulation and presentation. The server rejects start/restart while either reported direction mismatches or is unknown. Midgame mismatch clears inputs and stops authoritative ticks. Hidden, disconnected, shop, and server-error pause states remain independent. Room geometry cannot change during play. Client reports are necessarily self-reported, not hardware attestation; slot/geometry/pause spoof fields are rejected. No Screen Orientation lock API is required.
 
-共享方向布局直接调用单机 `update_mobile_view`：横屏960×720的战斗区域为x=240..720，竖屏480×720为x=0..480，两者战斗底边y=591。实体与Boss缩放、弹速和碰撞也沿用同一方向下的单机规则；不会把横屏中心战场扩成全屏。两名玩家使用相同权威方向。
+共享方向布局直接调用单机 `update_mobile_view`：横屏960×720的战斗区域为x=180..780，竖屏480×720为x=0..480，两者战斗底边y=591。实体与Boss缩放、弹速和碰撞也沿用同一方向下的单机规则，横屏两侧保留触控空间。两名玩家使用相同权威方向。

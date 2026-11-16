@@ -13,6 +13,16 @@ from game_core.sprites import (make_player_surface, make_fire_player_surface,
 from online.shared.world import WORLD_SIZES, configure_world
 from .snapshot import SCHEMA, CLASSES, COLLECTIONS, GAME_FIELDS, DATA_KEYS, DEFINITION_KEYS
 
+def _restore_value(v, live):
+    # A recursive local closure retains the whole visual frame until cyclic GC.
+    if isinstance(v,dict):
+        if set(v)=={'ref'}: return live[v['ref']]
+        if any(k not in DATA_KEYS for k in v): raise ValueError('Unknown data field')
+        return {k:_restore_value(item, live) for k,item in v.items()}
+    if isinstance(v,list): return [_restore_value(item, live) for item in v]
+    if v is None or type(v) in (bool,str,int,float): return v
+    raise ValueError('Non-JSON visual value')
+
 @lru_cache(maxsize=2)
 def _orochi_fire_art(gold):
     # Rebuild the two original resource variants once, never once per frame.
@@ -42,8 +52,189 @@ class _View(Game):
         super()._draw_invincible_shield(player)
         self.player_invincible_until = before
 
+class _IntegratedView(_View):
+    world_scrims = None
+
+    def _draw_scrim(self, alpha, color=(2, 16, 25)):
+        if self.world_scrims is not None:
+            self.world_scrims.append((alpha, color))
+        else:
+            super()._draw_scrim(alpha, color)
+
+    def _draw_boss_hud(self):
+        pass
+
+    def draw_local_hud(self):
+        super(_View, self)._draw_hud()
+        if self.boss:
+            super()._draw_boss_hud()
+        if self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
+            self.mobile_controls.draw(config.SCR, self)
+            fps = round(self.clock.get_fps())
+            self._draw_text_fit(f'FPS {fps or "--"}', self.font_tiny, (180, 220, 232),
+                                self.hud_fps_rect, align='right')
+
+    def draw_local_overlay(self, player):
+        if self.exit_confirmation or self.state in (GameState.PAUSED, GameState.PAID_REVIVE):
+            self._draw_pause_overlay(shade=82 if self.state == GameState.PAUSED else 145)
+        elif self.state == GameState.SHOP:
+            self._draw_shop_overlay()
+        elif self.state == GameState.INFINITE_CONTINUE:
+            self._draw_infinite_continue()
+        elif self.state == GameState.INFINITE_COUNTDOWN:
+            self.infinite_countdown_end = pygame.time.get_ticks() + player['continue_ms']
+            self._draw_infinite_countdown()
+        elif self.state == GameState.GAME_OVER:
+            self._draw_game_over()
+        elif self.state == GameState.VICTORY:
+            self._draw_victory()
+
+    def _handle_hud_click(self, position):
+        left, hp, right = self._hud_controls()
+        if left.collidepoint(position) or right.collidepoint(position):
+            self.lan.message('仅开局可选关')
+            return True
+        if hp.collidepoint(position):
+            self.lan.send('rage')
+            return True
+        return False
+
+    def _buy_or_equip_shop_item(self, category, key):
+        self.lan.send(category, key)
+
+    def _open_shop(self):
+        self.lan.send('shop_open')
+
+    def _close_shop(self):
+        self.lan.send('shop_close')
+
+    def _paid_revive(self):
+        self.lan.send('revive')
+
+    def _continue_infinite(self):
+        self.lan.send('continue')
+
+    def _upgrade_weapon(self, key):
+        self.lan.send('upgrade', key)
+
+    def _handle_mobile_action(self, action):
+        if action == 'pause':
+            self.lan.send('pause')
+        elif action.startswith(('weapon:', 'character:')):
+            category, key = action.split(':', 1)
+            self.lan.send(category, key)
+        elif action in ('skill1', 'skill2', 'laser', 'dart'):
+            self.lan.send(action)
+        elif action == 'auto_fire':
+            self.mobile_controls.auto_fire = not self.mobile_controls.auto_fire
+        elif action == 'shop':
+            self._open_shop()
+
+    def _handle_click(self, pos):
+        if self.state == GameState.PAUSED:
+            resume, leave = self._choice_rects()
+            if resume.collidepoint(pos):
+                self.lan.send('unpause')
+                return
+            if leave.collidepoint(pos):
+                self.lan.exit_confirmation = True
+                return
+        if self.state in (GameState.INFINITE_CONTINUE, GameState.GAME_OVER, GameState.PAID_REVIVE):
+            if self.state == GameState.INFINITE_CONTINUE:
+                quit_rect = pygame.Rect(config.SCREEN_WIDTH//2+20, config.SCREEN_HEIGHT//2+70, 150, 46)
+            elif self.state == GameState.PAID_REVIVE:
+                quit_rect = self._choice_rects()[1]
+            else:
+                retry, quit_rect = self._game_over_choice_rects()
+                if retry.collidepoint(pos):
+                    self.lan.send('restart')
+                    return
+            if quit_rect.collidepoint(pos):
+                self.lan.leave()
+                return
+        super()._handle_click(pos)
+
+    def handle_local_events(self, events):
+        from game_core.game import DESKTOP_HUD_KEYS, DESKTOP_BATTLE_KEYS, DESKTOP_WEAPON_KEYS
+        active = self.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
+        for event in events:
+            pos = None
+            if event.type == pygame.FINGERDOWN:
+                pos = self.mobile_controls.event_position(event)
+            elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION) and not getattr(event, 'touch', False):
+                pos = config.window_to_game(event.pos)
+            clicked = event.type == pygame.FINGERDOWN or event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
+            key = event.key if event.type == pygame.KEYDOWN else None
+            if self.lan.exit_confirmation:
+                cancel, confirm = self._choice_rects()
+                if key == pygame.K_RETURN or clicked and pos is not None and confirm.collidepoint(pos):
+                    self.lan.leave()
+                elif key == pygame.K_ESCAPE or clicked and pos is not None and cancel.collidepoint(pos):
+                    self.lan.exit_confirmation = False
+                continue
+            if key == pygame.K_ESCAPE:
+                if self.state == GameState.SHOP:
+                    self._close_shop()
+                else:
+                    self.lan.exit_confirmation = True
+                continue
+            if active:
+                if key in (DESKTOP_HUD_KEYS[0], DESKTOP_HUD_KEYS[-1]):
+                    self.lan.message('仅开局可选关')
+                    continue
+                if key == DESKTOP_HUD_KEYS[1]:
+                    self.lan.send('rage')
+                    continue
+                if pos is not None and clicked and self._handle_hud_click(pos):
+                    continue
+                if event.type == pygame.MOUSEMOTION and pos is not None:
+                    left, _, right = self._hud_controls()
+                    if left.collidepoint(pos) or right.collidepoint(pos):
+                        self.lan.message('仅开局可选关')
+                if event.type in (pygame.FINGERDOWN, pygame.FINGERMOTION, pygame.FINGERUP):
+                    action = self.mobile_controls.handle_touch(event, self)
+                elif event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION) and not getattr(event, 'touch', False):
+                    action = self.mobile_controls.handle_mouse(event, self)
+                else:
+                    action = next((name for name, binding in DESKTOP_BATTLE_KEYS.items() if key == binding), None)
+                    if action is None:
+                        for name in ('skill1', 'skill2', 'laser', 'dart'):
+                            if key == self._key('p1_' + name):
+                                action = name
+                                break
+                    for weapon, binding in DESKTOP_WEAPON_KEYS.items():
+                        if key == binding:
+                            action = 'weapon:' + weapon
+                            break
+                    for name in config.CHARACTER_DEFS:
+                        if key == self._key('p1_char_' + name):
+                            self.lan.send('character', name)
+                            break
+                    if key in (self._key('p1_weapon_prev'), self._key('p1_weapon_next')):
+                        owned = self.player.owned_weapons
+                        if owned:
+                            index = owned.index(self.player.current_weapon) if self.player.current_weapon in owned else 0
+                            step = -1 if key == self._key('p1_weapon_prev') else 1
+                            self.lan.send('weapon', owned[(index + step) % len(owned)])
+                if action:
+                    self._handle_mobile_action(action)
+            elif clicked and pos is not None:
+                self._handle_click(pos)
+            elif key is not None:
+                if self.state == GameState.PAUSED and key in (pygame.K_RETURN, DESKTOP_BATTLE_KEYS['pause']):
+                    self.lan.send('unpause')
+                elif self.state in (GameState.GAME_OVER, GameState.INFINITE_CONTINUE, GameState.PAID_REVIVE) and key == pygame.K_n:
+                    self.lan.leave()
+                elif self.state == GameState.VICTORY and key in (pygame.K_RETURN, pygame.K_n):
+                    self.lan.leave()
+                elif self.state == GameState.GAME_OVER and key in (pygame.K_RETURN, pygame.K_SPACE):
+                    self.lan.send('restart')
+                else:
+                    self._handle_keydown(event)
+
+
 class Presentation:
-    def __init__(self, surface):
+    def __init__(self, surface, *, integrated=False, **view_options):
         self.orientation = next((key for key, size in WORLD_SIZES.items()
                                  if size == surface.get_size()), None)
         if self.orientation is None:
@@ -51,8 +242,11 @@ class Presentation:
         configure_world(self.orientation)
         config.SCR = surface
         self.surface = surface
-        self.view = _View(scroll_campaign_backgrounds=True)
-        self.view.mobile_controls.draw = lambda *args: None
+        self.view = (_IntegratedView if integrated else _View)(scroll_campaign_backgrounds=True, **view_options)
+        self.scene_state = self.view.state
+        self.integrated = integrated
+        if not integrated:
+            self.view.mobile_controls.draw = lambda *args: None
         self.objects = {}
         self.time_ms = 0
         self.local_slot = 1
@@ -107,7 +301,7 @@ class Presentation:
         if self.surface.get_size() != size:
             # The client may replace this with its SDL display surface before
             # apply; headless consumers still get a correctly sized renderer.
-            self.surface = pygame.Surface(size)
+            self.surface = pygame.Surface(size, pygame.SRCALPHA if self.integrated else 0)
             self.objects.clear()
             self._background_level = None
             self.view.bg_transition_prev = None
@@ -139,24 +333,18 @@ class Presentation:
             same_definition = all(getattr(old, attr, None) == r[attr] for attr in ('edef','bdef') if attr in r)
             live[r['id']] = old if type(old) is CLASSES[r['type']] and same_definition else self._construct(r)
         def value(v):
-            if isinstance(v,dict):
-                if set(v)=={'ref'}: return live[v['ref']]
-                if any(k not in DATA_KEYS for k in v): raise ValueError('Unknown data field')
-                return {k:value(item) for k,item in v.items()}
-            if isinstance(v,list): return [value(item) for item in v]
-            if v is None or type(v) in (bool,str,int,float): return v
-            raise ValueError('Non-JSON visual value')
+            return _restore_value(v, live)
         for r in records:
             obj = live[r['id']]
             old_character = getattr(obj,'character',None)
             # Full frames replace optional fields, rather than retaining a past
             # attack/clone phase when its authoritative attribute disappears.
             for k in SCHEMA[r['type']]:
-                if k not in r['fields']:
-                    try: delattr(obj, k)
-                    except AttributeError: pass
+                if k not in r['fields'] and hasattr(obj, k):
+                    delattr(obj, k)
             for attr in ('edef', 'bdef'):
-                if attr in r: setattr(obj, attr, value(r[attr]))
+                if attr in r and getattr(obj, attr, None) != r[attr]:
+                    setattr(obj, attr, value(r[attr]))
             for k,v in r['fields'].items(): setattr(obj,k,value(v))
             if isinstance(obj,E.Boss) and 'intro_until' not in r['fields']:
                 obj.intro_until=0
@@ -175,7 +363,7 @@ class Presentation:
                     obj.sprite_asset = asset
                     obj.breath_base = None
         previous_background = None
-        if self._background_level is not None and snap['game'].get('current_level') != self._background_level:
+        if self._background_level is not None and (snap['game'].get('infinite_background_level') if snap['game'].get('infinite_mode') else snap['game'].get('current_level')) != self._background_level:
             previous = self.view.scrolling_background(self.view.bg.get_size())
             previous_background = (previous if previous is not None else self.view.bg).copy()
         self.objects = live
@@ -192,17 +380,21 @@ class Presentation:
         if self.view.all_players: self.view.player = next((p for p in self.view.all_players if getattr(p,'slot',1)==local_slot),self.view.all_players[0])
         self.view.boss = live.get(snap.get('boss'))
         if self.time_ms < snap['game'].get('level_transition_end', 0):
-            self.view.state = GameState.LEVEL_TRANSITION
+            self.scene_state = GameState.LEVEL_TRANSITION
         else:
-            self.view.state = GameState.BOSS_FIGHT if self.view.boss else GameState.PLAYING
-        level = self.view.current_level
+            self.scene_state = GameState.BOSS_FIGHT if self.view.boss else GameState.PLAYING
+        self.view.state = self.scene_state
+        level = self.view.infinite_background_level if self.view.infinite_mode else self.view.current_level
         if level != self._background_level:
             self.view.bg = make_background(level)
             self.view.bg_transition_prev = previous_background if self.time_ms < self.view.bg_transition_until else None
             self._background_level = level
-        music = (level, bool(self.view.boss))
+        music = (level, bool(self.view.boss), self.view.infinite_mode, self.view.infinite_music_variant)
         if music != self._music_boss:
-            start_music(level,boss=music[1])
+            if self.view.infinite_mode:
+                start_music(level, boss=music[1], infinite=True, variant=music[3])
+            else:
+                start_music(level, boss=music[1])
             self._music_boss = music
         allowed_sounds = {'shoot_pistol','shoot_rifle','shoot_shotgun','shoot_sniper','hit','boss_hit','niu_shield_hit','niu_axe_impact',
             'coin','buy','error','level_up','game_over','boss_appear','fire_cast','ice_cast','player_hit',
@@ -215,9 +407,36 @@ class Presentation:
             if event.get('type') == 'sound' and event.get('key') in allowed_sounds:
                 play_sound(event['key'])
 
-    def draw(self):
+    def draw(self, target=None, *, clear=True):
         configure_world(self.orientation)
-        config.SCR = self.surface
+        config.SCR = target if target is not None else self.surface
         config.campaign_time_ms = self.time_ms
-        self.view.draw()
-        advance_music()
+        if self.integrated:
+            controls = self.view.mobile_controls
+            draw = controls.draw
+            controls.draw = lambda *args: None
+            self.scrims = []
+            self.view.world_scrims = self.scrims
+            previous_background = self.view.bg_transition_prev
+            self.view.bg_transition_prev = None
+            local_state = self.view.state
+            exit_confirmation = self.view.exit_confirmation
+            was_desktop = self.view.desktop_controls
+            try:
+                self.view.state = self.scene_state
+                self.view.exit_confirmation = False
+                self.view.desktop_controls = False
+                if clear:
+                    (target.surface if target is not None else self.surface).fill((0, 0, 0, 0))
+                self.view.draw(draw_background=False)
+            finally:
+                controls.draw = draw
+                self.view.world_scrims = None
+                self.view.state = local_state
+                self.view.exit_confirmation = exit_confirmation
+                if self.time_ms < self.view.bg_transition_until:
+                    self.view.bg_transition_prev = previous_background
+                self.view.desktop_controls = was_desktop
+        else:
+            self.view.draw()
+            advance_music()

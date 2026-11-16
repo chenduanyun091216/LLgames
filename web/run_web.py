@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """构建离线浏览器版并在局域网提供服务。"""
 import argparse
+import asyncio
 import gzip
 import hashlib
 import json
@@ -26,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / 'build'
 WEB_BUILD_DIR = ROOT / '.web-build'
 TLS_DIR = WEB_BUILD_DIR / 'tls'
+GAME_PORT = 8001
+SETUP_PORT = 8000
 STAGING = WEB_BUILD_DIR / 'ttgames'
 RESOURCE_CACHE = WEB_BUILD_DIR / 'resources'
 WEBROOT = BUILD / 'web-offline'
@@ -62,9 +65,16 @@ CDN_FILES = (
 )
 
 
+LAN_WEB_SCRIPTS = tuple(ROOT / 'online' / 'web' / name for name in ('bridge.js', 'integrated.js'))
+LAN_WEB_PYTHON = tuple(path for group in ('adapters', 'shared', 'client')
+                       for path in (ROOT / 'online' / group).glob('*.py')
+                       if path.name != 'native.py')
+
+
 def source_manifest():
     entries = []
     paths = [*SOURCE_FILES, *SHELL_FILES, Path(__file__), ROOT / 'requirements.txt']
+    paths.extend((*LAN_WEB_SCRIPTS, *LAN_WEB_PYTHON))
     paths.extend(sorted(IMAGE_SOURCE.rglob('*.png')))
     for source in CUTSCENE_SOURCES:
         paths.extend(sorted(path for path in source.iterdir() if path.is_file()))
@@ -194,6 +204,11 @@ def prepare_sources():
         shutil.copy2(source, package / source.name)
     (STAGING / 'main.py').write_text(
         'import asyncio\nimport pygame\nfrom game_core.main import main\nasyncio.run(main())\n', encoding='utf-8')
+    for source in LAN_WEB_PYTHON:
+        target = STAGING / source.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    (STAGING / 'online' / '__init__.py').touch()
     target_images = STAGING / 'assets' / 'images'
     target_images.mkdir(parents=True)
     hd_images = STAGING / 'assets' / 'images-hd'
@@ -212,7 +227,7 @@ def prepare_sources():
     shutil.copytree(cached_font_dir, font_dir, dirs_exist_ok=True)
     from fontTools import subset
     # Include all source characters plus basic Latin used by dynamic HUD numbers.
-    text = ''.join(path.read_text(encoding='utf-8') for path in SOURCE_FILES)
+    text = ''.join(path.read_text(encoding='utf-8') for path in (*SOURCE_FILES, *LAN_WEB_PYTHON))
     options = subset.Options()
     font = subset.load_font(str(font_dir / 'NotoSansCJKsc-Regular.otf'), options)
     subsetter = subset.Subsetter(options=options)
@@ -315,7 +330,17 @@ def finalize_webroot(pygbag_output):
                         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
                         f'<link rel="stylesheet" href="{shell_names[".css"]}">'
                         f'<script defer src="{shell_names[".js"]}"></script></head>')
+    lan_scripts = []
+    if SHELL_FILES[1].parent == WEB_SOURCE:
+        for source in LAN_WEB_SCRIPTS:
+            payload = source.read_bytes()
+            name = f'{source.stem}-{hashlib.sha256(payload).hexdigest()[:16]}.js'
+            (WEBROOT / name).write_bytes(payload)
+            lan_scripts.append(name)
+        html = html.replace('</head>', ''.join(f'<script defer src="{name}"></script>' for name in lan_scripts) + '</head>')
     html = html.replace('</body>', '<canvas id="ttgames-ui" aria-hidden="true"></canvas>'
+                        '<canvas id="ttgames-safe-area-fill" aria-hidden="true"></canvas>'
+                        '<small id="ttgames-version" hidden>Web __BUILD_VERSION__</small>'
                         '<div id="ttgames-offline" role="status"></div>'
                         '<button id="ttgames-fullscreen" type="button" aria-label="进入全屏" title="进入全屏">⛶</button>'
                         '<details id="ttgames-quality" hidden><summary aria-label="画质设置" title="画质设置">⚙</summary>'
@@ -338,7 +363,6 @@ def finalize_webroot(pygbag_output):
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()[:16]
     archive.rename(WEBROOT / f'ttgames-{digest}.tar.gz')
     html = html.replace('ttgames.tar.gz', f'ttgames-{digest}.tar.gz')
-    (WEBROOT / 'index.html').write_text(html, encoding='utf-8')
     for unused_archive in WEBROOT.glob('*.apk'):
         unused_archive.unlink()
     package_runtime()
@@ -346,7 +370,7 @@ def finalize_webroot(pygbag_output):
         if path.suffix in ('.wasm', '.data', '.js', '.py'):
             path.with_name(path.name + '.gz').write_bytes(gzip.compress(path.read_bytes(), compresslevel=6, mtime=0))
     precache = [
-        './', 'favicon.png', *shell_names.values(), f'ttgames-{digest}.tar.gz',
+        './', 'favicon.png', *shell_names.values(), *lan_scripts, f'ttgames-{digest}.tar.gz',
         f'{RUNTIME_PATH}/{PACKAGE_INDEX}', f'{RUNTIME_PATH}/{PYGAME_WHEEL}',
         *(cdn + name for name in ('pythons.js', 'browserfs.min.js', 'cpythonrc.py', 'empty.ogg',
                                   f'cpython{PYBUILD.replace(".", "")}/main.js',
@@ -355,6 +379,7 @@ def finalize_webroot(pygbag_output):
     ]
     sw = SHELL_FILES[2].read_text(encoding='utf-8')
     version = hashlib.sha256(html.encode() + sw.encode()).hexdigest()[:16]
+    (WEBROOT / 'index.html').write_text(html.replace('__BUILD_VERSION__', version), encoding='utf-8')
     sw = sw.replace('__BUILD_VERSION__', version).replace('__PRECACHE__', json.dumps(precache))
     (WEBROOT / 'sw.js').write_text(sw, encoding='utf-8')
     manifest = source_manifest()
@@ -582,41 +607,63 @@ def serve(host, port, tls=None, setup_port=8000, setup_certificate=None, cert=No
             setup_server.server_close()
 
 
+def load_lan_tls(cert, key, ca=None):
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(cert, key, password=lambda: b'')
+    if ca is None and cert.resolve() == (TLS_DIR / 'cert.pem').resolve():
+        local_ca = TLS_DIR / 'rootCA.pem'
+        if local_ca.is_file():
+            ca = local_ca
+    setup_certificate = None
+    if ca is not None:
+        pem = ca.read_text(encoding='ascii').strip()
+        if not re.fullmatch(r'-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----', pem):
+            raise ValueError('必须提供单个公共 PEM 证书')
+        ssl.create_default_context(cadata=pem)
+        setup_certificate = ssl.PEM_cert_to_DER_cert(pem)
+    return tls, setup_certificate
+
+
+def serve_lan_site(host, port, setup_port, tls, setup_certificate, cert):
+    from online.server.serve import serve as serve_lan
+
+    setup_server = None
+    try:
+        if tls and setup_certificate is not None:
+            page = (WEB_SOURCE / 'setup.html').read_text(encoding='utf-8')
+            page = page.replace('__GAME_PORT__', str(port)).encode('utf-8')
+            handler = partial(SetupHandler, page=page, certificate=setup_certificate)
+            setup_server = ThreadingHTTPServer((host, setup_port), handler)
+            threading.Thread(target=setup_server.serve_forever, daemon=True).start()
+        addresses = lan_addresses(cert if tls else None)
+        asyncio.run(serve_lan(host, port, root=WEBROOT, tls=tls, addresses=addresses))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if setup_server is not None:
+            setup_server.shutdown()
+            setup_server.server_close()
+
+
 def main():
     parser = argparse.ArgumentParser(description='构建并通过局域网 HTTPS 提供 TTgames 手机网页版本')
     parser.add_argument('--host', default='0.0.0.0')
-    parser.add_argument('--port', type=int, default=8001)
+    parser.add_argument('--port', type=int, default=GAME_PORT)
     parser.add_argument('--build-only', action='store_true')
     parser.add_argument('--force', action='store_true', help='强制重新构建网页资源')
     parser.add_argument('--cert', type=Path, default=TLS_DIR / 'cert.pem', help='HTTPS PEM 证书路径')
     parser.add_argument('--key', type=Path, default=TLS_DIR / 'key.pem', help='HTTPS PEM 私钥路径')
-    parser.add_argument('--setup-port', type=int, default=8000, help='证书安装入口的 HTTP 端口')
+    parser.add_argument('--setup-port', type=int, default=SETUP_PORT, help='证书安装入口的 HTTP 端口')
     parser.add_argument('--setup-ca', type=Path, help='供手机安装的根 CA 公共 PEM 证书')
     parser.add_argument('--http', action='store_true', help='使用普通 HTTP 调试，或在 HTTPS 反向代理后运行')
     args = parser.parse_args()
 
-    tls = None
-    setup_certificate = None
+    tls = setup_certificate = None
     if not args.build_only and not args.http:
-        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         try:
-            tls.load_cert_chain(args.cert, args.key, password=lambda: b'')
-        except OSError as exc:
-            parser.error(f'无法加载 HTTPS 证书或私钥：{exc}。请按 docs/网页版使用与部署.md 配置证书，或用 --http 调试。')
-        ca = args.setup_ca
-        if ca is None and args.cert.resolve() == (TLS_DIR / 'cert.pem').resolve():
-            local_ca = TLS_DIR / 'rootCA.pem'
-            if local_ca.is_file():
-                ca = local_ca
-        if ca is not None:
-            try:
-                pem = ca.read_text(encoding='ascii').strip()
-                if not re.fullmatch(r'-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----', pem):
-                    raise ValueError('必须提供单个公共 PEM 证书')
-                ssl.create_default_context(cadata=pem)
-                setup_certificate = ssl.PEM_cert_to_DER_cert(pem)
-            except (OSError, ValueError) as exc:
-                parser.error(f'无法加载供下载的根证书：{exc}')
+            tls, setup_certificate = load_lan_tls(args.cert, args.key, args.setup_ca)
+        except (OSError, ValueError) as exc:
+            parser.error(f'无法加载 HTTPS 证书：{exc}。请按 docs/网页版使用与部署.md 配置证书。')
 
     current = source_manifest()
     if args.force or not (WEBROOT / 'index.html').is_file() or not MANIFEST.is_file():
@@ -633,8 +680,7 @@ def main():
     else:
         print('复用已构建的离线网页包。')
     if not args.build_only:
-        serve(args.host, args.port, tls, args.setup_port, setup_certificate,
-              cert=args.cert if tls else None)
+        serve_lan_site(args.host, args.port, args.setup_port, tls, setup_certificate, args.cert)
 
 
 if __name__ == '__main__':

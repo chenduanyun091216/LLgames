@@ -120,6 +120,7 @@ SHOP_KEYPAD_KEYS = (pygame.K_KP1, pygame.K_KP2, pygame.K_KP3, pygame.K_KP4,
                     pygame.K_KP5, pygame.K_KP6, pygame.K_KP7, pygame.K_KP8)
 DESKTOP_HUD_KEYS = (pygame.K_LEFTBRACKET, pygame.K_p, pygame.K_RIGHTBRACKET)
 ACTOR_SCALE_MIN, ACTOR_SCALE_MAX, ACTOR_SCALE_STEP = 50, 150, 5
+ACTOR_BASE_SCALE = 1.25
 
 
 class Game:
@@ -132,6 +133,7 @@ class Game:
         self.campaign_ending = campaign_ending
         self.exit_confirmation = False
         self.actor_scale_percent = 100
+        self.on_return_home = None
         self.clock = pygame.time.Clock()
         self.font_large = make_font(48, bold=True)
         self.font_med = make_font(28, bold=True)
@@ -528,7 +530,7 @@ class Game:
                 self.boss = None
                 self.boss_projectiles.clear(); self.enemy_projectiles.clear()
                 self.enemies.clear(); self.bullets.clear()
-                self.spawn_interval = max(800, 1300 - 50 * (self.infinite_boss_index // 2))
+                self.spawn_interval = self._infinite_spawn_interval()
                 self.last_spawn_time = now + 1200 - self.spawn_interval
                 self._start_infinite_chapter(now)
             else:
@@ -738,7 +740,9 @@ class Game:
 
     # ═══ Game Flow ════════════════════════════════════════════════════════════
     def _activate_home_action(self, action):
-        if action == 'infinite':
+        if action == 'back' and self.on_return_home is not None:
+            self.on_return_home()
+        elif action == 'infinite':
             self._start_infinite_game()
         elif action == 'keys':
             self.state = GameState.KEY_SETTINGS
@@ -911,7 +915,9 @@ class Game:
         self.infinite_deaths = 0
         self.background_scroll_ticks = 0
         self.max_player_hp = 5; self.player_hp = self.max_player_hp
-        self.spawn_interval = 1300; self.min_spawn_interval = 800; self.spawn_decrease = 0
+        self.spawn_interval = config.INFINITE_PROGRESSION['wave_spawn_start_ms']
+        self.min_spawn_interval = config.INFINITE_PROGRESSION['wave_spawn_min_ms']
+        self.spawn_decrease = 0
         self.boss = None; self.boss_projectiles.clear(); self.enemy_projectiles.clear()
         self.enemies.clear(); self.bullets.clear(); self.coins.clear(); self.gift_boxes.clear(); self.gift_messages.clear(); self.explosions.clear()
         self.factory_link_attempts = set()
@@ -1166,18 +1172,24 @@ class Game:
         multiplier = self.difficulty.boss_hp_mult if self.difficulty.name == '自定义' else 1
         return math.ceil(self._campaign_value(config.CAMPAIGN_BOSS_HP) * multiplier)
 
-    def _infinite_boss_hp(self, index, cycle):
-        health_percent = 100 + 20 * min(cycle, 6)
-        return (config.INFINITE_BOSS_HP[index] * health_percent + 99) // 100
+    def _infinite_boss_hp(self):
+        first_round = config.INFINITE_BOSS_HP
+        if self.infinite_boss_index < len(first_round):
+            return first_round[self.infinite_boss_index]
+        chapters_past_first_round = self.infinite_boss_index + 1 - len(first_round)
+        return first_round[-1] + chapters_past_first_round * config.INFINITE_PROGRESSION['boss_hp_per_chapter']
 
     def _trigger_infinite_boss(self):
         boss_number = self.infinite_boss_index
         cycle, index = divmod(boss_number, len(config.INFINITE_BOSS_HP))
         bdef = BOSS_DEFS[index]
-        interval_percent = max(70, 100 - 5 * cycle)
+        progression = config.INFINITE_PROGRESSION
+        interval_percent = max(progression['boss_attack_min_percent'],
+                               100 - progression['boss_attack_reduction_per_round'] * cycle)
+        base_interval = config.INFINITE_BOSS_ATTACK_MS[-1 if cycle else index]
         bdef = {**bdef,
-                'fixed_hp': self._infinite_boss_hp(index, cycle),
-                'attack_interval': round(config.INFINITE_BOSS_ATTACK_MS[index] * interval_percent / 100),
+                'fixed_hp': self._infinite_boss_hp(),
+                'attack_interval': round(base_interval * interval_percent / 100),
                 'campaign_tier': 1, 'campaign_level': index + 1, 'damage_cap': 2}
         if bdef['key'] == 'boss_niu':
             bdef.update(shield_thresholds=(0.65, 0.30))
@@ -1491,6 +1503,16 @@ class Game:
         if self.water_temp_hp_until and now >= self.water_temp_hp_until:
             self.player_hp = min(self.player_hp, self.max_player_hp)
             self.water_temp_hp_until = 0
+
+    def _apply_water_heal(self, target, now):
+        if self.player_hp >= self.max_player_hp:
+            self._heal_player(1, temporary_ms=15000 if self.infinite_mode else 8000)
+        else:
+            self._heal_player(1)
+        if self.infinite_mode:
+            target.water_haste_until = now + 5000
+        self.player_invincible_until = max(self.player_invincible_until, now + (2000 if self.infinite_mode else 800))
+        self.water_heal_effects.append((target, now))
 
     def _schedule_next_gift(self, now):
         self.next_gift_time = now + random.randint(GIFT_DROP_MIN_MS, GIFT_DROP_MAX_MS)
@@ -1858,14 +1880,8 @@ class Game:
             play_sound('storm')
         elif st == 'water_heal':
             self._start_skill_effect(player, st, cd_ms, 5000 if self.infinite_mode else 0, now)
-            if self.player_hp >= self.max_player_hp:
-                self._heal_player(1, temporary_ms=15000 if self.infinite_mode else 8000)
-            else:
-                self._heal_player(1)
-            if self.infinite_mode:
-                player.water_haste_until = now + 5000
-            self.player_invincible_until = max(self.player_invincible_until, now + (2000 if self.infinite_mode else 800))
-            self.water_heal_effects.append((player, now))
+            for target in self.players:
+                self._apply_water_heal(target, now)
             play_sound('water_cast')
         elif st == 'water_boost':
             duration = 10000 if self.infinite_mode else 6000
@@ -2149,8 +2165,18 @@ class Game:
         limit = 7 if self.infinite_background_level in (9, 10) else 12
         return min(limit, 4 + self.infinite_boss_index // 3)
 
-    def _infinite_health_mult(self, now):
-        return 1.0 + 0.2 * min(self.infinite_boss_index // len(config.INFINITE_BOSS_HP), 6)
+    def _infinite_spawn_interval(self):
+        progression = config.INFINITE_PROGRESSION
+        return max(progression['wave_spawn_min_ms'], progression['wave_spawn_start_ms']
+                   - progression['wave_spawn_step_ms'] * (self.infinite_boss_index // 2))
+
+    def _infinite_health_mult(self):
+        chapters_in_later_rounds = self.infinite_boss_index - len(config.INFINITE_BOSS_HP)
+        if chapters_in_later_rounds < 0:
+            return 1.0
+        progression = config.INFINITE_PROGRESSION
+        return (progression['enemy_health_start_percent']
+                + progression['enemy_health_per_chapter'] * chapters_in_later_rounds) / 100
 
     def _infinite_damage_mult(self):
         return 1.0
@@ -3335,7 +3361,7 @@ class Game:
             self.infinite_boss_index += 1
             self.boss = None
             now = config.game_ticks()
-            self.spawn_interval = max(800, 1300 - 50 * (self.infinite_boss_index // 2))
+            self.spawn_interval = self._infinite_spawn_interval()
             self.last_spawn_time = now + 1200 - self.spawn_interval
             self._burst_remaining_enemies()
             self.enemy_projectiles.clear()
@@ -3593,8 +3619,7 @@ class Game:
             mini = Enemy(definition)
             mini.factory_kind = 'mini_boss'
             if self.infinite_mode:
-                cycle, index = divmod(self.infinite_boss_index, len(config.INFINITE_BOSS_HP))
-                mini.max_hp = self._infinite_boss_hp(index, cycle) * .16
+                mini.max_hp = self._infinite_boss_hp() * .16
             else:
                 mini.max_hp = self._campaign_boss_hp() * (.12, .16, .20)[self._campaign_tier()]
             mini.factory_patrol_direction = 1
@@ -3683,8 +3708,7 @@ class Game:
             e.attack_interval_min = min(amin, amax)
             e.attack_interval_max = max(amin, amax)
             e.attack_interval = random.randint(e.attack_interval_min, e.attack_interval_max)
-        now = config.game_ticks()
-        e.health_mult *= self._infinite_health_mult(now)
+        e.health_mult *= self._infinite_health_mult()
         if level in (9, 10):
             e.max_hp = edef['campaign_hp'] * e.health_mult
             if level == 9:
@@ -3974,7 +3998,7 @@ class Game:
         }
 
     def _mobile_menu_rects(self):
-        return menu_ui.home_rects()
+        return menu_ui.home_rects(self)
 
     def _mobile_shop_rects(self):
         return menu_ui.shop_rects(self)
@@ -4054,7 +4078,7 @@ class Game:
 
     def _draw_game(self):
         ui_labels = self._ui_labels
-        actor_scale = self.actor_scale_percent / 100
+        actor_scale = ACTOR_BASE_SCALE * self.actor_scale_percent / 100
         active = self.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
         if not active:
             self._ui_labels = None  # Keep all labels behind the modal, like the scene itself.
@@ -4650,10 +4674,8 @@ class Game:
         return tuple((pygame.Rect(x + 2, row_y, 42, 36), pygame.Rect(x + 108, row_y, 42, 36))
                      for row_y in (y - 91, y - 45))
 
-    def _draw_pause_overlay(self):
-        ov = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
-        ov.fill((0, 10, 28, 145))
-        config.SCR.blit(ov, (0, 0))
+    def _draw_pause_overlay(self, *, shade=145):
+        self._draw_scrim(shade, (0, 10, 28))
         settings = self.state == GameState.PAUSED and not self.exit_confirmation
         glass = settings or self.exit_confirmation
         pw, ph = 320, 228 if settings else 150
@@ -4809,7 +4831,7 @@ class Game:
         if not text or self.queue_ui_text(text, font, color, rect, align):
             return
         target = config.SCR
-        native = (self.desktop_controls or native_pixels) and isinstance(target, RenderSurface)
+        native = isinstance(target, RenderSurface) and (self.desktop_controls or native_pixels or target.desktop_ui)
         blit = target.blit
         shadow_offset = 2
         text = str(text)

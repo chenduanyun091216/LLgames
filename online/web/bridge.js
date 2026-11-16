@@ -3,6 +3,7 @@
 'use strict';
 class Bridge {
   constructor(options = {}) {
+    this.version = options.version || 1;
     this.WebSocket = options.WebSocket || root.WebSocket;
     this.location = options.location || root.location;
     this.storage = options.storage || root.sessionStorage;
@@ -28,19 +29,20 @@ class Bridge {
       if (generation !== this.generation) return;
       let token = null;
       try { token = this.storage.getItem('llonline:' + this.code); } catch (_) {}
-      ws.send(JSON.stringify({type:'hello', version:1, code:this.code, ...(token ? {token} : {})}));
+      ws.send(JSON.stringify({type:'hello', version:this.version, code:this.code, ...(token ? {token} : this.hostToken ? {host_token:this.hostToken} : {})}));
     };
     ws.onmessage = e => {
       if (generation !== this.generation) return;
       let data; try { data = JSON.parse(e.data); } catch (_) { return; }
       if (data.type === 'welcome') {
+        this.roomId = data.room_id; this.token = data.token;
         this.slot = data.slot; this.match = data.match_id; this.welcomed = true; this.retryCount = 0; this.lastError = '';
         try { this.storage.setItem('llonline:' + this.code, data.token); } catch (_) {}
         this.reportOrientation();
         if (this.isHidden()) this.action('suspend');
         this.onStatus('connected');
-      } else if (data.type === 'state' && data.version === 1) {
-        this.match = data.match_id; this.latest = JSON.stringify(data); this.onState(data);
+      } else if (data.type === 'state' && data.version === this.version) {
+        this.match = data.match_id; this.latest = e.data; this.onState(data);
       } else if (data.type === 'error') {
         const reason = data.code || data.error || '';
         this.lastError = reason;
@@ -49,9 +51,13 @@ class Bridge {
         this.onStatus(terminal ? 'stopped' : 'error', data.message || reason || '请求失败');
       }
     };
-    ws.onclose = () => {
+    ws.onclose = event => {
       if (generation !== this.generation || this.stopped) return;
-      this.welcomed = false; this.onStatus('disconnected');
+      this.welcomed = false;
+      if (this.version === 2 && event?.code === 1001) {
+        this.stopped = true; this.onStatus('ended', '房间已关闭'); return;
+      }
+      this.onStatus('disconnected');
       this.schedule(() => { if (!this.stopped && generation === this.generation) this.open(); }, Math.min(8000, 1500 * 2 ** Math.min(this.retryCount++, 3)));
     };
     ws.onerror = () => {};

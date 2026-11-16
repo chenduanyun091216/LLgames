@@ -38,6 +38,7 @@ class MobileWebTests(unittest.TestCase):
         self.addCleanup(sounds.set_music_volume_percent, sounds.music_volume_percent())
         for desktop in (False, True):
             game = Game(web=not desktop, desktop_controls=desktop)
+            self.assertEqual(game.actor_scale_percent, 100)
             game._begin_infinite_run(7)
             game._trigger_infinite_boss()
             game.enemies = [Enemy(config.ENEMY_DEFS[0])]
@@ -73,8 +74,10 @@ class MobileWebTests(unittest.TestCase):
                     if expected > 50:
                         click(zoom_in)
                     self.assertEqual(game.actor_scale_percent, expected)
-                    with patch('game_core.entities.blit_lit_sprite') as blit:
+                    with patch('game_core.entities.blit_lit_sprite') as blit, \
+                            patch.object(game.player, 'draw', wraps=game.player.draw) as draw_player:
                         game.draw(draw_background=False)
+                    self.assertAlmostEqual(draw_player.call_args.kwargs['visual_scale'], 1.25 * expected / 100)
                     widths.append([call.args[1].get_width() for call in blit.call_args_list])
                     self.assertEqual((game.player.rect(), game.enemies[0].rect(), game.boss.rect()), hitboxes)
                     self.assertEqual(game.state, GameState.PAUSED)
@@ -1807,9 +1810,9 @@ class MobileWebTests(unittest.TestCase):
                 game._move_player_from_controls(game.player, {}, pygame.time.get_ticks())
                 self.assertEqual(game.player.x, x)
 
-    def test_landscape_gift_boxes_spawn_inside_center_half(self):
+    def test_landscape_gift_boxes_spawn_inside_battle_area(self):
         config.update_mobile_view((844, 390))
-        left, right = config.SCREEN_WIDTH // 4, config.SCREEN_WIDTH * 3 // 4
+        left, right = 180, 780
         expected_x_bounds = (left + GiftBox.SIZE // 2, right - GiftBox.SIZE // 2)
         with patch('game_core.entities.random.uniform', return_value=config.SCREEN_WIDTH // 2) as choose_x:
             box = GiftBox()
@@ -1914,10 +1917,10 @@ class MobileWebTests(unittest.TestCase):
             for rect in self.game._mobile_shop_rects().values()
         ))
 
-    def test_landscape_confines_player_enemies_and_boss_to_center_half(self):
+    def test_landscape_confines_player_enemies_and_boss_to_battle_area(self):
         config.update_mobile_view((844, 390))
         self.game.resize_view()
-        left, right = config.SCREEN_WIDTH // 4, config.SCREEN_WIDTH * 3 // 4
+        left, right = 180, 780
 
         self.game.player.move(-config.SCREEN_WIDTH, 0)
         player_rect = self.game.player.rect()
@@ -1945,13 +1948,13 @@ class MobileWebTests(unittest.TestCase):
 
         config.update_mobile_view((844, 390))
         self.game.resize_view()
-        left, right = config.SCREEN_WIDTH // 4, config.SCREEN_WIDTH * 3 // 4
+        left, right = 180, 780
         self.assertGreaterEqual(enemy.rect().left, left)
         self.assertLessEqual(enemy.rect().right, right)
         self.assertGreaterEqual(self.game.boss.rect().left, left)
         self.assertLessEqual(self.game.boss.rect().right, right)
 
-    def test_landscape_keeps_large_and_growing_monsters_inside_center_half(self):
+    def test_landscape_keeps_large_and_growing_monsters_inside_battle_area(self):
         config.update_mobile_view((844, 390))
         left, right = config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT
 

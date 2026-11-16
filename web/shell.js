@@ -13,6 +13,111 @@
 
     const box = document.getElementById('infobox');
     const loading = document.getElementById('ttgames-loading');
+    const visibleViewport = window.visualViewport;
+    if (visibleViewport) {
+        const positionViewport = () => {
+            if (visibleViewport.width <= 0 || visibleViewport.height <= 0) return;
+            const style = document.documentElement.style;
+            style.setProperty('--game-viewport-left', `${visibleViewport.offsetLeft}px`);
+            style.setProperty('--game-viewport-top', `${visibleViewport.offsetTop}px`);
+            style.setProperty('--game-viewport-right', `${visibleViewport.offsetLeft + visibleViewport.width}px`);
+            style.setProperty('--game-viewport-bottom', `${visibleViewport.offsetTop + visibleViewport.height}px`);
+            if (loading.hidden) return;
+            style.setProperty('--loading-center-x', `${visibleViewport.offsetLeft + visibleViewport.width / 2}px`);
+            style.setProperty('--loading-center-y', `${visibleViewport.offsetTop + visibleViewport.height / 2}px`);
+            style.setProperty('--loading-visible-width', `${visibleViewport.width}px`);
+        };
+        visibleViewport.addEventListener('resize', positionViewport);
+        visibleViewport.addEventListener('scroll', positionViewport);
+        window.addEventListener('resize', positionViewport);
+        positionViewport();
+    }
+    const gameCanvas = document.getElementById('canvas');
+    if (/(?:\?|&)perf=1(?:&|$)/.test(window.location?.search || '')) {
+        const stats = document.createElement('output');
+        stats.id = 'ttgames-frame-stats';
+        stats.style.cssText = 'position:fixed;top:calc(var(--game-top, 0px) + 2px);left:4px;z-index:30;pointer-events:none;max-width:calc(100vw - 20px);' +
+            'font:12px monospace;color:white;background:#071b2bdd;padding:3px 6px';
+        document.body.append(stats);
+        let last = null, started = null, mode = '', intervals = [];
+        document.addEventListener('visibilitychange', () => {
+            last = started = null;
+            intervals = [];
+        });
+        window.ttgamesRecordFrame = currentMode => {
+            const now = performance.now();
+            if (document.hidden || currentMode !== mode) {
+                mode = currentMode;
+                last = started = null;
+                intervals = [];
+            }
+            if (document.hidden) return;
+            if (last !== null) intervals.push(now - last);
+            last = now;
+            if (started === null) started = now;
+            if (now - started < 1000 || !intervals.length) return;
+            const sorted = [...intervals].sort((a, b) => a - b);
+            const p95 = sorted[Math.ceil(sorted.length * .95) - 1];
+            const label = {single: '单人', lan: '联机', idle: '菜单/暂停'}[mode] || mode;
+            stats.textContent = `${label} · ${Math.round(intervals.length * 1000 / (now - started))} FPS` +
+                ` · 帧间隔 P95 ${p95.toFixed(1)} / 最大 ${sorted.at(-1).toFixed(1)} ms` +
+                ` · >50ms ${intervals.filter(value => value > 50).length}`;
+            const network = window.ttgamesLAN;
+            if (mode === 'lan' && network?.lastSnapshotAt != null) {
+                stats.textContent += ' · 网络最大间隔 ' + Math.round(network.maxSnapshotGap) +
+                    ' / 当前等待 ' + Math.round(now - network.lastSnapshotAt) + ' ms';
+                network.maxSnapshotGap = 0;
+            }
+            started = now;
+            intervals = [];
+        };
+    }
+    const safeAreaFill = document.getElementById('ttgames-safe-area-fill');
+    if (gameCanvas && typeof ResizeObserver !== 'undefined') {
+        const updateGameSize = () => {
+            window.ttgamesViewportWidth = gameCanvas.clientWidth;
+            window.ttgamesViewportHeight = gameCanvas.clientHeight;
+        };
+        new ResizeObserver(updateGameSize).observe(gameCanvas);
+        updateGameSize();
+        if (safeAreaFill) {
+            const ctx = safeAreaFill.getContext('2d');
+            if (ctx) {
+                let hasInsets = false;
+                const insetObserver = new ResizeObserver(() => {
+                    hasInsets = safeAreaFill.clientWidth > gameCanvas.clientWidth ||
+                                safeAreaFill.clientHeight > gameCanvas.clientHeight;
+                });
+                insetObserver.observe(gameCanvas);
+                insetObserver.observe(safeAreaFill);
+                window.ttgamesFillSafeArea = () => {
+                    if (!hasInsets) return;
+                    const visible = safeAreaFill.getBoundingClientRect();
+                    const game = gameCanvas.getBoundingClientRect();
+                    if (game.width >= visible.width && game.height >= visible.height) return;
+                    const width = Math.round(visible.width), height = Math.round(visible.height);
+                    const sourceWidth = gameCanvas.width, sourceHeight = gameCanvas.height;
+                    if (Math.min(width, height, sourceWidth, sourceHeight, game.width, game.height) <= 0) return;
+                    if (safeAreaFill.width !== width) safeAreaFill.width = width;
+                    if (safeAreaFill.height !== height) safeAreaFill.height = height;
+
+                    // Extend the edge pixels under the system insets while keeping the game area intact.
+                    const x = [0, Math.ceil(game.left - visible.left), Math.floor(game.right - visible.left), width];
+                    const y = [0, Math.ceil(game.top - visible.top), Math.floor(game.bottom - visible.top), height];
+                    const sx = [0, 0, sourceWidth - 1], sy = [0, 0, sourceHeight - 1];
+                    for (let row = 0; row < 3; row++) {
+                        for (let col = 0; col < 3; col++) {
+                            if (row === 1 && col === 1) continue;
+                            const w = x[col + 1] - x[col], h = y[row + 1] - y[row];
+                            if (w <= 0 || h <= 0) continue;
+                            ctx.drawImage(gameCanvas, sx[col], sy[row], col === 1 ? sourceWidth : 1,
+                                          row === 1 ? sourceHeight : 1, x[col], y[row], w, h);
+                        }
+                    }
+                };
+            }
+        }
+    }
     const progress = loading.querySelector('progress');
     const loadingStatus = loading.querySelector('.loading-status');
     const loadingPercent = loading.querySelector('.loading-percent');
@@ -171,13 +276,17 @@
 
     const canvas = document.getElementById('ttgames-ui');
     const ctx = canvas.getContext('2d');
+    const buildVersion = document.getElementById('ttgames-version');
     let previous = '';
     let previousLayout = '';
     let previousLabels = [];
     // The scene keeps its logical resolution; this separate layer draws glyphs at device resolution.
-    window.ttgamesDrawUI = (frame, width, height, inBattle, paused, cutscene = '') => {
+    window.ttgamesDrawUI = (frame, width, height, inBattle, paused, cutscene = '', home = false) => {
         if (!finished) finishProgress();
         loading.hidden = true;
+        if (buildVersion) buildVersion.hidden = !home;
+        const offlineStatus = document.getElementById('ttgames-offline');
+        if (offlineStatus) offlineStatus.hidden = inBattle || paused;
         button.hidden = Boolean(cutscene) || !request;
         button.toggleAttribute('data-menu', !inBattle);
         quality.hidden = !paused;
@@ -187,9 +296,8 @@
             const pauseRight = canvas.clientWidth / 2 + 160 * scaleX;
             const style = getComputedStyle(quality);
             const menuWidth = parseFloat(style.getPropertyValue('--quality-menu-width'));
-            const safeRight = parseFloat(style.getPropertyValue('--quality-safe-right'));
-            quality.toggleAttribute('data-side', canvas.clientWidth - pauseRight >= menuWidth + 20 + safeRight);
-            quality.style.left = `${canvas.clientWidth / 2 + 100 * scaleX}px`;
+            quality.toggleAttribute('data-side', canvas.clientWidth - pauseRight >= menuWidth + 20);
+            quality.style.setProperty('--quality-left', `${canvas.clientWidth / 2 + 100 * scaleX}px`);
             quality.style.setProperty('--quality-top', `${canvas.clientHeight / 2 - 139 * scaleY}px`);
             quality.style.setProperty('--pause-right', `${pauseRight}px`);
             quality.style.setProperty('--pause-bottom', `${canvas.clientHeight / 2 + 75 * scaleY}px`);

@@ -28,6 +28,45 @@ class CoOpRulesTests(unittest.TestCase):
         self.assertIs(self.p1.owned_weapons, self.p2.owned_weapons)
         self.assertIs(self.p1.owned_characters, self.p2.owned_characters)
 
+    def test_weapon_upgrade_is_shared_and_used_by_teammate(self):
+        for mode in ('campaign', 'infinite'):
+            with self.subTest(mode=mode):
+                game = OnlineGame(mode=mode)
+                buyer, teammate = game.all_players
+                if 'rifle' not in buyer.owned_weapons:
+                    buyer.owned_weapons.append('rifle')
+                buyer.gold = 1000
+                cost = game._weapon_upgrade_cost('rifle')
+
+                self.assertIsNone(game.action(1, 'shop_open'))
+                self.assertEqual(game.action(1, 'upgrade', 'rifle'), '已加强至 Lv.1')
+                self.assertEqual(teammate.gold, 1000 - cost)
+                self.assertEqual(teammate.weapon_upgrades.get('rifle'), 1)
+                self.assertEqual(game._weapon_upgrade_cost('rifle'), cost * 2)
+                world = game.snapshot()['world']
+                self.assertEqual([p['weapon_upgrades'].get('rifle') for p in world['players']], [1, 1])
+
+                self.assertIsNone(game.action(2, 'weapon', 'rifle'))
+                game.action(1, 'shop_close')
+                self.assertTrue(game._shoot(config.game_ticks(), teammate))
+                base = config.CAMPAIGN_BULLET_DAMAGE['rifle'] if mode == 'campaign' else 1.3
+                self.assertAlmostEqual(game.bullets[-1].damage, base * 1.1)
+
+    def test_infinite_departure_releases_radiation_equipment_for_teammate(self):
+        for leaving in (1, 2):
+            with self.subTest(leaving=leaving):
+                game = OnlineGame(mode='infinite')
+                remaining = 3 - leaving
+                self.assertIsNone(game.action(leaving, 'character', 'radiation'))
+                self.assertIsNone(game.action(leaving, 'weapon', 'rifle'))
+                self.assertIsNotNone(game.action(remaining, 'character', 'radiation'))
+                self.assertIsNotNone(game.action(remaining, 'weapon', 'rifle'))
+                game.remove_player(leaving)
+                self.assertIsNone(game.action(remaining, 'character', 'radiation'))
+                self.assertIsNone(game.action(remaining, 'weapon', 'rifle'))
+                self.assertIsNone(game.action(remaining, 'laser'))
+                self.assertEqual(game.radiation_lasers[0].owner.slot, remaining)
+
     def test_two_inputs_move_independently_and_normalize_diagonal(self):
         a, b = self.p1.x, self.p2.x
         self.g.set_input(1, 1, 0, True)
@@ -49,14 +88,30 @@ class CoOpRulesTests(unittest.TestCase):
         self.g.step()
         self.assertEqual(enemy.y, 151.25)
 
-    def test_either_shop_opener_requires_both_to_close(self):
-        self.assertIsNone(self.g.action(2, 'shop_open'))
-        self.assertTrue(all(p.shop_open for p in self.g.all_players))
-        self.g.step(); self.assertEqual(self.g.tick, 0)
-        self.g.action(2, 'shop_close'); self.g.step()
-        self.assertTrue(self.g.paused); self.assertEqual(self.g.tick, 0)
-        self.g.action(1, 'shop_close'); self.g.step()
-        self.assertFalse(self.g.paused); self.assertEqual(self.g.tick, 1)
+    def test_opener_closes_both_shops_and_resumes_battle(self):
+        for opener in (1, 2):
+            with self.subTest(opener=opener):
+                game = OnlineGame()
+                self.assertIsNone(game.action(opener, 'shop_open'))
+                self.assertTrue(all(p.shop_open for p in game.all_players))
+                game.step()
+                self.assertEqual(game.tick, 0)
+                self.assertIsNone(game.action(opener, 'shop_close'))
+                self.assertFalse(any(p.shop_open for p in game.all_players))
+                game.step()
+                self.assertEqual(game.tick, 1)
+
+    def test_guest_can_close_own_shop_and_opener_departure_releases_pause(self):
+        self.g.action(1, 'shop_open')
+        self.g.action(2, 'shop_close')
+        self.assertTrue(self.p1.shop_open)
+        self.assertFalse(self.p2.shop_open)
+        self.assertTrue(self.g.paused)
+        self.g.action(1, 'shop_close')
+        self.g.action(1, 'shop_open')
+        self.g.remove_player(1)
+        self.assertFalse(self.p2.shop_open)
+        self.assertFalse(self.g.paused)
 
     def test_purchase_atomic_shared_ownership_and_exclusive_equipment(self):
         self.p1.gold = 100
@@ -205,14 +260,46 @@ class CoOpRulesTests(unittest.TestCase):
         self.assertEqual(sum(event.get('key') == 'player_hit' for event in snapshot['events']), 2)
         self.assertEqual(len(snapshot['world']['collections']['explosions']), 2)
 
-    def test_water_heal_uses_caster_not_player_one(self):
-        self.p2.owned_characters.append('water')
-        self.g.try_switch_character('water',self.p2)
-        self.p2.hp=3; self.p1.hp=2
-        self.g.action(2,'skill1')
-        self.assertEqual((self.p1.hp,self.p2.hp),(2,4))
-        self.assertGreater(self.p2.invincible_until,0)
-        self.assertEqual(self.p1.invincible_until,0)
+    def test_water_skills_support_both_living_players_in_each_mode(self):
+        for mode, caster_slot in (('campaign', 2), ('infinite', 1)):
+            with self.subTest(mode=mode, caster=caster_slot):
+                game = OnlineGame(mode=mode)
+                p1, p2 = game.all_players
+                caster = game.all_players[caster_slot - 1]
+                if 'water' not in caster.owned_characters:
+                    caster.owned_characters.append('water')
+                game.action(caster_slot, 'character', 'water')
+                p1.hp = p1.max_hp - 2
+                self.assertIsNone(game.action(caster_slot, 'skill1'))
+                self.assertEqual((p1.hp, p2.hp), (p1.max_hp - 1, p2.max_hp + 1))
+                self.assertEqual((p1.temp_hp_until, p2.temp_hp_until),
+                                 (0, 15000 if mode == 'infinite' else 8000))
+                self.assertEqual([p for p, _ in game.water_heal_effects], [p1, p2])
+                for p in (p1, p2):
+                    self.assertEqual(p.invincible_until, 2000 if mode == 'infinite' else 800)
+                    self.assertEqual(p.water_haste_until, 5000 if mode == 'infinite' else 0)
+                self.assertIsNone(game.action(caster_slot, 'skill1'))
+                self.assertEqual(len(game.water_heal_effects), 2)
+                self.assertIsNone(game.action(caster_slot, 'skill2'))
+                for p in (p1, p2):
+                    self.assertEqual(p.water_boost_until, 10000 if mode == 'infinite' else 6000)
+                    self.assertGreater(game._player_speed(p, 500), game._player_speed(p, 10000))
+                    p.last_shot_time = 0
+                    self.assertTrue(p.can_shoot(350))
+                    p.last_shot_time = 10000
+                    self.assertFalse(p.can_shoot(10350))
+                game._expire_water_temp_hp(p2.temp_hp_until)
+                self.assertEqual(p2.hp, p2.max_hp)
+
+    def test_water_skills_do_not_revive_or_buff_fallen_teammates(self):
+        self.p1.owned_characters.append('water')
+        self.g.action(1, 'character', 'water')
+        self.p2.alive, self.p2.hp = False, 0
+        self.g.action(1, 'skill1')
+        self.g.action(1, 'skill2')
+        self.assertEqual(self.p2.hp, 0)
+        self.assertEqual(self.p2.water_boost_until, 0)
+        self.assertEqual([p for p, _ in self.g.water_heal_effects], [self.p1])
 
     def test_skill_owner_and_cooldown_are_independent(self):
         self.g.action(1,'skill1'); self.g.action(2,'skill1')

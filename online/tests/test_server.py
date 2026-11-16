@@ -60,6 +60,24 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(.04)
         self.assertIsNotNone(self.room.game)
         return a,b,wa,wb
+    async def test_input_ack_identifies_accepted_movement(self):
+        a, b, _, _ = await self.start()
+        await a.send_json(dict(type='input', seq=7, match_id=self.room.match_id,
+                               dx=1, dy=0, shoot=False))
+        for _ in range(100):
+            state = await self.receive(a, 'state')
+            player = next(p for p in state['players'] if p['slot'] == 1)
+            if player['input_seq'] == 7:
+                break
+        self.assertEqual(player['input_seq'], 7)
+        self.assertGreaterEqual(player['input_age_ms'], 0)
+        self.assertLess(player['input_age_ms'], 1000)
+        await a.send_json(dict(type='input', seq=6, match_id=self.room.match_id,
+                               dx=-1, dy=0, shoot=False))
+        error = await self.receive(a, 'error')
+        self.assertEqual(error['error'], 'stale_sequence')
+        self.assertEqual(self.room.snapshot()['players'][0]['input_seq'], 7)
+
     async def test_rotation_stops_ticks_and_reconnect_needs_fresh_orientation(self):
         a,b,wa,wb=await self.start()
         await b.send_json(dict(type='orientation',orientation='portrait'))

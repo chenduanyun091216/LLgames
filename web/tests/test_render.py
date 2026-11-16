@@ -10,6 +10,21 @@ from game_core.visuals import _glow, draw_glow, draw_water_drift
 
 
 class RenderTests(unittest.TestCase):
+    def test_fractional_background_scroll_blends_adjacent_rows(self):
+        from game_core.background import draw_scrolling_background_art
+
+        panorama = pygame.Surface((2, 4))
+        for y, red in enumerate((0, 100, 200, 0)):
+            panorama.fill((red, 0, 0), (0, y, 2, 1))
+        target = pygame.Surface((4, 4))
+        with patch('game_core.background._background_panorama', return_value=panorama):
+            for progress, expected in ((1, 0), (.875, 25), (.75, 50), (.625, 75), (.5, 100), (0, 200)):
+                self.assertTrue(draw_scrolling_background_art(target, (1, 1), 1, (2, 2), progress))
+                self.assertAlmostEqual(target.get_at((1, 1)).r, expected, delta=1)
+                self.assertEqual(target.get_at((0, 1)).r, 0)
+        with patch('game_core.background._background_panorama', return_value=None):
+            self.assertFalse(draw_scrolling_background_art(target, (1, 1), 1, (2, 2), .75))
+
     def test_web_scrim_keeps_the_same_pixels_at_fractional_scale(self):
         game = Game.__new__(Game)
         game.web = True
@@ -85,3 +100,16 @@ class RenderTests(unittest.TestCase):
             draw_water_drift(rendered, 0)
         scale.assert_not_called()
         self.assertEqual(pygame.image.tobytes(pixels, 'RGBA'), expected)
+
+    def test_offset_tile_composite_matches_full_world_blit(self):
+        target = pygame.Surface((260, 200))
+        target.fill((27, 85, 140))
+        expected = target.copy()
+        foreground = pygame.Surface((200, 140), pygame.SRCALPHA)
+        rendered = RenderSurface(foreground, (200, 140), (200, 140), (0, 0), track_damage=True)
+        rendered.mark(pygame.draw.circle(foreground, (230, 105, 12, 130), (57, 64), 22))
+        rendered.mark(pygame.draw.rect(foreground, (0, 40, 220, 180), (182, 110, 18, 30)))
+        expected.blit(foreground, (19, 23))
+        rendered.composite_onto(target, offset=(19, 23), blit_flags=0)
+        self.assertEqual(pygame.image.tobytes(target, 'RGB'), pygame.image.tobytes(expected, 'RGB'))
+        self.assertFalse(foreground.get_bounding_rect())

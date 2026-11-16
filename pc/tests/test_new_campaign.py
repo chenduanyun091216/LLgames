@@ -8,7 +8,7 @@ os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 from game_core import config
-from game_core.game import Game, GameState
+from game_core.game import BACKGROUND_SCROLL_TICKS, Game, GameState
 from game_core.abyss_bosses import MechaLizardBoss, AncientWhaleBoss
 from game_core.orochi import OrochiBoss
 
@@ -188,6 +188,34 @@ class NewCampaignTests(unittest.TestCase):
         game.last_spawn_time = 0
         game._update_boss_fight(25000)
         self.assertFalse(game.enemies)
+
+    def test_infinite_rollover_increases_difficulty_in_desktop_and_web_controls(self):
+        for desktop in (True, False):
+            with self.subTest(desktop=desktop):
+                game = self.game(desktop=desktop)
+                game._begin_infinite_run(11)
+                self.assertIsInstance(game.boss, OrochiBoss)
+                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (220, 3600))
+                game.player.weapon_upgrades['rifle'] = 2
+                game.boss._start_death(config.game_ticks() - OrochiBoss.DEATH_DURATION)
+                self.assertTrue(game._settle_boss_if_killed())
+                self.assertEqual((game.chapter, game.infinite_background_level, game.state),
+                                 (12, 1, GameState.PLAYING))
+                self.assertEqual(game.player.weapon_upgrades['rifle'], 2)
+                self.assertEqual((game.spawn_interval, game._infinite_density(config.game_ticks())), (1050, 7))
+                with patch('game_core.game.random.random', return_value=.99):
+                    game._update_playing(game.last_spawn_time + game.spawn_interval)
+                enemy, = game.enemies
+                self.assertEqual(enemy.health_mult, 1.5)
+                enemy.y = enemy.ENTRY_END_Y
+                enemy.hit_by('pistol', 4)
+                self.assertFalse(enemy.is_killed('pistol'))
+                enemy.hit_by('pistol')
+                self.assertTrue(enemy.is_killed('pistol'))
+                game.background_scroll_ticks = BACKGROUND_SCROLL_TICKS - 1
+                game.update()
+                self.assertEqual(game.boss.bdef['key'], 'boss_lobster')
+                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (225, 3420))
 
     def test_temple_worm_inherits_thirty_percent_hp_and_pursues(self):
         game = self.game()

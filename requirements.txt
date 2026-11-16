@@ -1,5 +1,6 @@
 # PC runtime and local tests
 pygame==2.6.1
+aiohttp==3.14.5
 
 # Web build tools
 pygbag==0.9.3

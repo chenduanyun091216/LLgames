@@ -13,3 +13,12 @@ test('hidden reconnect immediately suspends on welcome',()=>{const f=fixture();f
 test('only explicit matching rejected-token reset removes that credential',()=>{const f=fixture();f.saved['llonline:0123']='old';f.saved['llonline:4321']='keep';f.b.connect('0123');assert.equal(f.b.resetRejectedToken('0123'),false);const w=f.sockets[0];w.onopen();w.message({type:'error',error:'invalid_reconnect_token'});assert.equal(f.statuses.at(-1),'stopped');assert.equal(f.saved['llonline:0123'],'old');assert.equal(f.b.resetRejectedToken('4321'),false);assert.equal(f.b.resetRejectedToken('0123'),true);assert.equal(f.saved['llonline:0123'],undefined);assert.equal(f.saved['llonline:4321'],'keep');f.sockets[1].onopen();assert.equal(f.sockets[1].sent[0].token,undefined);});
 
 test('actual orientation reported on welcome and every resize report without control fields',()=>{const f=fixture();let actual='portrait';f.b.getOrientation=()=>actual;f.b.connect('0123');const w=f.sockets[0];w.onopen();w.message({type:'welcome',slot:2,token:'t',match_id:'m'});assert.deepEqual(w.sent[1],{type:'orientation',orientation:'portrait'});actual='landscape';f.b.reportOrientation();assert.deepEqual(w.sent.at(-1),{type:'orientation',orientation:'landscape'});});
+
+test('preserves the original snapshot string for the renderer', () => {
+    const {b, sockets, states} = fixture();
+    b.connect('0123');
+    const raw = '{ "type":"state", "version":1, "match_id":"m", "tick":2 }';
+    sockets[0].onmessage({data: raw});
+    assert.equal(states[0].tick, 2);
+    assert.equal(b.takeState(), raw);
+});

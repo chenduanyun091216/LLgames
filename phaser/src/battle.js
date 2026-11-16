@@ -48,6 +48,17 @@ export class Battle {
     }
 
     value(key) { return this.data[key][this.level - 1][this.tier]; }
+    get laterEndlessRound() { return this.mode === 'endless' && this.round > 0; }
+    get endlessChapterIndex() { return this.round * this.data.INFINITE_BOSS_HP.length + this.level - 1; }
+
+    bossBaseHp() {
+        if (this.mode !== 'endless') return this.value('CAMPAIGN_BOSS_HP');
+        const firstRound = this.data.INFINITE_BOSS_HP;
+        if (!this.laterEndlessRound) return firstRound[this.level - 1];
+        const chaptersPastFirstRound = this.endlessChapterIndex + 1 - firstRound.length;
+        return firstRound.at(-1) + chaptersPastFirstRound * this.data.INFINITE_PROGRESSION.boss_hp_per_chapter;
+    }
+
     event(type, extra = {}) { this.events.push({type, ...extra}); }
     key() { return ++this.id; }
     heal(amount) { this.hp = Math.min(this.maxHp, this.hp + amount); }
@@ -128,13 +139,17 @@ export class Battle {
         this.shots = [];
         this.enemies = this.enemies.filter(e => e.kind !== 'ancient_rift' && e.kind !== 'ancient_worm');
         const def = this.data.bosses[this.stage.boss_idx];
-        const base = this.mode === 'endless' ? this.data.INFINITE_BOSS_HP[this.level - 1] * (1 + .20 * Math.min(6, this.round))
-            : this.value('CAMPAIGN_BOSS_HP');
-        const hp = Math.ceil(base * this.custom.hp);
+        const hp = Math.ceil(this.bossBaseHp() * this.custom.hp);
         const [baseW, baseH] = def.size ?? [130, 120];
         const h = baseH * this.view.bossScale;
-        const interval = (this.mode === 'endless' ? this.data.INFINITE_BOSS_ATTACK_MS[this.level - 1]
+        let interval = (this.mode === 'endless' ? this.data.INFINITE_BOSS_ATTACK_MS[this.level - 1]
             : this.value('CAMPAIGN_BOSS_ATTACK_MS')) * this.custom.attack;
+        if (this.laterEndlessRound) {
+            const progression = this.data.INFINITE_PROGRESSION;
+            const percent = Math.max(progression.boss_attack_min_percent,
+                100 - progression.boss_attack_reduction_per_round * this.round);
+            interval = Math.round(this.data.INFINITE_BOSS_ATTACK_MS.at(-1) * percent / 100 * this.custom.attack);
+        }
         this.boss = {id: this.key(), def, level: this.level, x: this.width / 2, y: -h / 2, baseW, baseH,
             w: baseW * this.view.bossScale, h, hp, maxHp: hp, interval, patrol: 0,
             attackAt: this.time + 3000, direction: 1, pattern: 0, shieldStep: 0, stormStep: 0,
@@ -167,7 +182,13 @@ export class Battle {
             : def.size ?? (def.is_large ? [110, 96] : def.zongzong ? [74, 66] : [64, 56]);
         const w = baseW * this.view.entityScale, h = baseH * this.view.entityScale;
         const x = w / 2 + this.random() * (this.width - w);
-        const hp = def.campaign_hp ?? (def.is_large ? 9 : def.zongzong ? 8 : 3);
+        let hp = def.campaign_hp ?? (def.is_large ? 9 : def.zongzong ? 8 : 3);
+        if (this.laterEndlessRound && kind in this.data.enemies) {
+            const progression = this.data.INFINITE_PROGRESSION;
+            const chaptersInLaterRounds = this.endlessChapterIndex - this.data.INFINITE_BOSS_HP.length;
+            hp *= (progression.enemy_health_start_percent
+                + progression.enemy_health_per_chapter * chaptersInLaterRounds) / 100;
+        }
         const speed = def.base_speed * ((this.bottom + 20 + h) / (384 + baseH * .64)) * this.data.CAMPAIGN_SPEED[this.level - 1]
             * [.88, 1, 1.08][this.tier] * this.custom.speed * (.88 + this.random() * .24);
         const entity = {id: this.key(), kind, def, w, h, x, anchor: extra.x ?? x, y: -h / 2, hp, speed,
@@ -178,16 +199,19 @@ export class Battle {
     }
 
     spawnWave() {
-        const normal = this.stage.enemy_pool.filter(k => !this.data.enemies[k].is_large && k !== 'zongzong');
-        const large = this.stage.enemy_pool.filter(k => this.data.enemies[k].is_large);
+        const regularLaterWave = this.laterEndlessRound && this.level < 9;
+        const enemyPool = regularLaterWave ? this.data.levels[7].enemy_pool : this.stage.enemy_pool;
+        const normal = enemyPool.filter(k => !this.data.enemies[k].is_large && k !== 'zongzong');
+        const large = enemyPool.filter(k => this.data.enemies[k].is_large);
+        const largeChance = regularLaterWave ? .16 : this.data.CAMPAIGN_LARGE_CHANCE[this.level - 1];
         let pool = normal;
-        if (this.level === 1 && this.waveSpawns < 6) pool = normal.filter(key => key !== 'goldfish');
-        if (!this.lastElite && this.level >= 4 && !this.enemies.some(e => e.kind === 'zongzong') && this.random() < .04
-                && this.stage.enemy_pool.includes('zongzong')) pool = ['zongzong'];
-        else if (!this.lastElite && large.length && this.random() < this.data.CAMPAIGN_LARGE_CHANCE[this.level - 1]) pool = large;
-        if (this.level === 1 && this.waveSpawns < 2) pool = [['lobster', 'crab'][this.waveSpawns]];
+        if (!this.laterEndlessRound && this.level === 1 && this.waveSpawns < 6) pool = normal.filter(key => key !== 'goldfish');
+        if (!this.lastElite && (regularLaterWave || this.level >= 4) && !this.enemies.some(e => e.kind === 'zongzong')
+                && this.random() < .04 && enemyPool.includes('zongzong')) pool = ['zongzong'];
+        else if (!this.lastElite && large.length && this.random() < largeChance) pool = large;
+        if (!this.laterEndlessRound && this.level === 1 && this.waveSpawns < 2) pool = [['lobster', 'crab'][this.waveSpawns]];
         if (!pool.length) return;
-        if (this.phase === 'wave' && this.level === 2 && this.waveSpawns === 3) pool = ['octopus'];
+        if (!this.laterEndlessRound && this.phase === 'wave' && this.level === 2 && this.waveSpawns === 3) pool = ['octopus'];
         const kind = pool[Math.floor(this.random() * pool.length)];
         this.waveSpawns++;
         this.lastElite = kind === 'zongzong' || this.data.enemies[kind].is_large;
@@ -202,13 +226,18 @@ export class Battle {
             return;
         }
         const cap = wave ? this.mode === 'endless'
-            ? Math.min(this.level >= 9 ? 7 : 12, 4 + Math.floor((this.round * 11 + this.level - 1) / 3))
+            ? Math.min(this.level >= 9 ? 7 : 12, 4 + Math.floor(this.endlessChapterIndex / 3))
             : this.value('CAMPAIGN_ENEMY_CAP') : this.reinforcement('CAP');
         if (cap && this.time >= this.spawnAt && this.enemies.filter(e => e.counts).length < cap) {
             this.spawnWave();
             const base = this.value('CAMPAIGN_SPAWN_MS') * this.custom.spawn;
-            const interval = Math.max(Math.min(base, this.custom.minSpawn ?? base),
+            let interval = Math.max(Math.min(base, this.custom.minSpawn ?? base),
                 base - this.kills * (this.custom.spawnDecrease ?? 0));
+            if (this.laterEndlessRound && wave) {
+                const progression = this.data.INFINITE_PROGRESSION;
+                interval = Math.max(progression.wave_spawn_min_ms, progression.wave_spawn_start_ms
+                    - progression.wave_spawn_step_ms * Math.floor(this.endlessChapterIndex / 2));
+            }
             this.spawnAt = this.time + (wave ? interval : this.reinforcement('MS'));
         }
         if (wave && this.level === 10 && this.time >= this.riftAt) {
@@ -303,8 +332,9 @@ export class Battle {
                 this.link = null;
                 const [first] = group;
                 for (const e of group) this.removeEnemy(e);
+                const baseHp = this.laterEndlessRound ? this.bossBaseHp() : this.value('CAMPAIGN_BOSS_HP');
                 this.spawnEnemy('mecha_mini', {x: first.x, y: first.y, speed: 1.8, weight: 3,
-                    hp: Math.ceil((this.boss?.maxHp ?? this.value('CAMPAIGN_BOSS_HP')) * [.12, .16, .20][this.tier])});
+                    hp: Math.ceil((this.boss?.maxHp ?? baseHp) * [.12, .16, .20][this.tier])});
             }
             return;
         }
@@ -820,15 +850,7 @@ export class Battle {
         const barriers = this.zones.filter(z => this.time >= z.impact && this.time < z.end && (z.wall || z.magnet));
         for (const z of barriers) if (z.trajectory) Object.assign(z, z.trajectory(this.time - z.impact));
         for (const s of this.shots) {
-            if (s.fuseAt) {
-                if (this.time >= s.fuseAt) {
-                    s.expires = 0;
-                    for (let i = 0; i < 6; i++) this.shot(s.x, s.y, i * Math.PI / 3, 3.9, s.art, {r: 10});
-                }
-                continue;
-            }
             if (s.homing) s.angle += clamp(angleDiff(Math.atan2(this.player.y - s.y, this.player.x - s.x), s.angle), -s.homing, s.homing);
-            if (s.bounces) s.speed = Math.min(6.3, s.speed + .013);
             s.x += Math.cos(s.angle) * s.speed;
             s.y += Math.sin(s.angle) * s.speed;
             if (!s.pierce) {
@@ -851,7 +873,13 @@ export class Battle {
                 if (s.y < s.r || s.y > this.bottom - s.r) s.angle = -s.angle;
                 s.x = clamp(s.x, s.r, this.width - s.r);
                 s.y = clamp(s.y, s.r, this.bottom - s.r);
-                if (--s.bounces === 0) s.fuseAt = this.time + 3000;
+                if (--s.bounces === 0) {
+                    s.expires = 0;
+                    this.event('pop', {x: s.x, y: s.y});
+                    for (let i = 0; i < 6; i++) this.shot(s.x, s.y, i * Math.PI / 3, 3.9, s.art, {r: 10});
+                    continue;
+                }
+                s.hitPlayer = false;
             }
             if (s.returns && s.y > this.bottom + 22) {
                 s.returns--;
@@ -864,8 +892,9 @@ export class Battle {
                 s.angle = Math.PI / 2;
                 s.homing = .038;
             }
-            if (Math.hypot(s.x - this.player.x, s.y - this.player.y) < s.r + 17) {
-                s.expires = 0;
+            if (!s.hitPlayer && Math.hypot(s.x - this.player.x, s.y - this.player.y) < s.r + 17) {
+                if (s.bounces) s.hitPlayer = true;
+                else s.expires = 0;
                 if (s.blast) this.zone(s.x, s.y, s.blast * 2, s.blast * 2, s.damage, 160, 300, null, {circle: true});
                 else this.hurt(s.damage, '被敌方弹幕击败');
             }

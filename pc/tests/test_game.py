@@ -871,6 +871,7 @@ class DesktopGameTests(unittest.TestCase):
             return draw(game, *args, **kwargs)
 
         events = [
+            [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN, mod=0)],
             [],
             [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_2, mod=0)],
             [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT, mod=0)],

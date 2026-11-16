@@ -12,10 +12,9 @@ from .render import RenderSurface
 
 
 FRAME_TIMING_TOLERANCE = 0.002
-RENDER_TIMING_TOLERANCE = 0.006
 STANDARD_BROWSER_RENDER_DENSITY = 1.15
 STANDARD_MAX_VIEW = (1800, 960)
-HD_MAX_VIEW = (2560, 1080)
+HD_MAX_VIEW = (2560, 1200)
 BROWSER_QUALITIES = (1.5, 1.75, 2)
 
 
@@ -39,19 +38,18 @@ def _browser_size(viewport, quality):
     standard = min(STANDARD_MAX_VIEW[1] / short, STANDARD_MAX_VIEW[0] / long,
                    STANDARD_BROWSER_RENDER_DENSITY)
     hd = min(HD_MAX_VIEW[1] / short, HD_MAX_VIEW[0] / long)
-    density = {1.5: standard, 1.75: (standard + hd) / 2, 2: hd}[quality]
+    # Keep the default pixel budget stable; higher resolution is opt-in via HD.
+    default_hd = min(1080 / short, HD_MAX_VIEW[0] / long)
+    density = {1.5: standard, 1.75: (standard + default_hd) / 2, 2: hd}[quality]
     return tuple(round(value * density) for value in viewport)
 
 
-def _browser_frame_deadline(now, deadline, step):
-    # Accept early callbacks without waiting an entire refresh interval.
-    if now < deadline - RENDER_TIMING_TOLERANCE:
-        return None
-    slots = int((now - deadline + RENDER_TIMING_TOLERANCE) / step) + 1
-    return deadline + slots * step
+def _browser_viewport(window):
+    return (int(getattr(window, 'ttgamesViewportWidth', None) or window.innerWidth),
+            int(getattr(window, 'ttgamesViewportHeight', None) or window.innerHeight))
 
 
-async def main():
+async def main(transport=None):
     pygame.init()
     try:
         pygame.mixer.init(frequency=22050, size=-16, channels=1)
@@ -62,7 +60,7 @@ async def main():
     if browser_window is not None:
         quality = getattr(browser_window, 'ttgamesRenderDensity', 1.75)
         asset_loader.web_hd_assets = quality != 1.5
-        viewport = (max(1, int(browser_window.innerWidth)), max(1, int(browser_window.innerHeight)))
+        viewport = tuple(max(1, value) for value in _browser_viewport(browser_window))
         window_size = _browser_size(viewport, quality)
         show_resolutions = getattr(browser_window, 'ttgamesShowResolutions', None)
         if show_resolutions:
@@ -86,6 +84,12 @@ async def main():
     mobile_web = browser_window is not None and bool(browser_window.matchMedia('(pointer: coarse)').matches)
     game = Game(desktop_controls=browser_window is None, scroll_campaign_backgrounds=True,
                 web=browser_window is not None, mobile_web=mobile_web, campaign_ending=True)
+    lan = None
+    web_transport = getattr(browser_window, 'ttgamesLAN', None)
+    if transport is not None or web_transport is not None:
+        from online.client.integrated import BrowserTransport, LAN
+        lan = LAN(transport if transport is not None else BrowserTransport(web_transport))
+        game.on_return_home = lan.home
     for filename in SKILL_IMAGES:
         image_asset(filename)
     for sound in ('boss_appear', 'boss_hit', 'kill', 'level_up', 'player_hit'):
@@ -95,6 +99,8 @@ async def main():
     warmed_boss = None
     running = True
     draw_ui = getattr(browser_window, 'ttgamesDrawUI', None)
+    record_frame = getattr(browser_window, 'ttgamesRecordFrame', None)
+    fill_safe_area = getattr(browser_window, 'ttgamesFillSafeArea', None)
     touch_active = getattr(browser_window, 'ttgamesTouchActive', None)
     previous_ui = None
     fps_started = None
@@ -107,7 +113,6 @@ async def main():
     foreground = None
     rendered = None
     previous_background = None
-    next_frame = perf_counter()
     resize_events = (pygame.VIDEORESIZE, pygame.WINDOWSIZECHANGED)
     step = 1 / FPS
     update_tolerance = FRAME_TIMING_TOLERANCE if browser_window is not None else 0.0
@@ -122,17 +127,12 @@ async def main():
     while running:
         quality_changed = False
         if browser_window is not None:
-            now = perf_counter()
             new_quality = getattr(browser_window, 'ttgamesRenderDensity', 1.75)
             quality_changed = new_quality != quality
             if quality_changed:
                 quality = new_quality
-                next_frame = now
-            deadline = _browser_frame_deadline(now, next_frame, step)
-            if deadline is None:
-                await asyncio.sleep(0)
-                continue
-            next_frame = deadline
+            # Pygbag already resumes this coroutine once per requestAnimationFrame.
+            # A second wall-clock gate can discard every other jittered callback.
         frame_time = perf_counter()
         elapsed = min(frame_time - previous_frame, 4 * step)
         previous_frame = frame_time
@@ -150,7 +150,7 @@ async def main():
                 clear_background_cache()
                 game.bg = game._load_bg()
                 warmed_background = warmed_panorama = warmed_boss = None
-            new_viewport = (int(browser_window.innerWidth), int(browser_window.innerHeight))
+            new_viewport = _browser_viewport(browser_window)
             size = _browser_size(new_viewport, quality)
             if min(size) > 0 and (size != window_size or new_viewport != viewport or quality_changed):
                 layout_changed = new_viewport != viewport
@@ -167,10 +167,35 @@ async def main():
             config.update_mobile_view(window.get_size())
             game.resize_view(previous_area)
             resized = True
+        if lan is not None and lan.page != 'single':
+            running = lan.frame(game, events, window, hidden, touch_active)
+            if not lan.drawn_to_window:
+                scaled = _draw_scaled(window, scaled)
+            previous_background = None
+            pygame.display.flip()
+            if fill_safe_area:
+                fill_safe_area()
+            lan_ui = ('[]', config.SCREEN_WIDTH, config.SCREEN_HEIGHT, *lan.ui_state, '', lan.page == 'home')
+            if draw_ui and previous_ui != lan_ui:
+                draw_ui(*lan_ui)
+                previous_ui = lan_ui
+            if record_frame:
+                record_frame('lan' if lan.ui_state[0] else 'idle')
+            game.clock.tick(0 if browser_window is not None else FPS)
+            await asyncio.sleep(0)
+            continue
         was_advancing = game.state in advancing_states
+        if lan is not None and game.state == GameState.MENU and any(
+                e.type == pygame.KEYDOWN and e.key == pygame.K_ESCAPE for e in events):
+            lan.home()
+            continue
         running = game.handle_events(events)
         if not running:
             break
+        if lan is not None and lan.home_keys and game.state == GameState.MENU:
+            lan.home_keys = False
+            lan.home()
+            continue
         if touch_active is not None:
             game.mobile_controls.release_inactive_touches(touch_active)
         if game.state in cutscene_states:
@@ -211,6 +236,8 @@ async def main():
             if game.state in cutscene_states:
                 previous_background = None
                 pygame.display.flip()
+                if fill_safe_area:
+                    fill_safe_area()
                 cutscene = 'opening' if game.state == GameState.OPENING else 'ending'
                 cutscene_ui = ([], config.SCREEN_WIDTH, config.SCREEN_HEIGHT, False, False, cutscene)
                 if draw_ui and cutscene_ui != previous_ui:
@@ -265,6 +292,8 @@ async def main():
         if show_timings:
             submit_started = perf_counter()
         pygame.display.flip()
+        if fill_safe_area:
+            fill_safe_area()
         if draw_ui:
             in_battle = (game.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
                          and not game.web_level_intro_active())
@@ -307,7 +336,8 @@ async def main():
                 update_seconds = draw_seconds = compose_seconds = submit_seconds = 0.0
                 timing_label = ''
             paused = game.state == GameState.PAUSED and not game.exit_confirmation
-            frame = (labels, config.SCREEN_WIDTH, config.SCREEN_HEIGHT, in_battle, paused)
+            home = lan is None and game.state == GameState.MENU
+            frame = (labels, config.SCREEN_WIDTH, config.SCREEN_HEIGHT, in_battle, paused, '', home)
             if frame != previous_ui:
                 draw_ui(json.dumps(labels, separators=(",", ":")), *frame[1:])
                 previous_ui = frame
@@ -339,5 +369,7 @@ async def main():
             else:
                 advance_music()
         game.clock.tick(0 if browser_window is not None else FPS)
+        if record_frame:
+            record_frame('single' if game.state in advancing_states else 'idle')
         await asyncio.sleep(0)
 

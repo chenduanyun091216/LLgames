@@ -139,23 +139,13 @@ class AbyssProjectile(BossProjectile):
                 self.alive = False
 
     def _update_pearl(self, dt, now):
-        if self.pearl_burst_at:
-            self.alive = now < self.pearl_burst_at
-            return
         left = config.GAME_AREA_LEFT + self.r
         right = config.GAME_AREA_RIGHT - self.r
         top, bottom = self.r, config.GAME_AREA_BOTTOM - self.r
         self.x = max(left, min(right, self.x))
         self.y = max(top, min(bottom, self.y))
         rad = math.radians(self.angle)
-        age = (now - self.spawn_time - self.warning_ms) / 1000
-        # Integrate the speed ramp across the entire step, including bounces.
-        start, end = max(0, age - dt), age
-        ramp = 2.5
-        start_ramp, end_ramp = min(ramp, start), min(ramp, end)
-        travel = dt - .75 * (end_ramp - start_ramp) * (1 - (start_ramp + end_ramp) / (2 * ramp))
         vx, vy = math.sin(rad) * self.speed * 60, math.cos(rad) * self.speed * 60
-        dt = travel
         while dt > 0:
             tx = ((right if vx > 0 else left) - self.x) / vx if abs(vx) > 1e-8 else math.inf
             ty = ((bottom if vy > 0 else top) - self.y) / vy if abs(vy) > 1e-8 else math.inf
@@ -166,18 +156,17 @@ class AbyssProjectile(BossProjectile):
             if tx == step:
                 self.x = right if vx > 0 else left
                 vx = -vx
-                self.pearl_bounces += 1
             if ty == step:
                 self.y = bottom if vy > 0 else top
                 vy = -vy
-                self.pearl_bounces += 1
             if tx == step or ty == step:
+                self.pearl_bounces += 1
+                if self.pearl_bounces == 4:
+                    self.pearl_burst_at = now
+                    self.alive = False
+                    return
                 self.angle = math.degrees(math.atan2(vx, vy))
                 self._hit_players.clear()
-            if self.pearl_bounces >= 6:
-                self.pearl_bounces = 6
-                self.pearl_burst_at = now + 3000
-                return
 
     def pearl_fragments(self):
         return [AbyssProjectile('pearl_fragment', self.x, self.y, angle=angle,
@@ -465,14 +454,6 @@ class AbyssProjectile(BossProjectile):
             if self.angle and self.skill not in ('ancient_pearl', 'pearl_fragment'):
                 image = pygame.transform.rotate(image, self.angle)
         _blit(surf, image, center, size)
-        if self.skill == 'ancient_pearl' and self.pearl_burst_at:
-            remaining = max(0, self.pearl_burst_at - config.game_ticks())
-            Draw.circle(surf, (255, 242, 165) if remaining % 500 < 250 else (255, 107, 48),
-                        (self.x, self.y), round(self.r * (1 + remaining / 6000)), 3)
-            for i in range(math.ceil(remaining / 1000)):
-                Draw.circle(surf, (255, 244, 186),
-                            (self.x + (i - 1) * self.r * .45, self.y - self.r * 1.25), 3)
-
 
     def _draw_geyser(self, surf, color):
         age = self._active_age()
@@ -860,7 +841,6 @@ class AncientWhaleBoss(AbyssBoss):
         width = right - left
         bottom = config.GAME_AREA_BOTTOM
         origin_y = self.y + self.h * .7
-        tier = self.bdef.get('campaign_tier', 1)
         if skill == 'tidal_crescent':
             shots = []
             lane_width = width / 4
@@ -893,8 +873,6 @@ class AncientWhaleBoss(AbyssBoss):
                     shot.height = height
                     shots.append(shot)
             return shots
-        aim = math.degrees(math.atan2(player_x - self.x, max(100, bottom - origin_y)))
-        return [self._shot(skill, self.x, origin_y, angle=aim + a,
-                           speed=(4.6 + tier * .2) * self.size_scale,
+        return [self._shot(skill, self.x, origin_y, angle=a, speed=24,
                            warning_ms=800, active_ms=120000)
-                for a in (-48, 0, 48)]
+                for a in (-24, 0, 24)]

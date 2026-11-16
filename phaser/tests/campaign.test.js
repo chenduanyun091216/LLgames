@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {Battle, bossBoxes, STEP} from '../src/battle.js';
+import {attack} from '../src/bosses.js';
 
 const data = JSON.parse(readFileSync(new URL('../dist/campaign.json', import.meta.url)));
 const manifest = JSON.parse(readFileSync(new URL('../dist/assets.json', import.meta.url)));
@@ -230,7 +231,7 @@ test('factory splits and fuses, temple eyes summon destructible worms', () => {
     assert.equal(temple.kills, 0);
 });
 
-test('shop, retry, portrait resize and endless rollover use the selected rules', () => {
+test('shop, retry and portrait resize use the selected rules', () => {
     const battle = new Battle(data, {tier: 2, level: 5, custom: {hp: 1.25}});
     assert.equal(battle.equip('weapon', 'rifle'), false);
     battle.gold = 12;
@@ -247,16 +248,29 @@ test('shop, retry, portrait resize and endless rollover use the selected rules',
     battle.retry();
     assert.equal(battle.weapon, 'pistol');
     assert.equal(battle.lives, 3);
+});
 
-    const endless = new Battle(data, {mode: 'endless', level: 11, tier: 1});
+test('endless chapter 12 carries upgrades forward and increases enemy pressure', () => {
+    const endless = new Battle(data, {mode: 'endless', level: 11, tier: 1}, () => .1);
     assert.ok(endless.equip('weapon', 'sniper'));
     assert.ok(endless.equip('character', 'radiation'));
+    endless.weaponUpgrades.sniper = 2;
+    assert.deepEqual([endless.boss.maxHp, endless.boss.interval], [220, 3600]);
     endless.finishLevel();
     assert.equal(endless.phase, 'clear');
     endless.next();
-    assert.equal(endless.round, 1);
-    endless.beginBoss();
-    assert.equal(endless.boss.maxHp, 36);
+    assert.deepEqual([endless.round, endless.level, endless.phase], [1, 1, 'wave']);
+    assert.equal(endless.weaponUpgrades.sniper, 2);
+    const firstRound = new Battle(data, {mode: 'endless', tier: 1});
+    assert.equal(endless.spawnEnemy('lobster').maxHp, firstRound.spawnEnemy('lobster').maxHp * 1.5);
+    endless.time = endless.spawnAt;
+    endless.updateSpawns();
+    assert.equal(endless.spawnAt - endless.time, 1050);
+    assert.ok(endless.enemies.at(-1).def.is_large);
+    endless.time = endless.started + 40000;
+    endless.updateSpawns();
+    assert.equal(endless.boss.def.key, 'boss_lobster');
+    assert.deepEqual([endless.boss.maxHp, endless.boss.interval], [225, 3420]);
 });
 
 test('whale absorption can be interrupted and Orochi bubbles decide storm healing', () => {
@@ -348,4 +362,24 @@ test('crab bubbles hatch two chasing enemies and the plasma whip damages only wh
     assert.equal(railShape(whip, factory.boss, factory.bottom, whip.impact + 950).striking, true);
     assert.equal(railShape(whip, factory.boss, factory.bottom, whip.impact + 1500).striking, false);
     assert.equal(railShape(whip, factory.boss, factory.bottom, whip.impact + 2400).lash, 1);
+});
+
+test('ancient pearls launch quickly downward and shatter on the fourth wall contact', () => {
+    const battle = new Battle(data);
+    battle.player.x = -100;
+    attack(battle, {level: 10, x: battle.width / 2, y: 60, h: 200}, 2);
+    battle.time = 350;
+    battle.tasks[0].action();
+    const pearls = battle.shots.slice();
+    assert.equal(pearls.length, 3);
+    for (const pearl of pearls) {
+        assert.equal(pearl.bounces, 4);
+        assert.ok(Math.sin(pearl.angle) * pearl.speed > 15);
+    }
+    for (let i = 0; i < 210 && pearls.some(pearl => battle.shots.includes(pearl)); i++) {
+        battle.time += STEP;
+        battle.updateProjectiles();
+    }
+    assert.ok(pearls.every(pearl => pearl.bounces === 0 && !battle.shots.includes(pearl)));
+    assert.equal(battle.events.filter(event => event.type === 'pop').length, 3);
 });

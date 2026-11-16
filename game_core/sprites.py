@@ -5,7 +5,7 @@
 import random
 import math
 import pygame
-from .render import Draw, RenderSurface
+from .render import Draw, RenderSurface, trim_transparent
 from functools import lru_cache
 from .asset_loader import image_asset
 from .config import (
@@ -42,7 +42,13 @@ def blit_lit_sprite(target, image, position, color, strength=140, source=None, *
             center = x + size[0] // 2, y + size[1] // 2
             sprite = pygame.transform.rotate(sprite, angle)
             x, y = sprite.get_rect(center=center).topleft
-        target.blit_pixels(_lit_sprite(sprite, color, strength), (x - 3, y - 3))
+        lit = _lit_sprite(sprite, color, strength)
+        if not target.desktop_ui:
+            art, dx, dy = trim_transparent(lit)
+            target.blit_pixels(art, (x - 3 + lit.get_width() // 2 + dx,
+                                     y - 3 + lit.get_height() // 2 + dy))
+        else:
+            target.blit_pixels(lit, (x - 3, y - 3))
         return
     if angle:
         center = image.get_rect(topleft=position).center

@@ -304,7 +304,7 @@ class MobileControls:
             laser = next((item for item in game.radiation_lasers
                           if item.owner is player and not item.is_expired(now)), None)
             if laser:
-                duration = laser.duration + laser.cooldown_ms
+                duration = laser.duration + getattr(laser, 'cooldown_ms', 0)
                 end = laser.spawn_time + duration
         return end, duration
 

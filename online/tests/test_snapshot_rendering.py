@@ -65,6 +65,50 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn('surface',raw)
         # View never changes the authoritative world or advances entity physics.
         x=g.bullets[0].x;p.draw();self.assertEqual(g.bullets[0].x,x)
+    def test_pc_hud_uses_authoritative_laser_cooldown(self):
+        g = self.world()
+        laser = g.radiation_lasers[0]
+        laser.owner.character = 'radiation'
+        laser.cooldown_ms = 7300
+        p = Presentation(pygame.Surface((960, 720)), integrated=True, desktop_controls=True)
+        p.apply({'world': encode_world(g)}, 2)
+        p.view.draw_local_hud()
+        end, duration = p.view.mobile_controls._skill_timing(p.view, 'radiation_laser', config.game_ticks())
+        self.assertEqual(duration, laser.duration + 7300)
+        self.assertEqual(end, laser.spawn_time + duration)
+        del laser.cooldown_ms
+        p.apply({'world': encode_world(g)}, 2)
+        p.view.draw_local_hud()
+
+    def test_pc_radiation_hud_after_real_cast_for_both_seats(self):
+        from game_core.render import RenderSurface
+        from online.adapters.core_adapter import OnlineGame
+
+        for mode in ('campaign', 'infinite'):
+            for slot in (1, 2):
+                with self.subTest(mode=mode, slot=slot):
+                    g = OnlineGame(mode=mode)
+                    player = g.all_players[slot - 1]
+                    if 'radiation' not in player.owned_characters:
+                        player.owned_characters.append('radiation')
+                    self.assertIsNone(g.action(slot, 'character', 'radiation'))
+                    self.assertIsNone(g.action(slot, 'laser'))
+                    self.assertIsNone(g.action(slot, 'dart'))
+                    self.assertEqual(g.radiation_lasers[0].owner.slot, slot)
+                    self.assertEqual(g.dart_shields[0].owner.slot, slot)
+                    p = Presentation(pygame.Surface(g.world_size, pygame.SRCALPHA),
+                                     integrated=True, desktop_controls=True)
+                    target = RenderSurface(pygame.Surface((1280, 960), pygame.SRCALPHA),
+                                           g.world_size, (1280, 960), (0, 0))
+                    for steps in (0, 1, 182, 125):
+                        for _ in range(steps):
+                            g.step()
+                        p.apply(json.loads(json.dumps(g.snapshot(), allow_nan=False)), slot)
+                        p.draw(target)
+                        p.view.draw_local_hud()
+                    self.assertFalse(g.radiation_lasers)
+                    self.assertGreater(p.view.player.skill_cooldowns['radiation_laser'], p.time_ms)
+
     def test_death_slots_and_character_resources(self):
         g=self.world();p=Presentation(pygame.Surface((960,720)))
         for character in [None,*config.CHARACTER_DEFS]:

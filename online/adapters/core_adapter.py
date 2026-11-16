@@ -62,7 +62,7 @@ class SharedReturningAxe(core_game.ReturningAxe):
 
 
 class OnlineGame(Game):
-    def __init__(self, difficulty='medium', orientation='landscape'):
+    def __init__(self, difficulty='medium', orientation='landscape', *, mode='campaign', start_level=1):
         if difficulty not in REVIVE_COSTS:
             raise ValueError('Unsupported difficulty')
         pygame.font.init()
@@ -87,19 +87,29 @@ class OnlineGame(Game):
         self._suppress_damage = False
         self._events = deque(maxlen=48)
         self._event_id = 0
+        self._shop_opener = None
+        self.departed = set()
+        self.continuing = {}
+        self.defeat_reasons = {}
         with self._capture_sounds():
             super().__init__(desktop_controls=False, scroll_campaign_backgrounds=True)
         wallet = {'gold': 0}
         self.player = SharedPlayer(wallet)
         second = SharedPlayer(wallet)
+        self.player.slot, second.slot = 1, 2
         self._all_players = (self.player, second)
         with self._capture_sounds():
-            self._start_game(difficulty)
-        self.lives = 5
+            if mode == 'infinite':
+                self._begin_infinite_run()
+            else:
+                self._start_game(difficulty, start_level)
+        if not self.infinite_mode:
+            self.lives = 5
         self.mobile_controls.auto_fire = False
         self._inputs = {1: (0., 0., False), 2: (0., 0., False)}
         weapons, characters = self.player.owned_weapons, self.player.owned_characters
-        hp = (6, 5, 4)[self._campaign_tier()]
+        weapon_upgrades = self.player.weapon_upgrades
+        hp = self.max_player_hp if self.infinite_mode else (6, 5, 4)[self._campaign_tier()]
         for slot, player in enumerate(self._all_players, 1):
             player.slot = slot
             player.hp = player.max_hp = hp
@@ -108,9 +118,10 @@ class OnlineGame(Game):
             player.temp_hp_until = 0
             player.shop_open = False
             player.last_switch_at = -9999
-            player.campaign = True
+            player.campaign = not self.infinite_mode
             player.hazard_slow = (0.85, 0.80, 0.75)[self._campaign_tier()]
             player.owned_weapons, player.owned_characters = weapons, characters
+            player.weapon_upgrades = weapon_upgrades
             player.x, player.y = self.world_size[0] / 2 + (slot - 1.5) * 180, config.GAME_AREA_BOTTOM - 14
         self._legacy_sync()
 
@@ -137,7 +148,29 @@ class OnlineGame(Game):
     def players(self):
         if not self._all_players:
             return (self.player,)
-        return tuple(p for p in self._all_players if getattr(p, 'alive', True))
+        return tuple(p for p in self._all_players if getattr(p, 'alive', True) and p.slot not in self.departed)
+
+    def remove_player(self, slot):
+        self.departed.add(slot)
+        self.continuing.pop(slot, None)
+        if slot == self._shop_opener:
+            self._close_shared_shop()
+        player = self.all_players[slot - 1]
+        player.alive = player.shop_open = False
+        self.set_input(slot, 0, 0, False)
+
+    def _advance_continues(self):
+        for slot, remaining in tuple(self.continuing.items()):
+            if remaining > 1:
+                self.continuing[slot] = remaining - 1
+                continue
+            del self.continuing[slot]
+            player = self.all_players[slot - 1]
+            player.alive = True
+            player.hp = player.max_hp
+            player.temp_hp_until = 0
+            self._place_revived_player(player)
+            player.invincible_until = config.game_ticks() + core_game.REVIVE_INVINCIBILITY_MS
 
     @property
     def gold(self):
@@ -182,7 +215,14 @@ class OnlineGame(Game):
         for slot in self._inputs:
             self._inputs[slot] = (0., 0., False)
 
+    def _close_shared_shop(self):
+        self._shop_opener = None
+        for player in self.all_players:
+            player.shop_open = False
+
     def step(self):
+        if self.infinite_mode and self.phase == 'playing' and not any(p.shop_open for p in self.all_players):
+            self._advance_continues()
         finishing = self.phase == 'won' and round(self.tick * 1000 / 60) < self.victory_end
         if not finishing and (self.phase != 'playing' or self.paused):
             self.clear_inputs()
@@ -210,7 +250,7 @@ class OnlineGame(Game):
             with self._for_player(self.players[0], focus=False):
                 super().update()  # Exactly one world update per tick.
             for player in self.all_players:
-                if not player.alive and self.lives > 0:
+                if not self.infinite_mode and not player.alive and self.lives > 0:
                     self._action(player.slot, 'revive')
         self._expire_visuals(now)
         self._legacy_sync()
@@ -291,6 +331,10 @@ class OnlineGame(Game):
             p.alive = False
             self._inputs[p.slot] = (0., 0., False)
             self.game_over_reason = reason
+            if self.infinite_mode:
+                self.infinite_deaths += 1
+                self.defeat_reasons[p.slot] = reason
+                return not self.players
             if not self.players:
                 if self.lives <= 0 and not self._can_buy_revive():
                     self.phase = 'lost'
@@ -488,9 +532,13 @@ class OnlineGame(Game):
         finally:
             self._boss_reward_heal = False
 
+    def _apply_water_heal(self, target, now):
+        with self._for_player(target):
+            super()._apply_water_heal(target, now)
+
     def _heal_player(self, amount, increase_max=False, temporary_ms=0):
-        # A water skill heals its owner; passive/gift heals prefer the living water
-        # character, otherwise the most wounded living teammate. Never resurrect.
+        # Passive/gift heals prefer the living water character, otherwise the
+        # most wounded living teammate. Never resurrect.
         if not self._all_players or not hasattr(self.player, 'hp'):
             return super()._heal_player(amount, increase_max, temporary_ms)
         candidates = self.players
@@ -521,7 +569,8 @@ class OnlineGame(Game):
     def _equipped_by_other(self, player, attr, key):
         if (attr == 'current_weapon' and key == 'pistol') or (attr == 'character' and key is None):
             return False
-        return any(other is not player and getattr(other, attr) == key for other in self.all_players)
+        return any(other is not player and other.slot not in self.departed and getattr(other, attr) == key
+                   for other in self.all_players)
 
     def try_switch_weapon(self, key, player=None):
         p = player or self.player
@@ -551,19 +600,36 @@ class OnlineGame(Game):
             return '无效玩家'
         if self.phase != 'playing':
             return '对局已经结束'
+        if slot in self.departed:
+            return '玩家已退出'
+        p = self.all_players[slot - 1]
+        if action == 'continue':
+            if not self.infinite_mode or p.alive:
+                return '当前玩家无需继续'
+            self.continuing.setdefault(slot, 180)
+            return None
         if self._whale_is_swallowing():
             return '等待巨鲸吞入动画结束'
-        p = self.all_players[slot - 1]
+        if action == 'rage' and p.alive and not self.paused:
+            self._activate_rage()
+            return None
         if action == 'shop_open':
-            for other in self.all_players:
-                other.shop_open = True
+            if self._shop_opener is None:
+                self._shop_opener = slot
+                for other in self.all_players:
+                    other.shop_open = other.slot not in self.departed
             self.clear_inputs()
             return None
         if action == 'shop_close':
-            p.shop_open = False
+            if slot == self._shop_opener:
+                self._close_shared_shop()
+            else:
+                p.shop_open = False
             self.clear_inputs()
             return None
         if action == 'revive':
+            if self.infinite_mode:
+                return '请使用无限模式继续操作'
             if p.alive:
                 return '当前玩家无需复活'
             if self.lives > 0:
@@ -583,6 +649,12 @@ class OnlineGame(Game):
             return None
         if not p.alive:
             return '阵亡玩家需要确认复活'
+        if action == 'upgrade':
+            if not p.shop_open or key not in p.owned_weapons:
+                return '请在商店选择已拥有武器'
+            with self._for_player(p):
+                self._upgrade_weapon(key)
+                return self.shop_notice or None
         if action in ('weapon', 'character'):
             if action == 'weapon':
                 definitions, owned = config.WEAPON_DEFS, p.owned_weapons
@@ -616,7 +688,7 @@ class OnlineGame(Game):
         if self.state == GameState.LEVEL_TRANSITION or self.campaign_boss_intro_active():
             return '等待进入下一关'
         if self.paused:
-            return '等待双方关闭商店后继续'
+            return '等待开店玩家关闭商店后继续'
         if action in ('skill1', 'skill2', 'laser', 'dart'):
             with self._for_player(p):
                 if action == 'laser':
@@ -631,12 +703,22 @@ class OnlineGame(Game):
     def snapshot(self):
         from .snapshot import encode_world
         players = []
+        now = config.game_ticks()
+        moving = (self.phase == 'playing' and not self.paused
+                  and self.state != GameState.LEVEL_TRANSITION
+                  and not self.campaign_boss_intro_active() and not self._whale_is_swallowing())
         for p in self.all_players:
+            if p.slot in self.departed:
+                continue
             players.append({'slot': p.slot, 'alive': p.alive, 'hp': p.hp, 'max_hp': p.max_hp,
                             'shop_open': p.shop_open, 'weapon': p.current_weapon,
                             'character': p.character or 'fisher', 'x': p.x, 'y': p.y,
+                            'move_speed': self._player_speed(p, now) * 60
+                            if moving and p.alive and now >= max(p.niu_freeze_until, p.geyser_lift_until) else 0,
                             'cooldowns': dict(p.skill_cooldowns),
-                            'active_until': dict(p.skill_active_until)})
+                            'active_until': dict(p.skill_active_until),
+                            'continue_ms': (self.continuing.get(p.slot, 0) * 1000 + 59) // 60,
+                            'defeat_reason': self.defeat_reasons.get(p.slot, self.game_over_reason)})
         weapons = [{'key': k, 'name': d.name, 'price': self._weapon_cost(k), 'owned': k in self.player.owned_weapons} for k, d in config.WEAPON_DEFS.items()]
         characters = [{'key': 'fisher', 'name': '渔夫', 'price': 0, 'owned': True}]
         characters += [{'key': k, 'name': d.name, 'price': self._character_cost(d), 'owned': k in self.player.owned_characters} for k, d in config.CHARACTER_DEFS.items()]
@@ -644,7 +726,7 @@ class OnlineGame(Game):
         return {'tick': self.tick, 'phase': self.phase, 'paused': self.paused,
                 'orientation': self.orientation, 'world_size': list(self.world_size),
                 'current_level': self.current_level, 'total_levels': len(core_game.LEVEL_CONFIGS), 'stage': stage,
-                'level_title': core_game.LEVEL_CONFIGS[self.current_level - 1]['title'],
+                'level_title': f'第 {self.chapter} 章' if self.infinite_mode else core_game.LEVEL_CONFIGS[self.current_level - 1]['title'],
                 'transition_reward': config.CAMPAIGN_REWARDS[self.current_level - 1] if stage == 'transition' else None,
                 'next_level_title': core_game.LEVEL_CONFIGS[self.current_level]['title'] if stage == 'transition' else None,
                 'transition_remaining_ms': max(0, self.level_transition_end - config.game_ticks()) if stage == 'transition' else 0,

@@ -242,11 +242,10 @@ async def run(args, report):
         assert room.game.tick == tick, 'Simulation advanced while both shops were open'
         await screenshot(p1, args.output, 'p1-shop-paused')
         await p1.page.locator('[data-action="shop_close"]').click()
-        await asyncio.sleep(.2)
-        assert room.game.tick == tick, 'Closing only one shop resumed the game'
-        await p2.page.locator('[data-action="shop_close"]').click()
-        await until(lambda: room.game.tick > tick, 'closing both shops resumes game')
-        report['checks'].append('Shop pauses both clients; one close stays paused; both close resumes')
+        await until(lambda: room.game.tick > tick, 'opener closes both shops and resumes game')
+        for client in clients:
+            await client.page.locator('#shop').wait_for(state='hidden')
+        report['checks'].append('Shop pauses both clients; one click by the opener closes both and resumes')
 
         # A real reload closes the WebSocket. Do not monkey-patch visibility,
         # bridge state, transport, readiness, or authentication storage.
@@ -311,6 +310,7 @@ async def run(args, report):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--orientation',choices=('landscape','portrait'),default='landscape')
+    parser.add_argument('--unified', action='store_true', help='Test the integrated PC/Web home build')
     parser.add_argument('--desktop-p1', action='store_true', help='Use a keyboard desktop client for P1')
     parser.add_argument('--output', type=Path, default=Path('online/.test-mobile-runtime'))
     parser.add_argument('--timeout', type=int, default=180, help='Real renderer startup limit in seconds')
@@ -321,7 +321,11 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     report = {'status': 'FAIL', 'checks': [], 'canvases': {}}
     try:
-        asyncio.run(run(args, report))
+        if args.unified:
+            from online.tools.test_unified_runtime import run as unified_run
+            asyncio.run(unified_run(args, report))
+        else:
+            asyncio.run(run(args, report))
     except Exception as error:
         report['status'] = 'FAIL'
         report['error'] = f'{type(error).__name__}: {error}'

@@ -31,16 +31,22 @@ const context2d = {
 };
 const canvas = {clientWidth: 480, clientHeight: 850, style: {}, getContext: () => context2d};
 const offlineStatus = {};
+const version = {hidden: true};
 const workerEvents = {};
 const worker = {state: 'installing', addEventListener: (event, callback) => { workerEvents[event] = callback; }};
 const elements = {infobox: box, 'ttgames-loading': loading, progress: nativeProgress,
     'ttgames-fullscreen': button, 'ttgames-ui': canvas, 'ttgames-quality': quality,
-    'ttgames-offline': offlineStatus};
+    'ttgames-offline': offlineStatus, 'ttgames-version': version};
 const observers = [];
 const windowEvents = {};
 const documentEvents = {};
 let callback;
-const context = {window: {isSecureContext: true, localStorage: {getItem: key => storage.get(key),
+const viewportEvents = {};
+const viewport = {offsetLeft: 0, offsetTop: 0, width: 390, height: 780,
+    addEventListener: (event, handler) => { viewportEvents[event] = handler; }};
+const viewportStyle = {setProperty(name, value) { this[name] = value; }};
+
+const context = {window: {visualViewport: viewport, isSecureContext: true, localStorage: {getItem: key => storage.get(key),
     setItem: (key, value) => storage.set(key, value)},
     addEventListener: (event, handler) => { windowEvents[event] = handler; }},
     navigator: {serviceWorker: {register: async () => ({installing: worker})}}, console,
@@ -48,10 +54,23 @@ const context = {window: {isSecureContext: true, localStorage: {getItem: key => 
         '--quality-menu-width': '216px', '--quality-safe-right': '0px',
     })[name]}),
     requestAnimationFrame: fn => { callback = fn; },
-    document: {getElementById: id => elements[id], documentElement: {},
+    document: {getElementById: id => elements[id], documentElement: {style: viewportStyle},
         addEventListener: (event, handler) => { documentEvents[event] = handler; }},
     MutationObserver: class { constructor(fn) { this.callback = fn; observers.push(this); } observe() {} }};
 vm.runInNewContext(fs.readFileSync('web/shell.js', 'utf8'), context);
+assert.strictEqual(viewportStyle['--loading-center-x'], '195px');
+Object.assign(viewport, {width: 600, height: 270, offsetLeft: 32, offsetTop: 18});
+viewportEvents.resize();
+assert.strictEqual(viewportStyle['--loading-center-x'], '332px');
+assert.strictEqual(viewportStyle['--loading-center-y'], '153px');
+assert.strictEqual(viewportStyle['--loading-visible-width'], '600px');
+assert.strictEqual(viewportStyle['--game-viewport-left'], '32px');
+assert.strictEqual(viewportStyle['--game-viewport-top'], '18px');
+assert.strictEqual(viewportStyle['--game-viewport-right'], '632px');
+assert.strictEqual(viewportStyle['--game-viewport-bottom'], '288px');
+viewport.offsetLeft = 0;
+viewportEvents.scroll();
+assert.strictEqual(viewportStyle['--loading-center-x'], '300px');
 const touch = identifier => ({identifier});
 windowEvents.touchstart({touches: [touch(7), touch(8)]});
 assert(context.window.ttgamesTouchActive(7));
@@ -94,11 +113,18 @@ assert.strictEqual(percent.textContent, '100%');
 assert.strictEqual(box.dataset.ready, '');
 assert.notStrictEqual(loading.hidden, true);
 const label = JSON.stringify([['FPS 30', 10, false, [255, 255, 255], 17, 97, 65, 13, 'left']]);
+assert.strictEqual(version.hidden, true);
+context.window.ttgamesDrawUI('[]', 480, 850, false, false, '', true);
+assert.strictEqual(version.hidden, false);
 context.window.ttgamesDrawUI(label, 480, 850, true, false);
+assert.strictEqual(version.hidden, true);
 assert.strictEqual(quality.hidden, true);
 context.window.ttgamesDrawUI(label, 480, 850, false, true);
 assert.strictEqual(quality.hidden, false);
 assert.strictEqual(loading.hidden, true);
+viewport.offsetTop = 22;
+viewportEvents.scroll();
+assert.strictEqual(viewportStyle['--game-viewport-top'], '22px');
 context.window.ttgamesDrawUI('[]', 480, 850, false, false);
 assert.strictEqual(quality.hidden, true);
 assert.deepStrictEqual(cleared, [[0, 0, 480, 850], [13, 93, 73, 21]]);
@@ -124,3 +150,38 @@ setImmediate(() => {
     workerEvents.statechange();
     assert.match(offlineStatus.textContent, /保存失败/);
 });
+
+// The opt-in meter measures both branches, including time between Python frames.
+let frameTime = 0;
+const frameStats = {style: {}};
+context.window.location = {search: '?perf=1'};
+context.performance = {now: () => frameTime};
+context.document.createElement = () => frameStats;
+context.document.body = {append() {}};
+context.document.hidden = false;
+vm.runInNewContext(fs.readFileSync('web/shell.js', 'utf8'), context);
+for (let i = 0; i <= 60; i++) {
+    frameTime = i * 1000 / 60;
+    context.window.ttgamesRecordFrame('single');
+}
+assert.match(frameStats.textContent, /单人 · 60 FPS/);
+assert.match(frameStats.textContent, /P95 16.7 \/ 最大 16.7 ms · >50ms 0/);
+frameTime = 1100;
+context.window.ttgamesRecordFrame('single');
+for (let i = 1; i <= 54; i++) {
+    frameTime = 1100 + i * 1000 / 60;
+    context.window.ttgamesRecordFrame('single');
+}
+assert.match(frameStats.textContent, /最大 100.0 ms · >50ms 1/);
+context.document.hidden = true;
+documentEvents.visibilitychange();
+frameTime = 10000;
+context.window.ttgamesRecordFrame('lan');
+context.document.hidden = false;
+documentEvents.visibilitychange();
+for (let i = 0; i <= 60; i++) {
+    frameTime = 10000 + i * 1000 / 60;
+    context.window.ttgamesRecordFrame('lan');
+}
+assert.match(frameStats.textContent, /联机 · 60 FPS/);
+assert.match(frameStats.textContent, />50ms 0/);

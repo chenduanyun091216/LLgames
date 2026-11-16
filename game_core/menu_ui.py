@@ -17,6 +17,14 @@ INK = (235, 253, 255)
 MUTED = (176, 208, 217)
 PAPER = (7, 25, 33)
 SURFACE = (11, 37, 47)
+ENTRANCE_SHORTCUTS = {'single': pygame.K_1, 'create': pygame.K_2, 'join': pygame.K_3,
+                      'keys': pygame.K_k}
+
+
+def room_shortcuts(count):
+    return (*range(pygame.K_1, pygame.K_1 + count - 1), pygame.K_ESCAPE)
+
+
 HOME_ACTIONS = (
     ('easy', '简单', pygame.K_1), ('medium', '中等', pygame.K_2),
     ('hard', '困难', pygame.K_3), ('infinite', '无限', pygame.K_4),
@@ -114,7 +122,7 @@ def _boss_poster(width, height, sprites):
     return layer
 
 
-def _home_boxes():
+def _home_boxes(entrances=False):
     w, h = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
     if config.MOBILE_LANDSCAPE_VIEW:
         title = pygame.Rect(0, 0, w // 4, h * 19 // 100)
@@ -127,11 +135,25 @@ def _home_boxes():
         action_height = 3 * 44 - 6
         actions = pygame.Rect(28, h - action_height - 20, w - 56, action_height)
         poster = pygame.Rect(10, title.bottom, w - 20, actions.top - title.bottom - 12)
+    if entrances:
+        action_height = min(48, max(36, h * 6 // 100)) if config.MOBILE_LANDSCAPE_VIEW else 56
+        actions.height = action_height
+        actions.bottom = h - max(52, h * 3 // 100)
+        poster.height = max(1, actions.top - poster.top - 10)
     title.centerx = poster.centerx = actions.centerx = w // 2
     return title, poster, actions
 
 
-def home_rects():
+def home_actions(game):
+    if game.on_return_home is not None:
+        return (*HOME_ACTIONS, ('back', '返回首页', pygame.K_ESCAPE))
+    return HOME_ACTIONS
+
+
+def home_rects(game=None):
+    if game is not None and game.on_return_home is not None:
+        keys = [key for key, _, _ in home_actions(game)]
+        return dict(zip(keys, room_action_rects(len(keys))))
     actions = _home_boxes()[2]
     columns, gap = (len(HOME_ACTIONS), 8) if config.MOBILE_LANDSCAPE_VIEW else (2, 6)
     rows = (len(HOME_ACTIONS) + columns - 1) // columns
@@ -145,9 +167,48 @@ def home_rects():
     }
 
 
-def draw_home(game):
+def entrance_rects():
+    row = _home_boxes(entrances=True)[2]
+    gap = 8
+    width = (row.w - row.h - 3 * gap) // 3
+    left = row.centerx - (3 * width + row.h + 3 * gap) // 2
+    rects = {key: pygame.Rect(left + index * (width + gap), row.y, width, row.h)
+             for index, key in enumerate(('single', 'create', 'join'))}
+    rects['keys'] = pygame.Rect(rects['join'].right + gap, row.y, row.h, row.h)
+    return rects
+
+
+def _draw_entrances(game, detail):
+    rects = entrance_rects()
+    for key, label in (('single', '单机游戏'), ('create', '创建房间'), ('join', '加入房间')):
+        rect = rects[key]
+        if key == 'single':
+            Draw.rect(config.SCR, ACCENT, rect, border_radius=8)
+        else:
+            _panel(game, rect, selected=rect.collidepoint(game.cursor_pos), radius=8)
+        if game.desktop_controls:
+            label = f'{pygame.key.name(ENTRANCE_SHORTCUTS[key])}  {label}'
+        _text(game, label, rect.inflate(-10, -4), font=game.font_small,
+              color=PAPER if key == 'single' else INK, align='center')
+    rect = rects['keys']
+    _panel(game, rect, selected=rect.collidepoint(game.cursor_pos), radius=8)
+    keyboard = pygame.Rect(0, 0, 25, 16)
+    keyboard.center = rect.center
+    Draw.rect(config.SCR, INK, keyboard, width=2, border_radius=4)
+    for y in (keyboard.y + 4, keyboard.y + 8):
+        for x in range(keyboard.x + 5, keyboard.right - 4, 4):
+            Draw.rect(config.SCR, INK, (x, y, 2, 2), border_radius=1)
+    Draw.line(config.SCR, INK, (keyboard.x + 8, keyboard.y + 12),
+              (keyboard.right - 8, keyboard.y + 12))
+    if detail:
+        row = _home_boxes(entrances=True)[2]
+        _text(game, detail, pygame.Rect(row.x, row.bottom + 3, row.w, 21),
+              color=MUTED, align='center')
+
+
+def draw_home_art(game, *, entrances=False):
     game._draw_scrim(70 if game.web else 96)
-    title, poster, _ = _home_boxes()
+    title, poster, _ = _home_boxes(entrances)
     elapsed = pygame.time.get_ticks()
     title_float = (1 - cos(tau * (elapsed % 4800) / 4800)) / 2
     title.y += round(title.h * 0.035 * title_float)
@@ -185,17 +246,29 @@ def draw_home(game):
         step_ms = 240 if key == 'player1' else 360
         step = (elapsed + index * 80) // step_ms
         _art(animation.frame(f'{key}_run', step) or animation.frame(f'{key}_back', 0), rect)
-    rects = home_rects()
-    if game.web:
+
+
+def draw_home(game, *, entrances=False, detail=''):
+    aligned = game.on_return_home is not None
+    draw_home_art(game, entrances=entrances or aligned)
+    if entrances:
+        _draw_entrances(game, detail)
+        return
+    rects = home_rects(game)
+    if game.web and not aligned:
         actions = _home_boxes()[2].inflate(14, 12)
         _panel(game, actions, fill=PAPER, radius=12)
-    for key, label, shortcut in HOME_ACTIONS:
+    for key, label, shortcut in home_actions(game):
         rect = rects[key]
         primary = key == 'easy' and not game.web
         if primary:
             Draw.rect(config.SCR, ACCENT, rect, border_radius=7)
         else:
             _panel(game, rect, radius=7)
+        if aligned and not config.MOBILE_LANDSCAPE_VIEW:
+            _text(game, label, rect.inflate(-6, -4), font=game.font_tiny,
+                  color=PAPER if primary else INK, align='center')
+            continue
         cap = pygame.Rect(rect.x + 8, rect.centery - 10, 21, 20)
         Draw.rect(config.SCR, PAPER, cap, border_radius=4)
         if not primary:
@@ -205,6 +278,39 @@ def draw_home(game):
         _text(game, label, label_rect, font=game.font_small if game.web else game.font_tiny,
               color=PAPER if primary else INK)
 
+
+
+def room_action_rects(count):
+    row = _home_boxes(entrances=True)[2]
+    row.w = config.SCREEN_WIDTH * 9 // 10
+    row.centerx = config.SCREEN_WIDTH // 2
+    center_y = row.centery
+    row.height = min(row.height, 42)
+    row.centery = center_y
+    gap = 6
+    width = min(126, (row.w - gap * (count - 1)) // count)
+    left = row.centerx - (width * count + gap * (count - 1)) // 2
+    return [pygame.Rect(left + index * (width + gap), row.y, width, row.height)
+            for index in range(count)]
+
+
+def draw_room(game, rows, rects, status, invite):
+    draw_home_art(game, entrances=True)
+    for (label, action), rect, key in zip(rows, rects, room_shortcuts(len(rows))):
+        primary = label == '开始对局' and action is not None
+        if primary:
+            Draw.rect(config.SCR, ACCENT, rect, border_radius=7)
+        else:
+            _panel(game, rect, selected=action is not None and rect.collidepoint(game.cursor_pos), radius=7)
+        color = PAPER if primary else INK if action is not None else MUTED
+        if game.desktop_controls:
+            hint = 'Esc' if key == pygame.K_ESCAPE else pygame.key.name(key)
+            label = f'{hint}  {label}'
+        _text(game, label, rect.inflate(-6, -4), font=game.font_tiny, color=color, align='center')
+    footer = pygame.Rect(16, rects[0].bottom + 5, config.SCREEN_WIDTH - 32, 18)
+    _text(game, status, footer, color=INK, align='center')
+    if invite:
+        _text(game, invite, footer.move(0, 19), color=MUTED, align='center')
 
 def campaign_rects(game):
     w, h = config.SCREEN_WIDTH, config.SCREEN_HEIGHT

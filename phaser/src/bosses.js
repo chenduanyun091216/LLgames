@@ -168,7 +168,7 @@ export function attack(world, boss, pattern) {
             }
             return ['符文涌泉', 3200];
         case 2:
-            fan(3, .85, 2, 'whale_ancient_pearl', {r: 25, bounces: 6, damage: 2}, 350);
+            fan(3, Math.PI * 24 / 180, 24, 'whale_ancient_pearl', {r: 25, bounces: 4, damage: 2}, 350);
             return ['圣珠齐射', 2700];
         default:
             boss.destination = {x: width / 2, y: 115};

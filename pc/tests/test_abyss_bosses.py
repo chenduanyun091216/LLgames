@@ -215,41 +215,40 @@ class AbyssBossTests(unittest.TestCase):
             defeat.assert_called_once_with(15700)
             self.assertFalse(game._update_whale_suction(15701))
 
-    def test_pearl_volley_spawns_only_three_and_accelerates(self):
+    def test_pearl_volley_launches_three_fast_downward_shots(self):
         boss = self.boss(AncientWhaleBoss)
         boss._pending_attack_skill = 'ancient_pearl'
-        shots = boss.attack(1000, boss.x)
+        with patch.object(config, 'game_ticks', return_value=1000):
+            shots = boss.attack(1000, config.GAME_AREA_RIGHT)
         self.assertEqual(len(shots), 3)
-        self.assertEqual([shot.angle for shot in shots], [-48, 0, 48])
-        shot = shots[1]
-        distances = []
-        for now in (1900, 2000, 2100):
+        self.assertEqual([shot.angle for shot in shots], [-24, 0, 24])
+        for shot in shots:
             before = shot.y
-            with patch.object(config, 'game_ticks', return_value=now):
+            with patch.object(config, 'game_ticks', return_value=1900):
                 shot.update()
-            distances.append(shot.y - before)
-        self.assertGreater(distances[0], 0)
-        self.assertLess(distances[0], distances[1])
-        self.assertLess(distances[1], distances[2])
+            self.assertGreater(shot.y - before, 90)
 
-    def test_pearl_arms_after_six_bounces_and_bursts_three_seconds_later(self):
+    def test_pearl_reflects_at_full_speed_and_bursts_on_fourth_contact(self):
         with patch.object(config, 'game_ticks', return_value=1000):
             shot = AbyssProjectile('ancient_pearl', config.SCREEN_WIDTH / 2, 180,
-                                   angle=90, speed=12, warning_ms=0, active_ms=20000)
+                                   speed=24, warning_ms=0)
         now = 1000
-        while now < 12000 and not shot.pearl_burst_at:
+        contacts = []
+        while now < 3500 and shot.alive:
             now += 16
+            before = shot.pearl_bounces
             with patch.object(config, 'game_ticks', return_value=now):
                 shot.update()
-        self.assertEqual(shot.pearl_bounces, 6)
-        self.assertEqual(shot.pearl_burst_at, now + 3000)
-        with patch.object(config, 'game_ticks', return_value=now + 2999):
-            shot.update()
-            self.assertTrue(shot.alive)
-        with patch.object(config, 'game_ticks', return_value=now + 3000):
-            shot.update()
-            self.assertFalse(shot.alive)
-            self.assertEqual(len(shot.pearl_fragments()), 6)
+            if shot.pearl_bounces > before:
+                contacts.append(shot.y)
+                if shot.pearl_bounces < 4:
+                    self.assertTrue(shot.alive)
+                    self.assertAlmostEqual(math.cos(math.radians(shot.angle)), (-1) ** shot.pearl_bounces)
+        self.assertEqual(len(contacts), 4)
+        self.assertEqual(shot.pearl_burst_at, now)
+        self.assertFalse(shot.alive)
+        self.assertEqual(shot.y, shot.r)
+        self.assertEqual(len(shot.pearl_fragments()), 6)
 
     def test_whip_is_held_by_the_moving_boss(self):
         boss = self.boss(MechaLizardBoss)
@@ -458,7 +457,7 @@ class AbyssBossTests(unittest.TestCase):
         with patch.object(config, 'game_ticks', return_value=2500):
             b.update()
         self.assertAlmostEqual(a.y, b.y)
-        self.assertAlmostEqual(b.y, 129.25)
+        self.assertAlmostEqual(b.y, 190)
 
     def test_render_without_png_and_snapshot_fields_are_scalar(self):
         plain = pygame.Surface((960, 720), pygame.SRCALPHA)

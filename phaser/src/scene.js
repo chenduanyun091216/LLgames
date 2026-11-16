@@ -228,8 +228,7 @@ export class OceanScene extends Phaser.Scene {
             const sprite = this.sprite(s.id, 'effects/' + s.art, s.x, s.y, s.r * 2.4, s.r * 2.4, 3);
             if (sprite) {
                 const directional = /missile|crescent|axe|trident/.test(s.art);
-                sprite.setRotation(s.spin ? t / 88 : directional ? s.angle - Math.PI / 2 : 0)
-                    .setAlpha(s.fuseAt && Math.floor(t / 100) % 2 ? .55 : 1);
+                sprite.setRotation(s.spin ? t / 88 : directional ? s.angle - Math.PI / 2 : 0);
             }
         }
         for (const drop of w.drops) {

@@ -79,8 +79,8 @@ def update_mobile_view(window_size, layout_size=None):
     control_space = min(150, max(80, int(SCREEN_HEIGHT * 0.18)))
     GAME_AREA_BOTTOM = SCREEN_HEIGHT - control_space
     if MOBILE_LANDSCAPE_VIEW:
-        GAME_AREA_LEFT = SCREEN_WIDTH // 4
-        GAME_AREA_RIGHT = SCREEN_WIDTH * 3 // 4
+        GAME_AREA_LEFT = SCREEN_WIDTH * 3 // 16
+        GAME_AREA_RIGHT = SCREEN_WIDTH - GAME_AREA_LEFT
     else:
         GAME_AREA_LEFT = 0
         GAME_AREA_RIGHT = SCREEN_WIDTH
@@ -419,3 +419,13 @@ INFINITE_BOSS_HP = (30, 46, 66, 90, 116, 144, 170, 184, 192, 202, 220)
 INFINITE_BOSS_ATTACK_MS = (4400, 4100, 3900, 3700, 3500, 3400, 5800, 3900, 4600, 4800, 3600)
 INFINITE_REINFORCEMENT_MS = (5500, 5000, 4600, 4300, 4000, 4200, 4300, 4600, 5800, 6200, 0)
 INFINITE_REINFORCEMENT_CAP = (1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 0)
+INFINITE_PROGRESSION = {
+    'boss_hp_per_chapter': 5,
+    'boss_attack_reduction_per_round': 5,
+    'boss_attack_min_percent': 70,
+    'enemy_health_start_percent': 150,
+    'enemy_health_per_chapter': 2,
+    'wave_spawn_start_ms': 1300,
+    'wave_spawn_step_ms': 50,
+    'wave_spawn_min_ms': 800,
+}

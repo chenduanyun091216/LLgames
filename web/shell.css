@@ -9,20 +9,41 @@ html, body {
     color: #ecfaff;
     color-scheme: dark;
 }
+:root {
+    --game-visible-left: var(--game-viewport-left, 0px);
+    --game-visible-top: var(--game-viewport-top, 0px);
+    --game-visible-right: min(var(--game-viewport-right, 100vw), 100vw);
+    --game-visible-bottom: min(var(--game-viewport-bottom, 100dvh), 100dvh);
+    --game-left: max(var(--game-visible-left), env(safe-area-inset-left, 0px));
+    --game-top: max(var(--game-visible-top), env(safe-area-inset-top, 0px));
+    --game-right: min(var(--game-visible-right), calc(100vw - env(safe-area-inset-right, 0px)));
+    --game-bottom: min(var(--game-visible-bottom), calc(100dvh - env(safe-area-inset-bottom, 0px)));
+    --game-width: calc(var(--game-right) - var(--game-left));
+    --game-height: calc(var(--game-bottom) - var(--game-top));
+}
 #canvas, #ttgames-ui {
-    position: fixed;
-    inset: 0;
-    width: 100% !important;
-    height: 100% !important;
-    margin: 0;
+    position: fixed !important;
+    inset: var(--game-top) auto auto var(--game-left) !important;
+    width: var(--game-width) !important;
+    height: var(--game-height) !important;
+    margin: 0 !important;
     touch-action: none;
 }
+#canvas:focus { outline: none; }
 #ttgames-ui { z-index: 6; pointer-events: none; }
+#ttgames-safe-area-fill {
+    position: fixed;
+    top: var(--game-visible-top);
+    left: var(--game-visible-left);
+    width: calc(var(--game-visible-right) - var(--game-visible-left));
+    height: calc(var(--game-visible-bottom) - var(--game-visible-top));
+    pointer-events: none;
+}
 #infobox {
-    top: 50% !important;
-    left: 50% !important;
+    top: var(--loading-center-y, 50%) !important;
+    left: var(--loading-center-x, 50%) !important;
     transform: translate(-50%, -50%);
-    width: min(76vw, 320px);
+    width: min(calc(var(--loading-visible-width, 100vw) * .76), 320px);
     box-sizing: border-box;
     padding: 28px 18px 24px;
     border: 1px solid #468ba0;
@@ -58,11 +79,12 @@ html, body {
 #transfer { visibility: hidden; }
 #ttgames-loading {
     position: fixed;
-    top: calc(50% + 73px);
-    left: 50%;
+    pointer-events: none;
+    top: calc(var(--loading-center-y, 50%) + 73px);
+    left: var(--loading-center-x, 50%);
     z-index: 9;
     transform: translateX(-50%);
-    width: min(70vw, 290px);
+    width: min(calc(var(--loading-visible-width, 100vw) * .7), 290px);
     color: #c1edf2;
     text-align: center;
     font: 600 13px/1.6 system-ui, sans-serif;
@@ -96,7 +118,19 @@ html, body {
 }
 #infobox[data-ready] + #ttgames-loading .loading-status { visibility: hidden; }
 #ttgames-loading .loading-percent { font-variant-numeric: tabular-nums; }
-#ttgames-offline:not(:empty) {
+#ttgames-version {
+    position: fixed;
+    z-index: 20;
+    top: calc(var(--game-top) + 8px);
+    right: calc(100vw - var(--game-right) + 12px);
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: #071b2bd9;
+    color: #c1dce6;
+    font: 10px/1.2 ui-monospace, monospace;
+    pointer-events: none;
+}
+#ttgames-offline:not([hidden]):not(:empty) {
     position: fixed;
     z-index: 22;
     top: calc(env(safe-area-inset-top) + 10px);
@@ -114,11 +148,14 @@ html, body {
     text-align: center;
     pointer-events: none;
 }
+@media (max-width: 600px) {
+    #ttgames-version:not([hidden]) ~ #ttgames-offline { top: calc(var(--game-top) + 32px); }
+}
 #ttgames-fullscreen, #ttgames-quality > summary {
     position: fixed;
     z-index: 20;
-    top: calc(env(safe-area-inset-top) + 62px);
-    right: calc(env(safe-area-inset-right) + 12px);
+    top: calc(var(--game-top) + 62px);
+    right: calc(100vw - var(--game-right) + 12px);
     width: 38px;
     height: 38px;
     padding: 0;
@@ -136,23 +173,22 @@ html, body {
 #ttgames-fullscreen:active { background: #0a2335; border-color: #d0fff5; }
 #ttgames-fullscreen:focus-visible { outline: 2px solid white; outline-offset: 3px; }
 @media (orientation: landscape) {
-    #ttgames-fullscreen { top: calc(env(safe-area-inset-top) + 8px); left: 23%; right: auto; transform: translateX(-50%); width: 32px; height: 32px; }
+    #ttgames-fullscreen { top: calc(var(--game-top) + 8px); left: calc(var(--game-left) + var(--game-width) * .23); right: auto; transform: translateX(-50%); width: 32px; height: 32px; }
 }
 
 #ttgames-fullscreen[data-menu] {
-    top: calc(env(safe-area-inset-top) + 8px);
-    left: calc(env(safe-area-inset-left) + 12px);
+    top: calc(var(--game-top) + 8px);
+    left: calc(var(--game-left) + 12px);
     right: auto;
     transform: none;
 }
 
 #ttgames-quality {
     --quality-menu-width: 216px;
-    --quality-safe-right: env(safe-area-inset-right, 0px);
     position: fixed;
     z-index: 21;
-    top: var(--quality-top, calc(50% - 139px));
-    left: calc(50% + 100px);
+    top: calc(var(--game-top) + var(--quality-top));
+    left: calc(var(--game-left) + var(--quality-left));
     font: 14px/1.4 system-ui, sans-serif;
     color: #e6fcff;
 }
@@ -168,13 +204,13 @@ html, body {
 #ttgames-quality > fieldset {
     --menu-top: calc(var(--pause-bottom) + 10px);
     position: fixed;
-    top: var(--menu-top);
-    left: 50%;
+    top: calc(var(--game-top) + var(--menu-top));
+    left: calc(var(--game-left) + var(--game-width) / 2);
     transform: translateX(-50%);
     box-sizing: border-box;
-    width: min(var(--quality-menu-width), calc(100vw - 20px));
+    width: min(var(--quality-menu-width), calc(var(--game-width) - 20px));
     min-inline-size: 0;
-    max-height: calc(100dvh - var(--menu-top) - max(10px, env(safe-area-inset-bottom)));
+    max-height: calc(var(--game-height) - var(--menu-top) - 10px);
     overflow: auto;
     touch-action: pan-y;
     overscroll-behavior: contain;
@@ -186,7 +222,7 @@ html, body {
 }
 #ttgames-quality[data-side] > fieldset {
     --menu-top: var(--quality-top);
-    left: calc(var(--pause-right) + 10px);
+    left: calc(var(--game-left) + var(--pause-right) + 10px);
     transform: none;
 }
 #ttgames-quality label {
@@ -199,3 +235,17 @@ html, body {
 }
 #ttgames-quality label span { margin-left: auto; color: #a9dce9; }
 #ttgames-quality input { accent-color: #85dfd2; }
+
+
+#ttgames-lan-join {
+    width: min(24rem, calc(100vw - 2rem));
+    padding: 1.25rem;
+    color: #e3f1f5;
+    background: #102b3c;
+    border: 1px solid #578398;
+    border-radius: 12px;
+}
+#ttgames-lan-join::backdrop { background: #040e19b8; }
+#ttgames-lan-join form { display: grid; gap: .75rem; }
+#ttgames-lan-join input, #ttgames-lan-join button { min-height: 44px; font: inherit; }
+#ttgames-lan-join form div { display: flex; justify-content: end; gap: .5rem; }
