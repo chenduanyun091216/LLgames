@@ -112,6 +112,10 @@ def download(url, target, min_size):
 
 
 def _atlas_layout(image, name):
+    if name.startswith('anim_enemy_trench_'):
+        return max(1, image.width // image.height), 1, 512
+    if name == 'anim_boss_shieldfish':
+        return 6, 5, 576
     if name == 'anim_boss_ancient_whale':
         return 8, 6, 448
     if name == 'anim_boss_orochi_idle':
@@ -147,7 +151,7 @@ DEFAULT_ASSET_SCALE = 0.75
 def prepare_image(path, target_images, hd_images):
     from PIL import Image
 
-    background = re.fullmatch(r'bg[0-9]+|background', path.stem)
+    background = re.fullmatch(r'bg[0-9]+|background|trench-boss-(wide|portrait)', path.stem)
     atlas = path.stem.startswith('anim_')
     # UI icons are small on both tiers. A single copy also keeps the startup title shared.
     limits = {'enemies': 512, 'players': 512, 'bosses': 1024, 'effects': 768,
@@ -360,7 +364,8 @@ def finalize_webroot(pygbag_output):
     if remote_resources:
         raise RuntimeError(f'网页入口仍引用外部资源：{remote_resources}')
     archive = WEBROOT / 'ttgames.tar.gz'
-    digest = hashlib.sha256(archive.read_bytes()).hexdigest()[:16]
+    with archive.open('rb') as package:
+        digest = hashlib.file_digest(package, 'sha256').hexdigest()[:16]
     archive.rename(WEBROOT / f'ttgames-{digest}.tar.gz')
     html = html.replace('ttgames.tar.gz', f'ttgames-{digest}.tar.gz')
     for unused_archive in WEBROOT.glob('*.apk'):
@@ -608,6 +613,8 @@ def serve(host, port, tls=None, setup_port=8000, setup_certificate=None, cert=No
 
 
 def load_lan_tls(cert, key, ca=None):
+    if any(path.resolve().is_relative_to(WEBROOT.resolve()) for path in (cert, key)):
+        raise ValueError('HTTPS 证书和私钥必须放在静态站点目录之外')
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.load_cert_chain(cert, key, password=lambda: b'')
     if ca is None and cert.resolve() == (TLS_DIR / 'cert.pem').resolve():

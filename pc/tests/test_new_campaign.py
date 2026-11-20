@@ -11,6 +11,7 @@ from game_core import config
 from game_core.game import BACKGROUND_SCROLL_TICKS, Game, GameState
 from game_core.abyss_bosses import MechaLizardBoss, AncientWhaleBoss
 from game_core.orochi import OrochiBoss
+from game_core.trench import ShieldfishBoss
 
 
 class NewCampaignTests(unittest.TestCase):
@@ -39,25 +40,25 @@ class NewCampaignTests(unittest.TestCase):
         game.mobile_controls.auto_fire = False
         return game
 
-    def test_all_shared_balance_tables_have_eleven_entries(self):
-        self.assertEqual(len(config.LEVEL_CONFIGS), 11)
-        self.assertEqual(len(config.BOSS_DEFS), 11)
+    def test_all_shared_balance_tables_have_twelve_entries(self):
+        self.assertEqual(len(config.LEVEL_CONFIGS), 12)
+        self.assertEqual(len(config.BOSS_DEFS), 12)
         for name in ('CAMPAIGN_KILLS', 'CAMPAIGN_SPAWN_MS', 'CAMPAIGN_ENEMY_CAP',
                      'CAMPAIGN_BOSS_HP', 'CAMPAIGN_BOSS_ATTACK_MS', 'CAMPAIGN_REINFORCEMENT_MS',
                      'CAMPAIGN_REINFORCEMENT_CAP', 'CAMPAIGN_LARGE_CHANCE', 'CAMPAIGN_SPEED',
                      'CAMPAIGN_REWARDS', 'INFINITE_BOSS_HP', 'INFINITE_BOSS_ATTACK_MS',
                      'INFINITE_REINFORCEMENT_MS', 'INFINITE_REINFORCEMENT_CAP'):
-            self.assertEqual(len(getattr(config, name)), 11, name)
+            self.assertEqual(len(getattr(config, name)), 12, name)
         for index, level in enumerate(config.LEVEL_CONFIGS):
             self.assertEqual(level['level'], index + 1)
             self.assertEqual(level['boss_idx'], index)
 
-    def test_eight_factory_temple_orochi_progression_and_final_victory(self):
+    def test_eight_factory_temple_trench_orochi_progression_and_final_victory(self):
         game = self.game()
         game._start_level(8)
-        for stage, cls in ((8, None), (9, MechaLizardBoss), (10, AncientWhaleBoss), (11, OrochiBoss)):
+        for stage, cls in ((8, None), (9, MechaLizardBoss), (10, AncientWhaleBoss), (11, ShieldfishBoss), (12, OrochiBoss)):
             self.assertEqual(game.current_level, stage)
-            if stage < 11:
+            if stage < 12:
                 self.assertIsNone(game.boss)
                 self.assertTrue(game.level_enemy_defs)
                 game._trigger_boss()
@@ -72,7 +73,7 @@ class NewCampaignTests(unittest.TestCase):
                 self.assertIsInstance(game.boss, cls)
             game._kill_boss()
             self.assertFalse(game.boss_projectiles)
-            if stage < 11:
+            if stage < 12:
                 self.assertEqual(game.state, GameState.LEVEL_TRANSITION)
                 config.campaign_time_ms = game.level_transition_end
                 game.update()
@@ -193,16 +194,16 @@ class NewCampaignTests(unittest.TestCase):
         for desktop in (True, False):
             with self.subTest(desktop=desktop):
                 game = self.game(desktop=desktop)
-                game._begin_infinite_run(11)
+                game._begin_infinite_run(12)
                 self.assertIsInstance(game.boss, OrochiBoss)
                 self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (220, 3600))
                 game.player.weapon_upgrades['rifle'] = 2
                 game.boss._start_death(config.game_ticks() - OrochiBoss.DEATH_DURATION)
                 self.assertTrue(game._settle_boss_if_killed())
                 self.assertEqual((game.chapter, game.infinite_background_level, game.state),
-                                 (12, 1, GameState.PLAYING))
+                                 (13, 1, GameState.PLAYING))
                 self.assertEqual(game.player.weapon_upgrades['rifle'], 2)
-                self.assertEqual((game.spawn_interval, game._infinite_density(config.game_ticks())), (1050, 7))
+                self.assertEqual((game.spawn_interval, game._infinite_density(config.game_ticks())), (1000, 8))
                 with patch('game_core.game.random.random', return_value=.99):
                     game._update_playing(game.last_spawn_time + game.spawn_interval)
                 enemy, = game.enemies
@@ -260,16 +261,16 @@ class NewCampaignTests(unittest.TestCase):
 
     def test_new_shift_shortcuts_and_hud_reach_both_new_stages_and_final(self):
         game = self.game(True)
-        for key, level in ((pygame.K_9, 9), (pygame.K_0, 10), (pygame.K_MINUS, 11)):
+        for key, level in ((pygame.K_9, 9), (pygame.K_0, 10), (pygame.K_MINUS, 11), (pygame.K_EQUALS, 12)):
             game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=key, mod=pygame.KMOD_SHIFT)])
             self.assertEqual(game.current_level, level)
         left, _, _ = game._hud_controls()
         game._handle_hud_click(left.center)
-        self.assertEqual(game.current_level, 10)
+        self.assertEqual(game.current_level, 11)
         self.assertEqual(game.state, GameState.PLAYING)
         game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SEMICOLON,
                                                mod=pygame.KMOD_SHIFT)])
-        self.assertEqual(game.current_level, 10)
+        self.assertEqual(game.current_level, 11)
 
     def test_rotation_cancels_new_warning_and_active_geometry_safely(self):
         for infinite in (False, True):
@@ -307,7 +308,7 @@ class NewCampaignTests(unittest.TestCase):
 
     def test_restart_final_starts_boss_after_card_without_wave(self):
         game = self.game()
-        game._start_level(11)
+        game._start_level(12)
         game._trigger_boss()
         game.boss.hp = 1
         game._retry_level()
@@ -315,7 +316,7 @@ class NewCampaignTests(unittest.TestCase):
         config.campaign_time_ms = game.level_title_until
         game.update()
         self.assertIsInstance(game.boss, OrochiBoss)
-        self.assertEqual(game.boss.hp, config.CAMPAIGN_BOSS_HP[10][1])
+        self.assertEqual(game.boss.hp, config.CAMPAIGN_BOSS_HP[11][1])
         self.assertEqual(game.state, GameState.BOSS_FIGHT)
         self.assertFalse(game.enemies)
 

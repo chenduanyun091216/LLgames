@@ -33,10 +33,10 @@ HOME_ACTIONS = (
 
 # Percentages of the poster area, ordered from the first Boss to the final Boss.
 BOSS_POSTER = (
-    (0, 62, 24, 31), (15, 67, 25, 30), (31, 71, 23, 30),
-    (47, 71, 23, 30), (63, 67, 25, 30), (76, 62, 24, 31),
-    (2, 27, 31, 52), (67, 27, 31, 52),
-    (20, 39, 34, 43), (47, 39, 34, 43), (16, 0, 68, 74),
+    (1, 61, 24, 31), (15, 66, 25, 30), (31, 69, 23, 30),
+    (46, 69, 23, 30), (62, 66, 25, 30), (75, 61, 24, 31),
+    (2, 25, 31, 52), (67, 25, 31, 52),
+    (18, 39, 31, 39), (52, 39, 31, 39), (33, 40, 34, 39), (17, 0, 66, 57),
 )
 SKILL_DESCRIPTIONS = {
     'ice': (
@@ -106,9 +106,8 @@ def _boss_art(level):
 
 @lru_cache(maxsize=2)
 def _boss_poster(width, height, sprites):
-    # The front row extends to 101% of the layout height.
-    layer = pygame.Surface((width, height * 101 // 100), pygame.SRCALPHA)
-    for index in (10, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5):
+    layer = pygame.Surface((width, height), pygame.SRCALPHA)
+    for index in (11, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5):
         image = sprites[index]
         if image is None:
             continue

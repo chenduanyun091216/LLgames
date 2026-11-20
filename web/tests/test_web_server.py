@@ -17,6 +17,16 @@ from web.run_web import OfflineHandler, SetupHandler, prepare_image
 
 
 class WebServerTests(unittest.TestCase):
+    def test_tls_key_cannot_be_loaded_from_public_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            published = root / 'web'
+            published.mkdir()
+            key = published / 'server.key'
+            with patch.object(run_web, 'WEBROOT', published):
+                with self.assertRaisesRegex(ValueError, '静态'):
+                    run_web.load_lan_tls(root / 'server.pem', key)
+
     def test_lan_addresses_use_current_network_instead_of_stale_certificate_ip(self):
         certificate = {'subjectAltName': (('IP Address', '172.20.10.3'),)}
         interfaces = ('en0: flags=1<UP>\n\tinet 192.168.1.10 netmask 0xffffff00\n'

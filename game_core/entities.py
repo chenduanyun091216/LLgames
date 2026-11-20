@@ -538,8 +538,10 @@ class Enemy:
                 Draw.ellipse(surf, (127, 52, 175), self.rect())
             return
         # 阴影
-        shadow_y = int(self.y + self.h - 6)
-        _ellipse(surf, (0, 0, 0, 50), (int(self.x - self.w // 2 + 8), shadow_y, self.w - 16, 6))
+        trench = self.edef['key'] in config.TRENCH_ATTACKS
+        if not trench:
+            shadow_y = int(self.y + self.h - 6)
+            _ellipse(surf, (0, 0, 0, 50), (int(self.x - self.w // 2 + 8), shadow_y, self.w - 16, 6))
         now = config.game_ticks()
         if self.is_zongzong:
             cx, cy = int(self.x), int(self.y + self.h // 2)
@@ -600,7 +602,19 @@ class Enemy:
             )
             bsw, bsh = breathing_surface.get_size()
             sprite_asset = self.sprite_asset
-            if self.edef['key'] in config.ENEMY_ACTION_KEYS and not self.frozen and age % 3600 >= 3100:
+            if trench:
+                delay = config.TRENCH_ATTACKS[self.edef['key']][0]
+                casting = 0 <= now - self.last_attack_time < delay and self.y >= self.ENTRY_END_Y
+                key = f'enemy_{self.edef["key"]}'
+                index = 0 if self.frozen else age // (68 if casting else 115) % 6
+                action = animation.frame(key, index)
+                if action is not None:
+                    sprite_asset = action
+                    if not isinstance(surf, RenderSurface):
+                        breathing_surface = scale_surface_cached(action, (bsw, bsh))
+                if casting and not self.frozen:
+                    draw_glow(surf, (self.x, self.y + self.h * .72), max(5, self.w // 3), (246, 192, 96), 86)
+            elif self.edef['key'] in config.ENEMY_ACTION_KEYS and not self.frozen and age % 3600 >= 3100:
                 action_asset = f'animations/enemies/enemy_{self.edef["key"]}_action.png'
                 action = image_asset(action_asset, (bsw, bsh))
                 if action is not None:
@@ -608,7 +622,7 @@ class Enemy:
                     sprite_asset = action_asset
             accent = (255, 163, 108) if self.is_large else (144, 217, 235)
             blit_lit_sprite(surf, breathing_surface, (self.x - bsw // 2, self.y + self.h // 2 - bsh // 2),
-                            accent, 105, source=sprite_asset)
+                            accent, 48 if trench else 105, source=sprite_asset)
         # 燃烧效果
         if self.burning:
             x, y = self.x, self.y - 7
@@ -665,45 +679,50 @@ class Enemy:
         _rect(surf, (150, 255, 100, 80), (bx, by, int(bar_w * ratio), 2), border_radius=1)
 
     def _draw_ice_status(self, surf, now):
-        if self.frozen or now < self.snowflake_until:
-            x, y = self.x, self.y - 12
-            for i in range(6):
-                angle = i * math.tau / 6
-                dx, dy = math.cos(angle), math.sin(angle)
-                _line(surf, (225, 250, 255), (x, y), (x + dx * 8, y + dy * 8), 2)
-                for side in (-1, 1):
-                    _line(surf, (165, 227, 255), (x + dx * 5, y + dy * 5),
-                          (x + dx * 3 - side * dy * 3, y + dy * 3 + side * dx * 3))
+        draw_ice_status(surf, self.x, self.y + self.h * .5, self.w, self.h, now,
+                        frozen=self.frozen, frozen_until=self.frozen_until, snowflake_until=self.snowflake_until)
 
-        x, y = self.x, self.y + self.h * .5
-        w, h = self.w * .56, self.h * .58
-        if self.frozen:
-            layer = effect_layer(surf, (math.ceil(w * 2) + 4, math.ceil(h * 2) + 4))
-            position = (round(x - w - 2), round(y - h - 2))
-            x, y = w + 2, h + 2
-            crown, base = (x + w * .22, y - h), (x - w * .25, y + h)
-            left, right = (x - w, y - h * .32), (x + w, y + h * .27)
-            shell = (crown, (x + w * .8, y - h * .68), right,
-                     (x + w * .54, y + h * .84), base, (x - w, y + h * .4), left)
-            _polygon(layer, (100, 202, 249, 82), shell)
-            ridge = (x + w * .14, y + h * .20)
-            _polygon(layer, (196, 245, 255, 75), (crown, left, ridge))
-            _polygon(layer, (61, 161, 230, 75), (crown, right, base, ridge))
-            for corner in (crown, left, right, base):
-                _line(layer, (205, 246, 255, 145), corner, ridge)
-            _polygon(layer, (220, 250, 255, 210), shell, 2)
-            blit_effect(surf, layer, position)
-        elif self.frozen_until and 0 <= now - self.frozen_until < 420:
-            t = (now - self.frozen_until) / 420
-            alpha = round(235 * (1 - t))
-            for i in range(8):
-                angle = i * math.tau / 8
-                px = x + math.cos(angle) * (w + 22 * t)
-                py = y + math.sin(angle) * (h + 22 * t) + 20 * t * t
-                size = 3 + i % 3
-                shard = ((px - size, py + size), (px + size, py + size * .45), (px, py - size))
-                _polygon(surf, (121, 210, 250, alpha), shard)
-                _line(surf, (225, 249, 255, alpha), shard[0], shard[2])
+
+def draw_ice_status(surf, x, y, width, height, now, *, frozen, frozen_until, snowflake_until=0):
+    """Draw the same faceted ice shell and thaw particles on players and enemies."""
+    if frozen or now < snowflake_until:
+        flake_y = y - height / 2 - 12
+        for i in range(6):
+            angle = i * math.tau / 6
+            dx, dy = math.cos(angle), math.sin(angle)
+            _line(surf, (225, 250, 255), (x, flake_y), (x + dx * 8, flake_y + dy * 8), 2)
+            for side in (-1, 1):
+                _line(surf, (165, 227, 255), (x + dx * 5, flake_y + dy * 5),
+                      (x + dx * 3 - side * dy * 3, flake_y + dy * 3 + side * dx * 3))
+
+    w, h = width * .56, height * .58
+    if frozen:
+        layer = effect_layer(surf, (math.ceil(w * 2) + 4, math.ceil(h * 2) + 4))
+        position = (round(x - w - 2), round(y - h - 2))
+        x, y = w + 2, h + 2
+        crown, base = (x + w * .22, y - h), (x - w * .25, y + h)
+        left, right = (x - w, y - h * .32), (x + w, y + h * .27)
+        shell = (crown, (x + w * .8, y - h * .68), right,
+                 (x + w * .54, y + h * .84), base, (x - w, y + h * .4), left)
+        _polygon(layer, (100, 202, 249, 82), shell)
+        ridge = (x + w * .14, y + h * .20)
+        _polygon(layer, (196, 245, 255, 75), (crown, left, ridge))
+        _polygon(layer, (61, 161, 230, 75), (crown, right, base, ridge))
+        for corner in (crown, left, right, base):
+            _line(layer, (205, 246, 255, 145), corner, ridge)
+        _polygon(layer, (220, 250, 255, 210), shell, 2)
+        blit_effect(surf, layer, position)
+    elif frozen_until and 0 <= now - frozen_until < 420:
+        t = (now - frozen_until) / 420
+        alpha = round(235 * (1 - t))
+        for i in range(8):
+            angle = i * math.tau / 8
+            px = x + math.cos(angle) * (w + 22 * t)
+            py = y + math.sin(angle) * (h + 22 * t) + 20 * t * t
+            size = 3 + i % 3
+            shard = ((px - size, py + size), (px + size, py + size * .45), (px, py - size))
+            _polygon(surf, (121, 210, 250, alpha), shard)
+            _line(surf, (225, 249, 255, alpha), shard[0], shard[2])
 
 
 class Bullet:

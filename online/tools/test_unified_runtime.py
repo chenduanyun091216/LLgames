@@ -42,9 +42,12 @@ async def run(args, report):
                     await page.goto(url)
                     version = page.locator('#ttgames-version')
                     ready = page.locator('#infobox[data-ready]')
-                    await ready.wait_for(timeout=args.timeout * 1000)
-                    assert not await version.is_visible()
-                    await ready.click()
+                    # When autoplay is permitted the engine enters the menu without a prompt.
+                    await page.locator('#infobox[data-ready]:visible, #ttgames-version:visible').first.wait_for(
+                        timeout=args.timeout * 1000)
+                    if await ready.is_visible():
+                        assert not await version.is_visible()
+                        await ready.click()
                     await page.locator('#ttgames-loading').wait_for(state='hidden', timeout=args.timeout * 1000)
                     await version.wait_for(state='visible')
                     assert await version.evaluate("label => getComputedStyle(label).fontSize === '10px'")

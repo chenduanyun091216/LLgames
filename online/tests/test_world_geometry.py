@@ -62,8 +62,12 @@ class WorldGeometryTests(unittest.TestCase):
     def test_revive_spawns_inside_portrait_world(self):
         game = OnlineGame(orientation='portrait')
         p = game.all_players[1]
-        p.alive, p.hp = False, 0
-        self.assertIsNone(game.action(2, 'revive'))
+        game._damage_target = p
+        game._damage_player(0, p.hp, 'fixture')
+        self.assertFalse(p.alive)
+        for _ in range(180):
+            game.step()
+        self.assertTrue(p.alive)
         self.assertLess(p.rect().right, 480)
         self.assertGreater(p.rect().left, 0)
 

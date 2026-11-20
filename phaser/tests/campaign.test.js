@@ -3,9 +3,21 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {Battle, bossBoxes, STEP} from '../src/battle.js';
 import {attack} from '../src/bosses.js';
+import {mobileView} from '../src/layout.js';
+import {cannonMuzzle, fireTrenchCannon, updateTrenchBoss} from '../src/trench.js';
+import {homeContent} from '../src/campaign-menu.js';
 
 const data = JSON.parse(readFileSync(new URL('../dist/campaign.json', import.meta.url)));
 const manifest = JSON.parse(readFileSync(new URL('../dist/assets.json', import.meta.url)));
+
+test('home poster includes every campaign boss once', () => {
+    const html = homeContent(data, () => '', '', false);
+    const images = [...html.matchAll(/src="\.\/art\/bosses\/([^"]+)\.webp"/g)].map(match => match[1]);
+    assert.equal(images.length, data.levels.length);
+    assert.equal(new Set(images).size, data.levels.length);
+    assert.ok(images.includes('boss_shieldfish'));
+    assert.ok(images.includes('boss_orochi'));
+});
 
 function stepFor(battle, ms, input = {}) {
     for (let i = 0; i < Math.ceil(ms / STEP); i++) {
@@ -126,11 +138,11 @@ test('guided sniper rounds prioritize and open the nearest live gift', () => {
 
 test('a campaign goes from the first wave to the last boss and victory using real weapon hits', () => {
     const battle = new Battle(data, {tier: 1}, () => .61);
-    for (let n = 1; n <= 11; n++) {
+    for (let n = 1; n <= 12; n++) {
         assert.equal(battle.level, n);
         assert.ok(manifest['backgrounds/bg' + n]);
         assert.ok(manifest['bosses/' + (n === 8 ? 'zongzong' : data.bosses[n - 1].key)]);
-        if (![6, 11].includes(n)) {
+        if (![6, 12].includes(n)) {
             assert.equal(battle.phase, 'wave');
             battle.invulnerable = Infinity;
             stepFor(battle, 1500);
@@ -151,9 +163,9 @@ test('a campaign goes from the first wave to the last boss and victory using rea
             if (battle.boss?.pull) battle.boss.pull = battle.boss.destination = null;
             battle.events.length = 0;
         }
-        assert.equal(battle.phase, n === 11 ? 'victory' : 'clear', 'level ' + n);
+        assert.equal(battle.phase, n === 12 ? 'victory' : 'clear', 'level ' + n);
         assert.equal(battle.shots.length + battle.zones.length + battle.tasks.length, 0);
-        if (n < 11) battle.next();
+        if (n < 12) battle.next();
     }
 });
 
@@ -189,7 +201,7 @@ test('the first six campaign bosses cast one extra signature below half health',
 });
 
 test('each boss executes its signature and later attack patterns', () => {
-    for (let level = 1; level <= 11; level++) {
+    for (let level = 1; level <= 12; level++) {
         const battle = new Battle(data, {level, tier: 2}, () => .61);
         if (battle.phase === 'wave') battle.beginBoss();
         const names = new Set();
@@ -202,7 +214,7 @@ test('each boss executes its signature and later attack patterns', () => {
             if (battle.phase === 'defeat') battle.revive();
         }
         assert.ok(hasHazard, 'level ' + level);
-        assert.ok(names.size >= (level >= 7 ? 5 : 3), 'level ' + level + ' ' + [...names]);
+        assert.ok(names.size >= (level === 11 ? 4 : level >= 7 ? 5 : 3), 'level ' + level + ' ' + [...names]);
     }
 });
 
@@ -250,8 +262,8 @@ test('shop, retry and portrait resize use the selected rules', () => {
     assert.equal(battle.lives, 3);
 });
 
-test('endless chapter 12 carries upgrades forward and increases enemy pressure', () => {
-    const endless = new Battle(data, {mode: 'endless', level: 11, tier: 1}, () => .1);
+test('endless chapter 13 carries upgrades forward and increases enemy pressure', () => {
+    const endless = new Battle(data, {mode: 'endless', level: 12, tier: 1}, () => .1);
     assert.ok(endless.equip('weapon', 'sniper'));
     assert.ok(endless.equip('character', 'radiation'));
     endless.weaponUpgrades.sniper = 2;
@@ -265,7 +277,7 @@ test('endless chapter 12 carries upgrades forward and increases enemy pressure',
     assert.equal(endless.spawnEnemy('lobster').maxHp, firstRound.spawnEnemy('lobster').maxHp * 1.5);
     endless.time = endless.spawnAt;
     endless.updateSpawns();
-    assert.equal(endless.spawnAt - endless.time, 1050);
+    assert.equal(endless.spawnAt - endless.time, 1000);
     assert.ok(endless.enemies.at(-1).def.is_large);
     endless.time = endless.started + 40000;
     endless.updateSpawns();
@@ -290,7 +302,7 @@ test('whale absorption can be interrupted and Orochi bubbles decide storm healin
     assert.equal(w.pull, null);
     assert.equal(whale.phase, 'boss');
 
-    const serpent = new Battle(data, {level: 11, tier: 1}, () => .6);
+    const serpent = new Battle(data, {level: 12, tier: 1}, () => .6);
     const b = serpent.boss;
     b.y = 150;
     serpent.invulnerable = Infinity;
@@ -382,4 +394,91 @@ test('ancient pearls launch quickly downward and shatter on the fourth wall cont
     }
     assert.ok(pearls.every(pearl => pearl.bounces === 0 && !battle.shots.includes(pearl)));
     assert.equal(battle.events.filter(event => event.type === 'pop').length, 3);
+});
+
+test('trench cannon bursts, rock roll, bones and armor thresholds', () => {
+    const battle = new Battle(data, {level: 11, tier: 1}, () => .25);
+    for (let i = 0; i < 12; i++) battle.spawnWave();
+    const species = new Set(battle.enemies.map(enemy => enemy.kind));
+    assert.equal(species.size, 12);
+    for (const kind of species) assert.deepEqual(manifest['animations/enemies/anim_enemy_' + kind].frame, [384, 384]);
+    battle.invulnerable = Infinity;
+    stepFor(battle, 6050);
+    assert.equal(battle.shots.filter(shot => ['fire', 'ice'].includes(shot.fossil)).length, 0);
+    assert.ok(manifest['effects/trench_roll']);
+    assert.ok(manifest['backgrounds/trench-boss-wide']);
+    assert.ok(manifest['backgrounds/trench-boss-portrait']);
+
+    battle.beginBoss();
+    assert.equal(battle.enemies.length, 0);
+    stepFor(battle, 4100);
+    const boss = battle.boss;
+    assert.equal(boss.trench.index, 0);
+    assert.equal(boss.trench.active, 420);
+    assert.ok(boss.y > boss.trench.y0);
+    const {targetX, targetY, start, warning, active, fraction} = boss.trench;
+    battle.player.x += 75;
+    battle.time = start + warning + active * fraction;
+    updateTrenchBoss(boss, battle);
+    assert.ok(Math.abs(boss.x - targetX) < 1);
+    assert.ok(Math.abs(boss.y - targetY) < 1);
+
+    boss.trenchOrder = [1, 2];
+    battle.time = boss.attackAt + 20;
+    boss.y = 110;
+    battle.updateBoss();
+    assert.equal(boss.trench.index, 1);
+    assert.equal(battle.tasks.length, 4);
+    battle.tasks[0].action();
+    assert.equal(battle.shots.find(shot => shot.fossil === 'bone').r, 24 * battle.view.bossScale);
+    for (let i = 0; i < 25; i++) battle.hit(boss, 2);
+    assert.equal(battle.shots.filter(shot => shot.orbit).length, 4);
+    const [armor] = battle.shots.filter(shot => shot.orbit);
+    assert.equal(armor.orbit.until - battle.time, 1000);
+    assert.equal(armor.r, 18 * battle.view.bossScale);
+    battle.time = boss.attackAt + 20;
+    battle.updateBoss();
+    assert.equal(battle.zones.filter(zone => zone.trenchSpire).length, 5);
+});
+
+test('ice cannon prevents both movement and firing for two seconds', () => {
+    const battle = new Battle(data, {level: 11, tier: 1});
+    const p = battle.player;
+    battle.shot(p.x, p.y, 0, 0, null, {fossil: 'ice'});
+    battle.updateProjectiles();
+    assert.equal(battle.freezeUntil - battle.time, 2000);
+    const x = p.x;
+    battle.step({x: 1, fire: true});
+    assert.equal(p.x, x);
+    assert.equal(battle.bullets.length, 0);
+    battle.time = battle.freezeUntil;
+    battle.step({x: 1, fire: true});
+    assert.ok(p.x > x);
+    assert.equal(battle.bullets.length, 1);
+});
+
+test('boss cannons fire six shots from the painted muzzles', () => {
+    for (const [w, h] of [[844, 390], [390, 844]]) {
+        const view = mobileView(w, h);
+        const battle = new Battle(data, {level: 11, view});
+        battle.beginBoss();
+        battle.time = battle.cannonAt - 1;
+        fireTrenchCannon(battle);
+        assert.equal(battle.shots.length, 0);
+        for (const side of [0, 1]) {
+            battle.shots = [];
+            battle.time = battle.cannonAt;
+            const {x, y} = cannonMuzzle(battle, side);
+            assert.ok(y < view.height * .18);
+            fireTrenchCannon(battle);
+            assert.equal(battle.shots.length, 6);
+            const angles = battle.shots.map(shot => shot.angle);
+            const spread = (Math.max(...angles) - Math.min(...angles)) * 180 / Math.PI;
+            assert.ok(Math.abs(spread - (w < h ? 35 : 50)) < 1e-6);
+            assert.ok(battle.shots.every(shot => shot.r === (side === 0 ? 12 : 11)));
+            assert.ok(battle.shots.every(shot => shot.x === x && shot.y === y));
+            battle.updateProjectiles();
+            assert.ok(battle.shots.every(shot => shot.y > y && (shot.x - x) * (side === 0 ? 1 : -1) > 0));
+        }
+    }
 });

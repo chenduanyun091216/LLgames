@@ -104,7 +104,7 @@ class AbyssProjectile(BossProjectile):
         age = (config.game_ticks() if now is None else now) - self.spawn_time
         return self.alive and self.warning_ms <= age < self.max_lifetime
 
-    def update(self, target_x=None, target_y=None):
+    def update(self, target_x=None, target_y=None, *, horizontal_bounds=None):
         now = config.game_ticks()
         age = now - self.spawn_time
         self.prev_x, self.prev_y = self.x, self.y
@@ -134,8 +134,9 @@ class AbyssProjectile(BossProjectile):
             rad = math.radians(self.angle)
             self.x += math.sin(rad) * self.speed * 60 * dt
             self.y += math.cos(rad) * self.speed * 60 * dt
+            left, right = horizontal_bounds or (config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT)
             if (self.y > config.SCREEN_HEIGHT + 100 or self.y < -100
-                    or self.x < config.GAME_AREA_LEFT - 100 or self.x > config.GAME_AREA_RIGHT + 100):
+                    or self.x < left - 100 or self.x > right + 100):
                 self.alive = False
 
     def _update_pearl(self, dt, now):

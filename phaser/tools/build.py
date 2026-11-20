@@ -26,7 +26,7 @@ def fields(value):
 
 def campaign_data():
     tables = {key: value for key, value in vars(config).items()
-              if key.startswith(('CAMPAIGN_', 'INFINITE_')) and isinstance(value, (dict, tuple))}
+              if key.startswith(('CAMPAIGN_', 'INFINITE_', 'TRENCH_')) and isinstance(value, (dict, tuple))}
     return dict(tables, levels=config.LEVEL_CONFIGS, bosses=config.BOSS_DEFS,
                 enemies={value['key']: value for value in config.ENEMY_DEFS},
                 weapons={key: fields(value) for key, value in config.WEAPON_DEFS.items()},
@@ -41,26 +41,27 @@ def image_asset(source):
     destination = DIST / 'art' / relative.with_suffix('.webp')
     destination.parent.mkdir(parents=True, exist_ok=True)
     folder = 'enemies' if relative.parts[:2] == ('animations', 'enemies') else relative.parts[0]
+    trench_enemy = folder == 'enemies' and 'enemy_trench_' in source.stem
     with Image.open(source) as image:
         frame = None
         grids = {'boss_niu_actions': (2, 2), 'boss_niu_axe_sequence': (2, 2),
                  'anim_boss_orochi_idle': (6, 4), 'anim_boss_orochi_split': (4, 3),
-                 'anim_boss_ancient_whale': (8, 6)}
+                 'anim_boss_ancient_whale': (8, 6), 'anim_boss_shieldfish': (6, 5)}
         grid = grids.get(source.stem)
-        if not grid and folder == 'animations' and image.width % image.height == 0:
+        if not grid and source.stem.startswith('anim_') and image.width % image.height == 0:
             grid = (image.width // image.height, 1)
         if grid:
             cols, rows = grid
             fw, fh = image.width // cols, image.height // rows
-            ratio = min(1, 256 / max(fw, fh))
+            ratio = min(1, (384 if trench_enemy else 256) / max(fw, fh))
             frame = [round(fw * ratio), round(fh * ratio)]
             image = image.convert('RGBA').resize((cols * frame[0], rows * frame[1]), Image.Resampling.LANCZOS)
         else:
             image = image.convert('RGB' if folder == 'backgrounds' else 'RGBA')
             limit = {'backgrounds': (1440, 2160), 'ui': (1024, 720), 'bosses': (800, 800),
                      'effects': (512, 512), 'enemies': (256, 256)}.get(folder, (384, 384))
-            image.thumbnail(limit, Image.Resampling.LANCZOS)
-        image.save(destination, 'WEBP', quality=87, method=4)
+            image.thumbnail((384, 384) if trench_enemy else limit, Image.Resampling.LANCZOS)
+        image.save(destination, 'WEBP', quality=87, method=4, lossless=trench_enemy)
     return key, {'url': destination.relative_to(DIST).as_posix(), 'frame': frame}
 
 
@@ -104,7 +105,7 @@ def build():
                      'skill': sounds._snd_grenade, 'boss': sounds._snd_boss_appear,
                      'clear': sounds._snd_level_up}.items():
         save_wav(name, sounds._pack(fn()))
-    for level in range(12):
+    for level in range(len(config.LEVEL_CONFIGS) + 1):
         save_wav(f'music-{level}', music(level))
         if level:
             save_wav(f'music-{level}-boss', music(level, boss=True))

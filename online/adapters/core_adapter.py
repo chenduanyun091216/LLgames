@@ -170,7 +170,7 @@ class OnlineGame(Game):
             player.hp = player.max_hp
             player.temp_hp_until = 0
             self._place_revived_player(player)
-            player.invincible_until = config.game_ticks() + core_game.REVIVE_INVINCIBILITY_MS
+            player.invincible_until = round((self.tick + 1) * 1000 / 60) + core_game.REVIVE_INVINCIBILITY_MS
 
     @property
     def gold(self):
@@ -221,7 +221,7 @@ class OnlineGame(Game):
             player.shop_open = False
 
     def step(self):
-        if self.infinite_mode and self.phase == 'playing' and not any(p.shop_open for p in self.all_players):
+        if self.phase == 'playing' and not any(p.shop_open for p in self.all_players):
             self._advance_continues()
         finishing = self.phase == 'won' and round(self.tick * 1000 / 60) < self.victory_end
         if not finishing and (self.phase != 'playing' or self.paused):
@@ -249,9 +249,6 @@ class OnlineGame(Game):
         with self._capture_sounds():
             with self._for_player(self.players[0], focus=False):
                 super().update()  # Exactly one world update per tick.
-            for player in self.all_players:
-                if not self.infinite_mode and not player.alive and self.lives > 0:
-                    self._action(player.slot, 'revive')
         self._expire_visuals(now)
         self._legacy_sync()
 
@@ -335,8 +332,15 @@ class OnlineGame(Game):
                 self.infinite_deaths += 1
                 self.defeat_reasons[p.slot] = reason
                 return not self.players
+            if self.lives > 0:
+                self.lives -= 1
+                self.continuing[p.slot] = 180
+            elif self._can_buy_revive():
+                self.player.gold -= REVIVE_COSTS[self.difficulty_key]
+                self.revive_count += 1
+                self.continuing[p.slot] = 180
             if not self.players:
-                if self.lives <= 0 and not self._can_buy_revive():
+                if not self.continuing:
                     self.phase = 'lost'
                     self.state = GameState.GAME_OVER
                 return True
@@ -368,10 +372,8 @@ class OnlineGame(Game):
         if self.boss:
             active.add(self.boss)
         self._contact_hits = {pair: time for pair, time in self._contact_hits.items() if pair[0] in active}
-        boss_contact = (self.boss and not (self.boss.signature and self.boss.signature.origin is not None)
-                        and not (isinstance(self.boss, core_game.OrochiBoss)
-                                 and self.boss.skill in ('split', 'storm', 'laser')))
-        for entity in tuple(self.enemies) + ((self.boss,) if boss_contact else ()):
+        boss_boxes = self._boss_contact_boxes(now)
+        for entity in tuple(self.enemies) + ((self.boss,) if boss_boxes else ()):
             if entity is not self.boss and entity.temple_kind == 'rift':
                 continue
             for p in self.players:
@@ -379,7 +381,7 @@ class OnlineGame(Game):
                 last_contact = self._contact_hits.get(key, getattr(entity, 'last_contact_damage_time', -9999))
                 if now < p.invincible_until or (entity is not self.boss and now - last_contact < CONTACT_DAMAGE_COOLDOWN):
                     continue
-                hitboxes = entity.hitboxes() if entity is self.boss else (entity.rect(),)
+                hitboxes = boss_boxes if entity is self.boss else (entity.rect(),)
                 contact = next((r for r in hitboxes if r.colliderect(p.rect())), None)
                 if contact is None:
                     continue
@@ -628,25 +630,7 @@ class OnlineGame(Game):
             self.clear_inputs()
             return None
         if action == 'revive':
-            if self.infinite_mode:
-                return '请使用无限模式继续操作'
-            if p.alive:
-                return '当前玩家无需复活'
-            if self.lives > 0:
-                self.lives -= 1
-            elif self._can_buy_revive():
-                self.player.gold -= REVIVE_COSTS[self.difficulty_key]
-                self.revive_count += 1
-            elif not self._paid_revives_remaining():
-                return '共享金币复活次数已用完'
-            else:
-                return '复活资源不足，请等待队友收集金币'
-            p.alive, p.hp = True, p.max_hp
-            self._place_revived_player(p)
-            p.invincible_until = config.game_ticks() + core_game.REVIVE_INVINCIBILITY_MS
-            p.temp_hp_until = 0
-            self._inputs[slot] = (0., 0., False)
-            return None
+            return '正在等待复活' if slot in self.continuing else '当前玩家无法复活'
         if not p.alive:
             return '阵亡玩家需要确认复活'
         if action == 'upgrade':

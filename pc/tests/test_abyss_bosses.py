@@ -485,11 +485,9 @@ class AbyssBossTests(unittest.TestCase):
     def test_death_clears_warning_and_active_projectiles(self):
         from game_core.game import Game
         for cls in (MechaLizardBoss, AncientWhaleBoss):
-            game = Game.__new__(Game)
+            game = Game()
+            game._start_game('medium')
             game.boss = self.boss(cls)
-            game.chapter = 0
-            game.particles, game.explosions = [], []
-            game.infinite_mode = False
             with patch.object(config, 'game_ticks', return_value=1000):
                 game.boss_projectiles = game.boss.attack(1000, 480)
             game.boss.hp = 0
@@ -498,6 +496,7 @@ class AbyssBossTests(unittest.TestCase):
                 self.assertTrue(game._settle_boss_if_killed())
             self.assertIsNone(game.boss)
             self.assertEqual(game.boss_projectiles, [])
+            self.assertEqual(game.campaign_bosses_defeated, 1)
 
     def test_each_skill_draws_and_leaves_escape_space_in_responsive_arenas(self):
         geometries = ((480, 720, 0, 480, 590, False),

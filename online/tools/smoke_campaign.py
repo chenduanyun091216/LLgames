@@ -1,6 +1,6 @@
-"""Eleven-boss server/snapshot/render stress with explicit survival fixtures.
+"""Server/snapshot/render stress for every campaign boss.
 
-This deliberately sets high test HP/lives and enters each boss directly. It tests
+This disables player damage and enters each boss directly. It tests
 AI, transport serialization and original rendering together, NOT a normal
 campaign completion, balance, real browser, or mobile performance.
 """
@@ -23,16 +23,11 @@ def run(orientation='landscape'):
             game._trigger_boss()
         boss = game.boss
         boss.entered, boss.y, boss.fight_start_time = True, 60, 0
-        game.lives = 99
-        for player in game.all_players:
-            player.hp = player.max_hp = 10000
+        game._suppress_damage = True
         view = Presentation(pygame.Surface(game.world_size))
         largest, frames, samples = 0, 0, 0
         started = time.perf_counter()
         for frame in range(1800):
-            for player in game.all_players:
-                if not player.alive:
-                    assert game.action(player.slot, 'revive') is None
             game.step()
             assert game.phase == 'playing', (level, game.phase)
             assert game.current_level == level, (level, game.current_level)
@@ -41,7 +36,7 @@ def run(orientation='landscape'):
             if level in (9, 10) and frame in (0, 450, 900, 1350):
                 boss.skill_index = frame // 450
                 game._add_boss_projectiles(boss.attack(config.game_ticks(), game.player.x, game.player.y))
-            if level == 11 and frame in (0, 360, 720, 1080, 1440):
+            if level == 12 and frame in (0, 360, 720, 1080, 1440):
                 boss._start_skill(('volley', 'slam', 'split', 'laser', 'storm')[frame // 360], config.game_ticks())
             if frame % 30 == 0:
                 snapshot = game.snapshot()

@@ -276,7 +276,7 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(p.view.boss.body_hp[0],hp)
 
     def test_orochi_every_skill_clone_head_regrowth_and_death(self):
-        g=self.campaign_boss(11);p=Presentation(pygame.Surface((960,720)))
+        g=self.campaign_boss(12);p=Presentation(pygame.Surface((960,720)))
         boss=g.boss
         for skill in (*boss.SKILLS,'storm'):
             boss._start_skill(skill,100)

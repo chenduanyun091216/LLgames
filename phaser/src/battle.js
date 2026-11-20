@@ -1,3 +1,5 @@
+import {fireTrenchCannon, holdTrenchShard, shedTrenchArmor, trenchRolling,
+    trenchSpireHits, updateTrenchBoss} from './trench.js';
 import {attack, storm, railShape, tentacleShape} from './bosses.js';
 import {fixedView} from './layout.js';
 
@@ -78,6 +80,8 @@ export class Battle {
         this.gift = null;
         this.hasteUntil = 0;
         this.waveSpawns = 0;
+        this.cannonSide = this.freezeUntil = 0;
+        this.cannonAt = 0;
         this.kills = 0;
         this.spawned = 0;
         this.enemies = [];
@@ -125,19 +129,29 @@ export class Battle {
         this.player.y = clamp(this.player.y, 80, this.view.height - this.player.h / 2 - 8);
         this.zones = [];
         this.tasks = [];
+        if (this.level === 11) this.shots = this.shots.filter(shot => !shot.fossil);
         if (this.boss) {
             this.boss.w = this.boss.baseW * view.bossScale;
             this.boss.h = this.boss.baseH * view.bossScale;
             this.boss.destination = this.boss.pull = this.boss.rush = null;
+            if (this.boss.trench) {
+                this.boss.trench = null;
+                this.boss.skillUntil = this.time;
+                this.boss.attackAt = this.time + this.boss.interval;
+            }
         }
     }
 
     beginBoss() {
         this.phase = 'boss';
+        if (this.level === 11) {
+            this.cannonSide = 0;
+            this.cannonAt = this.time + this.data.TRENCH_CANNON.opening;
+        }
         this.tasks = [];
         this.bullets = [];
         this.shots = [];
-        this.enemies = this.enemies.filter(e => e.kind !== 'ancient_rift' && e.kind !== 'ancient_worm');
+        this.enemies = this.level === 11 ? [] : this.enemies.filter(e => e.kind !== 'ancient_rift' && e.kind !== 'ancient_worm');
         const def = this.data.bosses[this.stage.boss_idx];
         const hp = Math.ceil(this.bossBaseHp() * this.custom.hp);
         const [baseW, baseH] = def.size ?? [130, 120];
@@ -212,7 +226,8 @@ export class Battle {
         if (!this.laterEndlessRound && this.level === 1 && this.waveSpawns < 2) pool = [['lobster', 'crab'][this.waveSpawns]];
         if (!pool.length) return;
         if (!this.laterEndlessRound && this.phase === 'wave' && this.level === 2 && this.waveSpawns === 3) pool = ['octopus'];
-        const kind = pool[Math.floor(this.random() * pool.length)];
+        const kind = this.level === 11 ? this.data.TRENCH_WAVES[Math.floor(this.waveSpawns / 4) % 3][this.waveSpawns % 4]
+            : pool[Math.floor(this.random() * pool.length)];
         this.waveSpawns++;
         this.lastElite = kind === 'zongzong' || this.data.enemies[kind].is_large;
         this.spawnEnemy(kind, {factory: this.level === 9 ? 'original' : null,
@@ -305,9 +320,22 @@ export class Battle {
             if (e.counts && !e.chases && e.y > 28 && e.y < this.bottom - 100 && this.time >= Math.max(e.attackAt, this.enemyShotAt)) {
                 this.enemyShotAt = this.time + (this.phase === 'boss' ? 1000 : 500);
                 const factory = this.level === 9;
-                this.shot(e.x, e.y + 12, Math.atan2(this.player.y - e.y, this.player.x - e.x),
-                    factory ? 2.7 : 2.1, factory ? 'mecha_guided_missile' : 'bubble_crab',
-                    {homing: factory ? .014 : 0, r: factory ? 9 : 8});
+                const trench = this.data.TRENCH_ATTACKS?.[e.kind];
+                if (trench) {
+                    const [delay, speed, aimed] = trench;
+                    const x = e.x, y = e.y + e.h * .22;
+                    const angle = aimed ? Math.atan2(this.player.y - y, this.player.x - x) : Math.PI / 2;
+                    e.castingUntil = this.time + delay;
+                    this.later(delay, () => {
+                        for (const offset of [-24, -8, 8, 24]) this.shot(x, y,
+                            angle + offset * Math.PI / 180, speed, null,
+                            {r: 8, fossil: true, expires: this.time + 3600});
+                    });
+                } else {
+                    this.shot(e.x, e.y + 12, Math.atan2(this.player.y - e.y, this.player.x - e.x),
+                        factory ? 2.7 : 2.1, factory ? 'mecha_guided_missile' : 'bubble_crab',
+                        {homing: factory ? .014 : 0, r: factory ? 9 : 8});
+                }
                 const min = this.custom.enemyMin ?? [10000, 8000, 6500][this.tier];
                 const max = this.custom.enemyMax ?? [14000, 12000, 10000][this.tier];
                 e.attackAt = this.time + min + this.random() * (max - min);
@@ -373,9 +401,13 @@ export class Battle {
     hit(entity, amount, shape = null, source = 'skill', upgradeMultiplier = 1) {
         if (entity === this.boss) {
             if (entity.y < 30 || entity.shieldUntil > this.time || entity.stormUntil > this.time) return;
+            const trench = entity.trench;
+            const trenchActive = trench && this.time < entity.skillUntil;
+            const exposed = trenchActive && (trench.index === 1 || this.time >= trench.recoveryAt);
             const damage = Math.min(amount / upgradeMultiplier, this.mode === 'endless' ? 3 : [1, 2, 2][this.tier])
-                * upgradeMultiplier * (entity.resistUntil > this.time ? .5 : 1);
-            if (this.level === 11 && entity.hp - damage <= entity.maxHp * [0.5, 0.01][entity.stormStep]) {
+                * upgradeMultiplier * (entity.resistUntil > this.time ? .5 : 1)
+                * (this.level === 11 && !exposed ? .60 : 1);
+            if (entity.def.key === 'boss_orochi' && entity.hp - damage <= entity.maxHp * [0.5, 0.01][entity.stormStep]) {
                 entity.hp = entity.maxHp * [0.5, 0.01][entity.stormStep];
                 const final = entity.stormStep++ === 1;
                 this.tasks = [];
@@ -411,6 +443,7 @@ export class Battle {
                     });
                 }
             }
+            if (entity.def.key === 'boss_shieldfish') shedTrenchArmor(this, entity);
             if (entity.hp <= 0) this.finishLevel();
         } else {
             if (this.link?.group.includes(entity)) entity.hp = Math.max(.01 * entity.maxHp, entity.hp - amount);
@@ -422,7 +455,7 @@ export class Battle {
     }
 
     finishLevel() {
-        this.phase = this.level === 11 && this.mode === 'campaign' ? 'victory' : 'clear';
+        this.phase = this.level === this.data.levels.length && this.mode === 'campaign' ? 'victory' : 'clear';
         this.score += 100;
         this.gold += this.data.CAMPAIGN_REWARDS[this.level - 1];
         this.heal(this.mode === 'endless' ? 1 : [2, 2, 1][this.tier]);
@@ -433,8 +466,8 @@ export class Battle {
 
     next() {
         if (this.phase !== 'clear') return;
-        if (this.level === 11) this.round++;
-        this.startLevel(this.level % 11 + 1);
+        if (this.level === this.data.levels.length) this.round++;
+        this.startLevel(this.level % this.data.levels.length + 1);
     }
 
     hurt(amount, reason, fatal = false) {
@@ -539,6 +572,8 @@ export class Battle {
             if ((age < 1322 || (age >= 3322 && age < 4644)) && intersects(b, this.player)) {
                 this.hurt(this.hp, '被深渊封潮击败');
             }
+        } else if (b.trench && this.time < b.skillUntil) {
+            updateTrenchBoss(b, this);
         } else if (b.destination) {
             const dx = b.destination.x - b.x, dy = b.destination.y - b.y;
             b.x += clamp(dx, -4.1, 4.1);
@@ -581,14 +616,15 @@ export class Battle {
             b.skill = name;
             b.skillStarted = this.time;
             b.skillUntil = this.time + duration;
-            b.attackAt = this.time + duration + b.interval;
+            b.attackAt = this.time + (b.trench ? Math.max(duration, b.interval) : duration + b.interval);
         }
-        if (!b.rush && b.y >= 35 && bossBoxes(b, this.time).some(box => intersects(box, this.player))) this.hurt(this.mode === 'endless' ? 2 : [1, 2, 2][this.tier], b.def.name);
+        const contact = !b.trench || this.time >= b.skillUntil || trenchRolling(b, this.time);
+        if (!b.rush && contact && b.y >= 35 && bossBoxes(b, this.time).some(box => intersects(box, this.player))) this.hurt(this.mode === 'endless' ? 2 : [1, 2, 2][this.tier], b.def.name);
     }
 
     fire() {
         const w = this.data.weapons[this.weapon];
-        if (this.liftUntil > this.time) return;
+        if (Math.max(this.liftUntil, this.freezeUntil) > this.time) return;
         let rate = this.mode === 'endless' ? w.fire_rate
             : (this.data.CAMPAIGN_WEAPON_FIRE_RATES[this.weapon] ?? w.fire_rate);
         if (this.hasteUntil > this.time) rate /= 2;
@@ -850,6 +886,7 @@ export class Battle {
         const barriers = this.zones.filter(z => this.time >= z.impact && this.time < z.end && (z.wall || z.magnet));
         for (const z of barriers) if (z.trajectory) Object.assign(z, z.trajectory(this.time - z.impact));
         for (const s of this.shots) {
+            if (holdTrenchShard(s, this)) continue;
             if (s.homing) s.angle += clamp(angleDiff(Math.atan2(this.player.y - s.y, this.player.x - s.x), s.angle), -s.homing, s.homing);
             s.x += Math.cos(s.angle) * s.speed;
             s.y += Math.sin(s.angle) * s.speed;
@@ -896,10 +933,22 @@ export class Battle {
                 if (s.bounces) s.hitPlayer = true;
                 else s.expires = 0;
                 if (s.blast) this.zone(s.x, s.y, s.blast * 2, s.blast * 2, s.damage, 160, 300, null, {circle: true});
-                else this.hurt(s.damage, '被敌方弹幕击败');
+                else {
+                    if (s.fossil === 'ice' && this.invulnerable <= this.time) {
+                        this.freezeUntil = Math.max(this.freezeUntil, this.time + this.data.TRENCH_CANNON.freeze);
+                    }
+                    this.hurt(s.damage, '被敌方弹幕击败');
+                }
             }
         }
-        this.shots = this.shots.filter(s => s.expires > this.time && (s.turnAt || (s.y > -90 && s.y < this.bottom + 100 && s.x > -95 && s.x < this.width + 95)));
+        this.shots = this.shots.filter(s => {
+            if (s.expires <= this.time) return false;
+            if (s.turnAt) return true;
+            const cannon = s.fossil === 'fire' || s.fossil === 'ice';
+            const left = cannon ? -this.view.offset : 0;
+            const right = cannon ? this.view.canvasWidth - this.view.offset : this.width;
+            return s.y > -90 && s.y < this.bottom + 100 && s.x > left - 95 && s.x < right + 95;
+        });
         for (const z of this.zones) {
             if (this.time < z.impact || this.time >= z.end) continue;
             if (z.rail && this.boss) {
@@ -928,6 +977,7 @@ export class Battle {
                 z.y = z.h / 2;
             }
             const hits = entity => {
+                if (z.trenchSpire) return trenchSpireHits(z, entity, this.time);
                 if (z.missile) {
                     const x = Math.max(0, Math.abs(z.x - entity.x) - entity.w / 2);
                     const y = Math.max(0, Math.abs(z.y - entity.y) - entity.h / 2);
@@ -967,7 +1017,8 @@ export class Battle {
         let speed = this.boss?.pull ? 2.6 : 5.2;
         if (this.boostUntil > this.time) speed *= this.mode === 'endless' ? 1.6 : 1.25;
         if (this.slowUntil > this.time) speed *= this.mode === 'endless' ? .5 : [.85, .80, .75][this.tier];
-        const dx = input.x ?? 0, dy = input.y ?? 0;
+        const frozen = this.freezeUntil > this.time;
+        const dx = frozen ? 0 : (input.x ?? 0), dy = frozen ? 0 : (input.y ?? 0);
         const p = this.player;
         p.moving = Boolean(dx || dy);
         const margin = this.view.offset ? p.w / 2 : Math.max(40, p.w / 2);
@@ -977,6 +1028,7 @@ export class Battle {
         if (input.skill != null) this.cast(input.skill);
         this.updateSpawns();
         this.updateBoss();
+        fireTrenchCannon(this);
         this.updateEnemies();
         if (this.phase === 'defeat') return;
         this.updateProjectiles();
@@ -995,6 +1047,7 @@ export class Battle {
 }
 
 export function bossBoxes(boss, time) {
+    if (trenchRolling(boss, time)) return [{...boss, w: boss.h * .72, h: boss.h * .72}];
     if (!boss.bodyHp) return [boss];
     if (boss.fusionUntil > time) return [{...boss, w: boss.w * 1.36}];
     const single = boss.bodyHp.filter(hp => hp > 0).length === 1;

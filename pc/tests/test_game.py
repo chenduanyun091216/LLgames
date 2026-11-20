@@ -16,6 +16,22 @@ from run_pc import main
 
 
 class DesktopGameTests(unittest.TestCase):
+    def test_death_position_is_preserved_until_countdown_finishes(self):
+        pygame.init()
+        self.addCleanup(pygame.quit)
+        pygame.display.set_mode((960, 720))
+        config.update_mobile_view((960, 720))
+        game = Game(desktop_controls=True)
+        game._begin_infinite_run()
+        game.player.x, game.player.y = 123, 234
+        game._player_defeated('test')
+        game._continue_infinite()
+        self.assertEqual((game.player.x, game.player.y), (123, 234))
+        with patch('pygame.time.get_ticks', return_value=game.infinite_countdown_end):
+            game.update()
+        self.assertEqual((game.player.x, game.player.y),
+                         (config.SCREEN_WIDTH // 2, config.GAME_AREA_BOTTOM - 14))
+
     def test_infinite_shop_doubles_each_weapon_upgrade_price(self):
         pygame.init()
         self.addCleanup(pygame.quit)
@@ -334,12 +350,16 @@ class DesktopGameTests(unittest.TestCase):
         with patch.object(game, '_update_boss_fight'):
             game.update()
         self.assertIs(game.scrolling_background(size), top)
-        for level in range(2, 12):
+        for level in range(2, 13):
             with self.subTest(level=level):
                 game.state = GameState.PLAYING
                 game._start_level(level)
                 frame = game.scrolling_background(size)
-                boss_on_start = level in (6, 11)
+                boss_on_start = level in (6, 12)
+                if boss_on_start:
+                    self.assertTrue(game.campaign_boss_intro_active())
+                    with patch.object(config, 'game_ticks', return_value=game.level_title_until):
+                        game.update()
                 self.assertEqual(game.state, GameState.BOSS_FIGHT if boss_on_start else GameState.PLAYING)
                 self.assertIsNotNone(frame)
                 self.assertEqual(frame.get_offset()[1], start.get_offset()[1])
@@ -471,7 +491,7 @@ class DesktopGameTests(unittest.TestCase):
         self.addCleanup(pygame.quit)
         pygame.display.set_mode((960, 540))
         config.update_mobile_view((960, 540))
-        for level in (6, 11):
+        for level in (6, 12):
             for web in (False, True):
                 with self.subTest(level=level, web=web):
                     game = Game(desktop_controls=True, web=web)

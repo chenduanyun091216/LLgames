@@ -5,7 +5,7 @@ import random, math
 from functools import lru_cache
 import pygame
 from . import config
-from .asset_loader import cover_image_asset
+from .asset_loader import cover_image_asset, image_asset, scale_surface_cached
 from .config import (
     OCEAN_BLUE, SAND_COLOR, SAND_DARK, BEACH_HEIGHT,
     OCEAN_SURFACE, OCEAN_MID, OCEAN_DEEP,
@@ -20,6 +20,7 @@ _bg_surf = {}
 def clear_background_cache():
     _bg_surf.clear()
     background_art.cache_clear()
+    trench_boss_art.cache_clear()
     _panorama_frame.cache_clear()
     _background_panorama.cache_clear()
 
@@ -49,6 +50,17 @@ def background_art(level, size):
                 fade.fill((20, 39, 48, 76))
                 image.blit(fade, (0, 0))
                 return image.convert()
+    return None
+
+
+@lru_cache(maxsize=4)
+def trench_boss_art(size):
+    layout = 'wide' if size[0] >= size[1] else 'portrait'
+    for suffix in ('jpg', 'png'):
+        art = image_asset(f'backgrounds/trench-boss-{layout}.{suffix}')
+        if art is not None:
+            # The painted openings and their gameplay anchors both use viewport fractions.
+            return scale_surface_cached(art, size)
     return None
 
 

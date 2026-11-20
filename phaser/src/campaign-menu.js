@@ -1,7 +1,7 @@
 const poster = [
-    [1, 69, 17, 17], [17, 74, 18, 16], [33, 77, 17, 15], [50, 77, 17, 15],
-    [66, 74, 18, 16], [82, 69, 17, 17], [0, 40, 28, 30], [76, 45, 24, 25],
-    [22, 48, 30, 28], [51, 47, 29, 28], [8, 0, 84, 62],
+    [1, 61, 24, 31], [15, 66, 25, 30], [31, 69, 23, 30], [46, 69, 23, 30],
+    [62, 66, 25, 30], [75, 61, 24, 31], [2, 25, 31, 52], [67, 25, 31, 52],
+    [18, 39, 31, 39], [52, 39, 31, 39], [33, 40, 34, 39], [17, 0, 66, 57],
 ];
 
 function bossArt(data, index) {
@@ -17,7 +17,7 @@ function chapterArt(index) {
 }
 
 export function homeContent(data, button, offline, downloading) {
-    const bosses = [10, 6, 7, 8, 9, 0, 1, 2, 3, 4, 5].map(index => {
+    const bosses = [11, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5].map(index => {
         const [x, y, w, h] = poster[index];
         return '<img alt="" src="' + bossArt(data, index) + '" style="left:' + x
             + '%;top:' + y + '%;width:' + w + '%;height:' + h + '%">';

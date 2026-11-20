@@ -4,6 +4,7 @@ import contextlib
 import ipaddress
 import json
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,10 @@ from online.shared.protocol import decode, ProtocolError, MAX_MESSAGE, VERSION
 STATIC_ROOT = Path(__file__).resolve().parents[1] / 'build' / 'web'
 ROOM_KEY = web.AppKey('room', object)
 HOST_KEY = web.AppKey('host', object)
+VERSIONED_ASSET = re.compile(
+    r'(?:runtime-[0-9a-f]{16}/cdn/.+|ttgames-[0-9a-f]{16}\.tar\.gz|'
+    r'(?:shell|bridge|integrated)-[0-9a-f]{16}\.(?:js|css))'
+)
 
 @dataclass
 class Peer:
@@ -45,7 +50,7 @@ class Room:
         self.orientation = None
         self.difficulty = 'medium'
         self.failed = False
-        self.last_state_json = None
+        self.last_state = None
 
     def clear_input(self):
         if self.game:
@@ -62,7 +67,7 @@ class Room:
     def pause_reason(self):
         if self.failed:
             return 'server_error'
-        minimum = 1 if self.game and getattr(self.game, 'infinite_mode', False) else 2
+        minimum = 1 if self.game and (getattr(self.game, 'infinite_mode', False) or getattr(self.game, 'departed', set())) else 2
         if len(self.players) < minimum or any(p.ws is None for p in self.players):
             return 'disconnected'
         if any(p.suspended for p in self.players):
@@ -81,7 +86,7 @@ class Room:
             factory = self.factory
         self.game = factory(difficulty=difficulty, orientation=self.orientation, **options)
         self.failed = False
-        self.last_state_json = None
+        self.last_state = None
         self.difficulty = difficulty
         self.match_id = secrets.token_hex(16)
         for p in self.players:
@@ -89,17 +94,14 @@ class Room:
         self.clear_input()
 
     def snapshot(self):
-        empty = {'tick':0, 'phase':'lobby', 'players':[], 'gold':0, 'lives':0, 'world':{}}
-        if self.failed:
-            state = json.loads(self.last_state_json) if self.last_state_json else dict(empty)
-        else:
+        state = self.last_state if self.failed else None
+        if self.game and not self.failed:
             try:
-                state = self.game.snapshot() if self.game else empty
-                self.last_state_json = json.dumps(state, allow_nan=False, separators=(',', ':'))
+                state = self.game.snapshot()
             except Exception:
                 self.fail()
-                state = json.loads(self.last_state_json) if self.last_state_json else dict(empty)
-        state = dict(state)
+                state = self.last_state
+        state = dict(state) if state is not None else {'tick':0, 'phase':'lobby', 'players':[], 'gold':0, 'lives':0, 'world':{}}
         game_players = {p['slot']:p for p in state.get('players', [])}
         state['players'] = [dict(game_players.get(p.slot, {'slot':p.slot,'alive':True,'hp':0,'max_hp':0,'shop_open':False}), connected=p.ws is not None, ready=p.ready, orientation=p.orientation,
                                  input_seq=p.input_seq, input_age_ms=max(0, (time.monotonic() - p.last_input) * 1000)) for p in self.players]
@@ -108,13 +110,21 @@ class Room:
         return state
 
     def broadcast(self):
-        payload = json.dumps(self.snapshot(), allow_nan=False, separators=(',', ':'))
-        for p in self.players:
-            if p.ws is not None:
-                if p.queue.full():
-                    with contextlib.suppress(asyncio.QueueEmpty):
-                        p.queue.get_nowait()
-                p.queue.put_nowait(payload)
+        peers = [p for p in self.players if p.ws is not None]
+        if not peers:
+            return
+        try:
+            state = self.snapshot()
+            payload = json.dumps(state, allow_nan=False, separators=(',', ':'))
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            self.fail()
+            payload = json.dumps(self.snapshot(), allow_nan=False, separators=(',', ':'))
+        if not self.failed:
+            self.last_state = state
+        for p in peers:
+            if p.queue.full():
+                p.queue.get_nowait()
+            p.queue.put_nowait(payload)
 
     async def run(self):
         next_tick = time.monotonic()
@@ -147,7 +157,7 @@ class Room:
         if kind == 'room_orientation':
             if peer.slot != 1:
                 return 'host_only'
-            if self.game and self.game.snapshot()['phase'] == 'playing':
+            if self.game and self.game.phase == 'playing':
                 return 'match_in_progress'
             if self.orientation != msg['orientation']:
                 self.orientation = msg['orientation']
@@ -156,14 +166,14 @@ class Room:
                 self.clear_input()
             return None
         if kind == 'ready':
-            if self.game and self.game.snapshot()['phase'] == 'playing':
+            if self.game and self.game.phase == 'playing':
                 return 'match_in_progress'
             peer.ready = msg['ready']
             return None
         if kind == 'start':
             if peer.slot != 1:
                 return 'host_only'
-            if self.game and self.game.snapshot()['phase'] == 'playing':
+            if self.game and self.game.phase == 'playing':
                 return 'match_in_progress'
             if len(self.players) != 2 or any(p.ws is None or not p.ready for p in self.players):
                 return 'players_not_ready'
@@ -233,7 +243,7 @@ async def guard(request, handler):
     response = await handler(request)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Referrer-Policy'] = 'no-referrer'
-    response.headers['Cache-Control'] = 'no-store'
+    response.headers.setdefault('Cache-Control', 'no-store')
     response.headers['Cross-Origin-Opener-Policy'] = 'same-origin'
     response.headers['Cross-Origin-Embedder-Policy'] = 'require-corp'
     response.headers['Cross-Origin-Resource-Policy'] = 'same-origin'
@@ -333,7 +343,10 @@ async def static_file(request):
     target = (root / rel).resolve()
     if not target.is_relative_to(root.resolve()) or not target.is_file():
         raise web.HTTPNotFound()
-    return web.FileResponse(target)
+    headers = {}
+    if VERSIONED_ASSET.fullmatch(rel):
+        headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    return web.FileResponse(target, headers=headers)
 
 async def lifecycle(app):
     room = app[ROOM_KEY]

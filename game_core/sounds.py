@@ -499,7 +499,12 @@ def _music_note(cache, midi, seconds, wave, volume, attack, decay):
 
 
 def _music_pcm(level, boss, infinite, variant):
-    tempo, roots, wave, motif = _MUSIC_THEMES[max(0, level) % len(_MUSIC_THEMES)]
+    if level == 11:
+        tempo, roots, wave, motif = (0.244, (37, 35, 32, 40), 'soft',
+                                     (24, None, 30, None, 25, None, 28, 23))
+    else:
+        track = 11 if level == 12 else level
+        tempo, roots, wave, motif = _MUSIC_THEMES[max(0, track) % len(_MUSIC_THEMES)]
     if boss:
         tempo *= 0.82
     if infinite:

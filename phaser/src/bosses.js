@@ -1,3 +1,4 @@
+import {trenchAttack} from './trench.js';
 // Boss timelines use milliseconds. Collision uses the same geometry as each warning.
 const mix = (a, b, n) => a + (b - a) * n;
 const between = (world, left, right) => mix(left, right, world.random());
@@ -176,6 +177,8 @@ export function attack(world, boss, pattern) {
             return ['巨鲸吸附 · 集火打断', 5000];
         }
     case 11:
+        return trenchAttack(world, boss, pattern);
+    case 12:
         switch (pattern % 4) {
         case 0:
             for (let i = 0; i < 8; i++) fan(2, .16, 4.1, 'orochi_fireball', {r: 17}, 190 * i,

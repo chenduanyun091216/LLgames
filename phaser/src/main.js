@@ -103,7 +103,7 @@ function updateHUD() {
         world.character, b?.id, hp, text, auto, muted, cooldowns, world.round, world.weaponUpgrades]);
     if (key === hudKey) return;
     hudKey = key;
-    const chapter = world.mode === 'endless' ? '无限 ' + (world.round * 11 + world.level) : '第 ' + world.level + ' 关';
+    const chapter = world.mode === 'endless' ? '无限 ' + (world.round * world.data.levels.length + world.level) : '第 ' + world.level + ' 关';
     const difficulty = world.custom.ammo ? '自定义' : data.difficulty[world.tier].name;
     const boss = b ? '<div class="boss-card"><strong>' + b.def.name + ' · ' + hp + '/' + b.maxHp
         + '</strong><progress aria-label="Boss 生命" value="' + hp + '" max="' + b.maxHp + '"></progress><small>' + text + '</small></div>' : '';

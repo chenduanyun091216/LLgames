@@ -1,14 +1,31 @@
 """Pixel-preserving Web rendering regressions."""
+from collections import OrderedDict
 import unittest
 from unittest.mock import patch
 
 import pygame
 
+from game_core import asset_loader
 from game_core.render import RenderSurface
 from game_core.sprites import _lit_sprite, _resize_sprite, blit_lit_sprite
 
 
 class WebRenderPerformanceTests(unittest.TestCase):
+    def test_scaled_assets_keep_recent_sizes_within_the_pixel_budget(self):
+        image = pygame.Surface((2, 2), pygame.SRCALPHA)
+        image.fill((20, 130, 220, 170))
+        with patch.multiple(asset_loader, _SCALED_CACHE=OrderedDict(), _scaled_cache_bytes=0,
+                            SCALE_CACHE_LIMIT=152, _IMAGE_CACHE={'fixture.png': image}), \
+                patch.object(asset_loader, '_image_path', return_value='fixture.png'):
+            first = asset_loader.image_asset('fixture.png', (3, 3))
+            recent = asset_loader.image_asset('fixture.png', (4, 4))
+            self.assertIs(asset_loader.image_asset('fixture.png', (3, 3)), first)
+            asset_loader.image_asset('fixture.png', (5, 5))
+            self.assertIs(asset_loader.image_asset('fixture.png', (3, 3)), first)
+            rebuilt = asset_loader.image_asset('fixture.png', (4, 4))
+            self.assertIsNot(rebuilt, recent)
+            self.assertEqual(pygame.image.tobytes(rebuilt, 'RGBA'), pygame.image.tobytes(recent, 'RGBA'))
+
     def test_web_sprite_trims_padding_without_changing_pixels(self):
         image = pygame.Surface((100, 100), pygame.SRCALPHA)
         pygame.draw.circle(image, (20, 130, 220, 170), (50, 50), 12)

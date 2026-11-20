@@ -2,12 +2,12 @@
 'use strict';
 const markup = `<div id="toast" role="alert" hidden></div><div id="online-status" role="status">正在加载本地游戏引擎…</div>
 <div id="launch" class="panel" hidden><button id="launch-game" class="primary" type="button">启动联机游戏</button></div>
-<section id="lobby" class="panel" hidden><h1>海洋生物入侵</h1><p>十一关战役 · 双人局域网协作</p><div id="join"><label for="code">房间码</label><input id="code" maxlength="4" inputmode="numeric" placeholder="输入 4 位数字房间码" autocomplete="off"><button id="connect" class="primary">加入房间</button></div><div id="room" hidden><p id="players"></p><label for="orientation">双方统一方向（P1 选择）</label><select id="orientation"><option value="landscape">横屏</option><option value="portrait">竖屏</option></select><div class="row"><button id="ready" disabled>准备</button><select id="difficulty" aria-label="难度"><option value="easy">简单</option><option value="medium">中等</option><option value="hard">困难</option></select></div><button id="start" class="primary">开始十一关战役</button></div><p id="error" role="alert"></p><p class="hint">两人连接并准备后，由 P1 开始。电脑：WASD / 方向键移动，空格射击，Q/E 技能，R 激光，F 飞镖，B 商店。手机支持多点触控。</p></section>
+<section id="lobby" class="panel" hidden><h1>海洋生物入侵</h1><p>战役模式 · 双人局域网协作</p><div id="join"><label for="code">房间码</label><input id="code" maxlength="4" inputmode="numeric" placeholder="输入 4 位数字房间码" autocomplete="off"><button id="connect" class="primary">加入房间</button></div><div id="room" hidden><p id="players"></p><label for="orientation">双方统一方向（P1 选择）</label><select id="orientation"><option value="landscape">横屏</option><option value="portrait">竖屏</option></select><div class="row"><button id="ready" disabled>准备</button><select id="difficulty" aria-label="难度"><option value="easy">简单</option><option value="medium">中等</option><option value="hard">困难</option></select></div><button id="start" class="primary">开始战役</button></div><p id="error" role="alert"></p><p class="hint">两人连接并准备后，由 P1 开始。电脑：WASD / 方向键移动，空格射击，Q/E 技能，R 激光，F 飞镖，B 商店。手机支持多点触控。</p></section>
 <div id="orientation-warning" role="alert" hidden></div>
 <div id="controls" hidden><div id="stick" aria-label="移动摇杆"><i></i></div><div class="actions"><button data-action="skill1">技能 1</button><button data-action="skill2">技能 2</button><button id="shoot">射击</button><button data-action="laser">激光</button><button data-action="dart">飞镖</button></div><div class="toolbar"><button data-action="shop_open">商店</button><button data-action="revive">复活</button></div></div>
 <section id="recovery" class="panel" hidden><h1>连接需要重试</h1><p id="recovery-detail"></p><button id="retry" class="primary">使用原身份重连</button><div class="row"><button id="change-room">更换房间码</button><button id="reset-token" hidden>清除失效凭证并重新加入</button></div></section>
 <section id="shop" class="panel" hidden><h1>商店</h1><p>共享金币 · 任一玩家购物时，全局暂停</p><div id="catalog"></div><button data-action="shop_close" class="primary">关闭商店</button></section>
-<section id="result" class="panel" hidden><h1 id="result-title"></h1><p id="result-detail">协作完成全部十一关普通战役，不含无限模式。</p><button data-action="restart" class="primary">重新挑战</button></section>`;
+<section id="result" class="panel" hidden><h1 id="result-title"></h1><p id="result-detail"></p><button data-action="restart" class="primary">重新挑战</button></section>`;
 document.body.insertAdjacentHTML('beforeend', markup);
 const $ = id => document.getElementById(id);
 let state = null, ready = false, rendererReady = false, connected = false;
@@ -77,17 +77,18 @@ function renderState(s) {
   $('lobby').hidden=s.phase!=='lobby'; $('controls').hidden=!combatAvailable()||!rendererReady;
 
   $('shop').hidden=!me.shop_open; $('result').hidden=!['won','lost'].includes(s.phase)&&s.pause_reason!=='server_error';
-  $('result-title').textContent=s.pause_reason==='server_error'?'主机运行异常，游戏已暂停':s.phase==='won'?'十一关战役全部通关！':'挑战结束';
-  $('result-detail').textContent=s.pause_reason==='server_error'?(bridge.slot===1?'请重新开始战役；本次进度将重置。':'请等待 P1 重新开始战役。'):'协作完成全部十一关普通战役，不含无限模式。';
+  const totalLevels=s.total_levels||12;
+  $('result-title').textContent=s.pause_reason==='server_error'?'主机运行异常，游戏已暂停':s.phase==='won'?`全部 ${totalLevels} 关战役通关！`:'挑战结束';
+  $('result-detail').textContent=s.pause_reason==='server_error'?(bridge.slot===1?'请重新开始战役；本次进度将重置。':'请等待 P1 重新开始战役。'):s.phase==='won'?'双人战役已完成。':'可以重新挑战本场战役。';
   $('result').querySelector('button').disabled=bridge.slot!==1;
   const difficulty = $('difficulty').querySelector(`option[value="${s.difficulty}"]`)?.textContent;
   const pauseMessages={disconnected:'等待队友重新连接',suspended:'等待队友返回游戏页面',orientation_mismatch:'等待双方屏幕方向一致',shop:'等待开店玩家关闭商店',revive:'等待复活',server_error:'主机运行异常'};
-  $('online-status').textContent=`房间 ${bridge.code} · P${bridge.slot}${difficulty?' · 难度 '+difficulty:''} · 第 ${s.current_level||1}/${s.total_levels||11} 关${s.level_title?' '+s.level_title:''} · 金币 ${s.gold} · 生命 ${s.lives} | `+s.players.map(p=>`P${p.slot} ${p.alive?`${Math.ceil(p.hp)}/${p.max_hp}`:'等待复活'}`).join(' · ')+(s.paused?` | 已暂停：${pauseMessages[s.pause_reason]||'等待玩家'}`:'');
+  $('online-status').textContent=`房间 ${bridge.code} · P${bridge.slot}${difficulty?' · 难度 '+difficulty:''} · 第 ${s.current_level||1}/${totalLevels} 关${s.level_title?' '+s.level_title:''} · 金币 ${s.gold} · 生命 ${s.lives} | `+s.players.map(p=>`P${p.slot} ${p.alive?`${Math.ceil(p.hp)}/${p.max_hp}`:'等待复活'}`).join(' · ')+(s.paused?` | 已暂停：${pauseMessages[s.pause_reason]||'等待玩家'}`:'');
   const boss=s.world?.objects?.find(o=>o.id===s.world.boss)?.fields;
   if(!boss&&combatAvailable()) $('online-status').textContent+=` | Boss 倒计时 ${Math.ceil((s.boss_remaining_ms||0)/1000)} 秒`;
   const revive=document.querySelector('[data-action="revive"]');
   revive.textContent=s.lives>0?'复活（消耗 1 条共享生命）':`复活 ${s.revive_cost} 金币（全队剩余 ${s.paid_revives_remaining} 次）`;
-  revive.hidden=me.alive;
+  revive.hidden=true;
   revive.disabled=me.alive||(s.lives<=0&&s.paid_revives_remaining===0);
   const skillNames={fisher:[['手雷','fisher_grenade'],['无技能','']],fire:[['火墙','fire_wall'],['火球','fireball']],ice:[['冰墙','ice_floor'],['冰球','ice_balls']],water:[['水疗','water_heal'],['潮汐','water_boost']],radiation:[['闪电链','lightning'],['磁暴','magnetic_storm']]};
   (skillNames[me.character]||skillNames.fisher).forEach(([name,key],i)=>{const button=document.querySelector(`[data-action="skill${i+1}"]`),now=s.world?.time_ms||0;const remaining=Math.max(me.cooldowns?.[key]||0,me.active_until?.[key]||0)-now;button.textContent=name+(remaining>0?` ${Math.ceil(remaining/1000)}s`:'');button.disabled=!key||!me.alive;});

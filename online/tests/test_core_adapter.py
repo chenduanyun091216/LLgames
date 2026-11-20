@@ -20,6 +20,31 @@ class CoOpRulesTests(unittest.TestCase):
         p.invincible_until = 0
         self.g._damage_player(config.game_ticks(), 100, 'test')
 
+    def test_death_waits_at_position_then_respawns(self):
+        self.p1.x, self.p1.y = 123, 234
+        self.kill(self.p1)
+        self.assertFalse(self.p1.alive)
+        self.assertEqual(self.g.continuing[1], 180)
+        self.assertEqual((self.p1.x, self.p1.y), (123, 234))
+        self.assertTrue(self.p2.alive)
+        for _ in range(179):
+            self.g._advance_continues()
+        self.assertFalse(self.p1.alive)
+        self.g._advance_continues()
+        self.assertTrue(self.p1.alive)
+        self.assertEqual((self.p1.x, self.p1.y),
+                         (config.SCREEN_WIDTH // 2, config.GAME_AREA_BOTTOM - 14))
+
+    def test_death_automatically_pays_or_ends_only_local_player(self):
+        self.g.lives = 0
+        self.p1.gold = REVIVE_COSTS['medium']
+        self.kill(self.p1)
+        self.assertEqual(self.p1.gold, 0)
+        self.assertEqual(self.g.continuing[1], 180)
+        self.kill(self.p2)
+        self.assertNotIn(2, self.g.continuing)
+        self.assertEqual(self.g.phase, 'playing')
+
     def test_initial_shared_resources_and_individual_health(self):
         self.assertEqual(self.g.lives, 5)
         self.assertEqual((self.p1.hp, self.p2.hp), (5, 5))
@@ -149,8 +174,9 @@ class CoOpRulesTests(unittest.TestCase):
     def test_death_is_individual_and_auto_revives_with_shared_lives(self):
         self.kill(self.p2)
         self.assertTrue(self.p1.alive); self.assertFalse(self.p2.alive)
-        self.assertEqual(self.g.lives, 5)
-        self.g.step()
+        self.assertEqual(self.g.lives, 4)
+        for _ in range(180):
+            self.g.step()
         self.assertEqual(self.p2.x, self.g.world_size[0] // 2)
         self.assertEqual(self.p2.y, config.GAME_AREA_BOTTOM - 14)
         self.assertEqual(self.p2.invincible_until, config.game_ticks() + 1500)
@@ -177,7 +203,8 @@ class CoOpRulesTests(unittest.TestCase):
                     player.invincible_until = 0
                     game._damage_target = player
                     game._damage_player(0, 100, 'test')
-                    self.assertIsNone(game.action(player.slot, 'revive'))
+                    for _ in range(180):
+                        game._advance_continues()
                 gold = 1000 - limit * REVIVE_COSTS[difficulty]
                 self.assertEqual(game.gold, gold)
                 for player in (p1, p2):
@@ -194,7 +221,8 @@ class CoOpRulesTests(unittest.TestCase):
                 game = OnlineGame(difficulty); p1, p2 = game.all_players
                 game.lives = 0; p1.gold = price
                 game._damage_target = p2; game._damage_player(0, 100, 'test')
-                self.assertIsNone(game.action(2, 'revive'))
+                for _ in range(180):
+                    game._advance_continues()
                 self.assertEqual(game.gold, 0)
                 self.assertTrue(p2.alive)
 
@@ -202,7 +230,8 @@ class CoOpRulesTests(unittest.TestCase):
         self.g.lives = 0; self.p1.gold = 75
         self.kill(self.p1); self.kill(self.p2)
         self.assertEqual(self.g.phase, 'playing'); self.assertTrue(self.g.paused)
-        self.g.action(2, 'revive')
+        for _ in range(180):
+            self.g.step()
         self.assertFalse(self.g.paused)
         self.assertEqual(self.g.gold, 0)
         self.assertIsNotNone(self.g.action(1, 'revive'))
@@ -232,7 +261,7 @@ class CoOpRulesTests(unittest.TestCase):
         enemy=self.enemy(); self.g.enemies=[enemy]
         self.g._resolve_leak(enemy,0)
         self.assertEqual(self.p2.hp,0); self.assertFalse(self.p2.alive)
-        self.assertEqual(self.g.lives,5)
+        self.assertEqual(self.g.lives,4)
 
     def test_projectile_damage_hits_only_collision_target(self):
         self.p2.x=700
@@ -354,8 +383,8 @@ class CoOpRulesTests(unittest.TestCase):
                     self.g.step()
                 self.assertFalse(self.g.particles)
                 self.assertEqual(self.g.phase, 'won')
-                self.assertEqual(self.g.current_level, 11)
-        self.assertRaises(ValueError, self.g._start_level, 12)
+                self.assertEqual(self.g.current_level, 12)
+        self.assertRaises(ValueError, self.g._start_level, 13)
 
     def test_headless_visual_records_expire_without_rendering(self):
         self.g.muzzle_flashes = [(self.p1, 0, 'pistol'), (self.p2, 911, 'rifle')]

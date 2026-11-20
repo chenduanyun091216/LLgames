@@ -8,7 +8,7 @@ from copy import deepcopy
 from . import config, menu_ui
 from .render import Draw, RenderSurface, blit_effect, effect_layer, trim_transparent
 from .asset_loader import image_asset, scale_surface_cached
-from .background import scrolling_background_art
+from .background import scrolling_background_art, trench_boss_art
 from .config import (
     WEAPON_SWITCH_COOLDOWN,
     WHITE, GOLD_COLOR, OCEAN_BLUE, SAND_COLOR, PLAYER_HP_GREEN, HEALTH_RED, HEALTH_GREEN,
@@ -32,11 +32,13 @@ from .entities import (
     Player, Enemy, Bullet, Coin, GiftBox, Particle, Explosion,
     FireWall, IceFloor, SkillProjectile,
     MagneticStorm, RadiationLaser, Lightning, Boss, BossProjectile,
-    SpinningDarts, DragonFireball,
+    SpinningDarts, DragonFireball, draw_ice_status,
 )
 from .boss_skills import BOSS_COLORS, CRAB_BUBBLE_BURST_MS, CRAB_BUBBLE_COLORS, BossSignature, SIGNATURES, circle_hits_rect
 from .orochi import OrochiBoss
 from .abyss_bosses import AbyssProjectile, MechaLizardBoss, AncientWhaleBoss
+from .trench import (ShieldfishBoss, TrenchBolt, TrenchSpire, cannon_shots, draw_cannon_charge,
+                     enemy_shots as trench_enemy_shots, wave_key as trench_wave_key)
 from .special_bosses import CrescentWave, NiuBoss, NiuShieldShard, ReturningAxe, ZongBomb, ZongBoss, ZongReflectBullet
 
 class GameState:
@@ -60,6 +62,7 @@ LEVEL_TITLE_ART = (
     (('goldfish', 'octopus_pink', 'sea_cucumber'), (240, 214, 161)),
     (('mecha_crab', 'mecha_ray', 'mecha_jelly'), (255, 193, 129)),
     (('ancient_nautilus', 'ancient_turtle', 'ancient_ray'), (230, 209, 149)),
+    (('trench_angler', 'trench_anomalocaris', 'trench_jelly'), (150, 226, 236)),
     ((), (255, 156, 120)),
 )
 
@@ -243,6 +246,7 @@ class Game:
         self.leak_count = 0
         self.last_attack_gift = None
         self.level_spawn_count = 0
+        self.trench_cannon_at = self.trench_cannon_side = 0
         self.large_enemy_slots = set()
         self.last_spawn_was_elite = False
         self.enemy_volley_times = []
@@ -277,7 +281,13 @@ class Game:
     def _scrolls_background(self):
         return self.scroll_campaign_backgrounds and self.difficulty
 
+    def trench_boss_background(self, size):
+        return trench_boss_art(size) if isinstance(self.boss, ShieldfishBoss) else None
+
     def scrolling_background(self, size):
+        boss_background = self.trench_boss_background(size)
+        if boss_background is not None:
+            return boss_background
         if self._scrolls_background():
             level = self.infinite_background_level if self.infinite_mode else self.current_level
             return scrolling_background_art(
@@ -328,17 +338,19 @@ class Game:
         if self.boss:
             if (previous_area and previous_area != (config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT,
                                                     config.GAME_AREA_BOTTOM)
-                    and isinstance(self.boss, (MechaLizardBoss, AncientWhaleBoss))):
+                    and isinstance(self.boss, (MechaLizardBoss, AncientWhaleBoss, ShieldfishBoss))):
                 # A telegraph belongs to the arena in which it was announced.
                 # On solo rotation, cancel only these new attacks and give a
                 # full recovery interval instead of stretching a live hitbox
                 # onto the player. Online rooms never change layout mid-match.
                 self.boss_projectiles[:] = [shot for shot in self.boss_projectiles
-                                            if not isinstance(shot, AbyssProjectile)]
+                                            if not isinstance(shot, (AbyssProjectile, TrenchSpire))]
                 self.warned_boss_shots[:] = [shot for shot in self.warned_boss_shots
-                                             if not isinstance(shot, AbyssProjectile)]
+                                             if not isinstance(shot, (AbyssProjectile, TrenchSpire))]
                 self.boss.last_attack_time = config.game_ticks()
                 self.boss.current_skill = ''
+                if isinstance(self.boss, ShieldfishBoss):
+                    self.boss.skill_end_at = 0
             boss_scale = config.MOBILE_LANDSCAPE_BOSS_SCALE if config.MOBILE_LANDSCAPE_VIEW else size_scale
             if self.boss.signature:
                 self.boss.signature.stop(self.boss)
@@ -470,8 +482,9 @@ class Game:
             if event.type == pygame.KEYDOWN:
                 infinite = self.infinite_mode or self.selecting_infinite_mode
                 level = (event.key - pygame.K_0 if pygame.K_1 <= event.key <= pygame.K_9
-                         else {pygame.K_0: 11 if infinite else 10,
-                               pygame.K_MINUS: 10 if infinite else 11}.get(event.key, 0))
+                         else {pygame.K_0: 12 if infinite else 10,
+                               pygame.K_MINUS: 10 if infinite else 11,
+                               pygame.K_EQUALS: 11 if infinite else 12}.get(event.key, 0))
                 jump_limit = len(config.INFINITE_BOSS_HP) if infinite else len(LEVEL_CONFIGS)
                 if 1 <= level <= jump_limit and event.mod & pygame.KMOD_SHIFT:
                     self._jump_to_level(level)
@@ -1162,6 +1175,8 @@ class Game:
         elif bdef['key'] == 'boss_zongzong':
             bdef['easy_campaign'] = tier < 2
         self.boss = self._make_boss(bdef)
+        if isinstance(self.boss, ShieldfishBoss):
+            self._burst_remaining_enemies()
         self.warned_boss_shots.clear()
         self.boss_projectiles.clear(); self.enemy_projectiles.clear(); self.bullets.clear()
         self.last_spawn_time = config.game_ticks()
@@ -1205,9 +1220,13 @@ class Game:
     def _make_boss(self, bdef):
         cls = {'boss_niu': NiuBoss, 'boss_zongzong': ZongBoss,
                'boss_orochi': OrochiBoss, 'boss_mecha_lizard': MechaLizardBoss,
-               'boss_ancient_whale': AncientWhaleBoss}.get(bdef['key'], Boss)
+               'boss_ancient_whale': AncientWhaleBoss, 'boss_shieldfish': ShieldfishBoss}.get(bdef['key'], Boss)
         boss = cls(bdef, self.difficulty)
-        boss.intro_until = config.game_ticks() + 950
+        now = config.game_ticks()
+        if isinstance(boss, ShieldfishBoss):
+            self.trench_cannon_side = 0
+            self.trench_cannon_at = now + config.TRENCH_CANNON['opening']
+        boss.intro_until = now + 950
         return boss
 
     def _player_defeated(self, reason):
@@ -1260,7 +1279,6 @@ class Game:
         player.x, player.y = config.SCREEN_WIDTH // 2, config.GAME_AREA_BOTTOM - 14
 
     def _resume_after_defeat(self):
-        self._place_revived_player(self.player)
         now = config.game_ticks()
         self._clear_invaded_enemies()
         if self.boss and self.boss.signature:
@@ -1955,6 +1973,7 @@ class Game:
             return
         if self.state == GameState.INFINITE_COUNTDOWN:
             if pygame.time.get_ticks() >= self.infinite_countdown_end:
+                self._place_revived_player(self.player)
                 self.player_invincible_until = now + REVIVE_INVINCIBILITY_MS
                 self.state = self.infinite_resume_state
             return
@@ -2044,6 +2063,16 @@ class Game:
         self._spawn_hit_effect(x, y, (255, 100, 55), heavy)
         play_sound('player_hit')
 
+    def _boss_contact_boxes(self, now):
+        boss = self.boss
+        if not boss or (boss.signature and boss.signature.origin is not None):
+            return ()
+        if isinstance(boss, OrochiBoss) and boss.skill in ('split', 'storm', 'laser'):
+            return ()
+        if isinstance(boss, ShieldfishBoss) and now < boss.skill_end_at and not boss.rolling(now):
+            return ()
+        return boss.hitboxes()
+
     def _damage_player_on_contacts(self, now):
         for e in self.enemies[:]:
             if e.temple_kind == 'rift':
@@ -2057,11 +2086,8 @@ class Game:
                 self._play_contact_impact(self.player, contact, heavy=e.is_large)
                 if self._damage_player(now, amount, f'被{e.edef["name"]}撞击击败！'):
                     return True
-        if (self.boss and not (self.boss.signature and self.boss.signature.origin is not None)
-                and not (isinstance(self.boss, OrochiBoss) and self.boss.skill in ('split', 'storm', 'laser'))
-                and any(self._hit_player(br) for br in self.boss.hitboxes())
-                and not self._player_is_invincible(now)):
-            contact = next(rect for rect in self.boss.hitboxes() if self._hit_player(rect))
+        contact = next((box for box in self._boss_contact_boxes(now) if self._hit_player(box)), None)
+        if contact and not self._player_is_invincible(now):
             self._play_contact_impact(self.player, contact, heavy=True)
             self.player.move(0, contact.bottom - self.player.rect().top + 2)
             return self._damage_player(now, 2, f'被{self.boss.name}撞击击败！')
@@ -2162,7 +2188,7 @@ class Game:
     def _infinite_density(self, now):
         if not self.infinite_mode:
             return 1
-        limit = 7 if self.infinite_background_level in (9, 10) else 12
+        limit = 7 if self.infinite_background_level in (9, 10, 11) else 12
         return min(limit, 4 + self.infinite_boss_index // 3)
 
     def _infinite_spawn_interval(self):
@@ -2468,9 +2494,10 @@ class Game:
             elif getattr(ep, 'bomb', False) and self._hit_player(ep.rect()):
                 self.enemy_projectiles.remove(ep)
                 if self._explode_enemy_bomb(ep, now): return
-            elif self._hit_player(ep.rect()):
+            elif (hit_player := self._hit_player(ep.rect())):
                 self.enemy_projectiles.remove(ep)
-                if self._damage_player(now, 1, '被怪物子弹击败！', hit_feedback=True): return
+                if self._resolve_enemy_shot(ep, hit_player, now):
+                    return
         for b in self.bullets[:]:
             if now < getattr(b, 'guide_at', 0):
                 continue
@@ -2905,6 +2932,9 @@ class Game:
         if not self.boss: return
         if self._settle_boss_if_killed():
             return
+        self._update_trench_cannons(now)
+        if isinstance(self.boss, ShieldfishBoss) and self.boss.armor_pending:
+            self._add_boss_projectiles(self.boss.armor_shots())
         if isinstance(self.boss, OrochiBoss) and self.boss.death_at is not None:
             self.boss_projectiles.clear()
             return
@@ -2920,6 +2950,8 @@ class Game:
             if isinstance(self.boss, (ZongBoss, OrochiBoss)):
                 target = self._nearest_player(self.boss.x, self.boss.y)
                 self.boss.update(target.x, target.y)
+            elif isinstance(self.boss, ShieldfishBoss):
+                self.boss.update(self._nearest_player(self.boss.x, self.boss.y))
             else:
                 self.boss.update()
         if not self.infinite_mode and now and getattr(self.boss, 'laser_warning_start', 0) == now:
@@ -3001,9 +3033,10 @@ class Game:
             elif getattr(ep, 'bomb', False) and self._hit_player(ep.rect()):
                 self.enemy_projectiles.remove(ep)
                 if self._explode_enemy_bomb(ep, now): return
-            elif self._hit_player(ep.rect()):
+            elif (hit_player := self._hit_player(ep.rect())):
                 self.enemy_projectiles.remove(ep)
-                if self._damage_player(now, 1, '被怪物子弹击败！', hit_feedback=True): return
+                if self._resolve_enemy_shot(ep, hit_player, now):
+                    return
         opening_delay_elapsed = now - self.boss.fight_start_time >= config.BOSS_OPENING_DELAY_MS
         if self.boss.entered and opening_delay_elapsed:
             self._try_boss_signature(now, opening=self.boss.signature_opening_pending)
@@ -3027,10 +3060,12 @@ class Game:
         elif opening_delay_elapsed and self.boss.should_attack(now):
             self.boss.animation_attack_at = now
             target = self._nearest_player(self.boss.x, self.boss.y)
-            if isinstance(self.boss, (ZongBoss, MechaLizardBoss, AncientWhaleBoss)):
+            if isinstance(self.boss, (ZongBoss, MechaLizardBoss, AncientWhaleBoss, ShieldfishBoss)):
                 shots = self.boss.attack(now, target.x, target.y)
             else:
                 shots = self.boss.attack(now, target.x)
+            if isinstance(self.boss, ShieldfishBoss) and self.boss.current_skill == 'trench_spires':
+                play_sound('boss_appear')
             if not self.infinite_mode and isinstance(self.boss, NiuBoss):
                 self._extend_ground_warning(self.boss, now)
             self._queue_boss_shots(shots, now)
@@ -3158,10 +3193,11 @@ class Game:
                     previous_hp = self.boss.hp
                     self.boss.hit_by(b.weapon_name, damage, source='bullet', hit_rect=br)
                     self.bullets.remove(b)
-                    if self.boss.hp < previous_hp:
+                    damaged = self.boss.hp < previous_hp
+                    if damaged:
                         if b.character == 'ice' or getattr(b, 'gift_kind', None) == 'ice':
                             self.boss.apply_slow(now, 4000, 0.7)
-                    if reflected:
+                    if damaged or reflected:
                         play_sound('hit')
                         self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), True, element=b.gift_kind or b.character)
                     if self._settle_boss_if_killed():
@@ -3335,6 +3371,7 @@ class Game:
         background = self.scrolling_background(self.bg.get_size())
         self.bg_transition_prev = (background if background is not None else self.bg).copy()
         self.infinite_background_level = level
+        self.level_spawn_count = 0
         self.background_scroll_ticks = 0
         self.temple_rifts_at = 0
         self.bg = self._load_bg()
@@ -3441,7 +3478,10 @@ class Game:
         rare_chance = 0 if level < 4 else 0.05 if level == 8 else 0.03
         wave = self.state == GameState.PLAYING
         scheduled_wave = wave and count < self._campaign_value(config.CAMPAIGN_KILLS)
-        if wave and level == 1 and count < 2:
+        if level == 11:
+            key = trench_wave_key(count)
+            definition = next(e for e in ordinary if e['key'] == key)
+        elif wave and level == 1 and count < 2:
             key = ('lobster', 'crab')[count]
             definition = next(e for e in ordinary if e['key'] == key)
         elif wave and level == 2 and count == 3:
@@ -3580,6 +3620,19 @@ class Game:
                         self._spawn_temple_worm(enemy, hp * .3, offset, 2.5)
                     worms += count
 
+    def _update_trench_cannons(self, now):
+        if isinstance(self.boss, ShieldfishBoss) and now >= self.trench_cannon_at:
+            self.enemy_projectiles.extend(cannon_shots(self.trench_cannon_side))
+            self.trench_cannon_side ^= 1
+            self.trench_cannon_at = now + config.TRENCH_CANNON['interval']
+
+    def _resolve_enemy_shot(self, shot, player, now):
+        if isinstance(shot, TrenchBolt):
+            if shot.kind == 'ice' and not self._player_is_invincible(now):
+                player.niu_freeze_until = max(player.niu_freeze_until, now + config.TRENCH_CANNON['freeze'])
+            return self._damage_player(now, shot.damage, '被海沟炮台击败！', hit_feedback=True)
+        return self._damage_player(now, 1, '被怪物子弹击败！', hit_feedback=True)
+
     def _is_factory_stage(self):
         return (self.infinite_background_level if self.infinite_mode else self.current_level) == 9
 
@@ -3655,6 +3708,8 @@ class Game:
             self.enemies.append(child)
 
     def _enemy_shots(self, enemy, now):
+        if enemy.edef['key'] in config.TRENCH_ATTACKS:
+            return trench_enemy_shots(enemy, self._nearest_player(enemy.x, enemy.y), now)
         if not enemy.factory_kind:
             target = self._nearest_player(enemy.x, enemy.y)
             return enemy.attack(now, target.x)
@@ -3690,12 +3745,16 @@ class Game:
             self._spawn_campaign_enemy()
             return
         level = self.infinite_background_level
-        pool = get_level_enemy_defs(LEVEL_CONFIGS[level - 1]) if level in (9, 10) else self.level_enemy_defs
+        pool = get_level_enemy_defs(LEVEL_CONFIGS[level - 1]) if level in (9, 10, 11) else self.level_enemy_defs
         large_pool = [e for e in pool if e['is_large']]
         zong_pool = [e for e in pool if e['key'] == 'zongzong']
         normal_pool = [e for e in pool if not e['is_large'] and e['key'] != 'zongzong']
         zong_chance = ZONGZONG_SPAWN_CHANCE * (2 if self.infinite_background_level == 8 else 1)
-        if zong_pool and random.random() < zong_chance:
+        if level == 11:
+            key = trench_wave_key(self.level_spawn_count)
+            edef = next(e for e in normal_pool if e['key'] == key)
+            self.level_spawn_count += 1
+        elif zong_pool and random.random() < zong_chance:
             edef = random.choice(zong_pool)
         elif large_pool and random.random() < INFINITE_LARGE_ENEMY_CHANCE:
             edef = random.choice(large_pool)
@@ -3709,7 +3768,7 @@ class Game:
             e.attack_interval_max = max(amin, amax)
             e.attack_interval = random.randint(e.attack_interval_min, e.attack_interval_max)
         e.health_mult *= self._infinite_health_mult()
-        if level in (9, 10):
+        if level in (9, 10, 11):
             e.max_hp = edef['campaign_hp'] * e.health_mult
             if level == 9:
                 e.factory_kind = 'original'
@@ -4086,6 +4145,8 @@ class Game:
             now = config.game_ticks()
             self.boss.draw_storm_lightning(config.SCR, now)
         draw_water_drift(config.SCR, config.game_ticks())
+        if isinstance(self.boss, ShieldfishBoss):
+            draw_cannon_charge(config.SCR, config.game_ticks(), self.trench_cannon_at, self.trench_cannon_side)
         if self.boss and self.boss.signature:
             self.boss.signature.draw(config.SCR, self.boss, config.game_ticks())
         for ms in self.magnetic_storms: ms.draw(config.SCR)
@@ -4179,7 +4240,10 @@ class Game:
                 continue
             player.draw(config.SCR, visual_scale=visual_scale)
             self._draw_invincible_shield(player)
-            self._draw_niu_freeze(player)
+            hitbox = player.rect()
+            draw_ice_status(config.SCR, player.x, player.y, hitbox.w * visual_scale,
+                            hitbox.h * visual_scale, now, frozen=now < player.niu_freeze_until,
+                            frozen_until=player.niu_freeze_until)
             self._draw_player_label(player, f'P{i}')
             self._draw_water_boost_status(player)
         self._draw_water_heal_effects()
@@ -4237,6 +4301,12 @@ class Game:
         elif isinstance(boss, OrochiBoss) and now < boss.invincible_until:
             label = f'再生护盾 · {(boss.invincible_until - now) / 1000:.1f}s'
             self._draw_text_fit(label, self.font_tiny, (180, 215, 255),
+                                pygame.Rect(x, y + 40, width, 18), align='center')
+        elif isinstance(boss, ShieldfishBoss) and now < boss.skill_end_at:
+            label = boss.LABELS[boss.current_skill]
+            if now >= boss.recovery_at and boss.exposed(now):
+                label = '下颌暴露 · 反击'
+            self._draw_text_fit(label, self.font_tiny, (179, 234, 248),
                                 pygame.Rect(x, y + 40, width, 18), align='center')
         elif remaining > 0:
             self._draw_text_fit(f'危险 · {remaining / 1000:.1f}s', self.font_tiny, (255, 205, 139),
@@ -4351,17 +4421,6 @@ class Game:
         alpha = min(170, 70 + rem // 18)
         _circle(config.SCR, (190, 235, 255, alpha), (int(player.x), int(player.y)), int(48 * pulse), 3)
         _circle(config.SCR, (255, 255, 255, alpha // 2), (int(player.x), int(player.y)), int(36 * pulse), 2)
-
-    def _draw_niu_freeze(self, player):
-        now = config.game_ticks()
-        if now >= player.niu_freeze_until:
-            return
-        cx, cy = int(player.x), int(player.y)
-        _circle(config.SCR, (105, 215, 255, 210), (cx, cy), 39, 3)
-        for angle in (0, 60, 120):
-            rad = math.radians(angle)
-            dx, dy = math.cos(rad) * 29, math.sin(rad) * 29
-            _line(config.SCR, (205, 250, 255), (cx - dx, cy - dy), (cx + dx, cy + dy), 3)
 
     def _level_title_ticks(self):
         return pygame.time.get_ticks() if self.web else config.game_ticks()

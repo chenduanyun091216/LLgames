@@ -18,7 +18,6 @@ def run(difficulty):
             targets.append(game.boss)
         for player in game.all_players:
             if not player.alive:
-                game.action(player.slot, 'revive')
                 continue
             target = targets[min(player.slot - 1, len(targets) - 1)] if targets else None
             target_x = target.x if target else 390 + (player.slot - 1) * 180

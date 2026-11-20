@@ -260,7 +260,7 @@ class Presentation:
         if name not in CLASSES: raise ValueError('Unknown visual type')
         if name == 'Player': return E.Player()
         if name == 'Enemy': return E.Enemy(record['edef'])
-        if name in ('Boss', 'NiuBoss', 'ZongBoss', 'OrochiBoss', 'MechaLizardBoss', 'AncientWhaleBoss'):
+        if name in ('Boss', 'NiuBoss', 'ZongBoss', 'OrochiBoss', 'MechaLizardBoss', 'AncientWhaleBoss', 'ShieldfishBoss'):
             boss = CLASSES[name](record['bdef'], self.view.difficulty)
             boss.intro_until = 0
             return boss
@@ -276,7 +276,7 @@ class Presentation:
         if name == 'SkillProjectile': return E.SkillProjectile(0,0,0,0,f['ptype'])
         if name == 'Lightning': return E.Lightning(0,0,[],0)
         if name in ('RadiationLaser','SpinningDarts'): return CLASSES[name](self.view.player)
-        if name == 'AbyssProjectile': return CLASSES[name].__new__(CLASSES[name])
+        if name in ('AbyssProjectile', 'TrenchSpire', 'TrenchBolt'): return CLASSES[name].__new__(CLASSES[name])
         if name == 'BossProjectile': return E.BossProjectile(0,0,0,0)
         if name == 'DragonFireball': return E.DragonFireball(0,0,0)
         if name == 'ReturningAxe':

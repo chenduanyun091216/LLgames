@@ -30,13 +30,8 @@ def main():
     parser.parse_args()
     b = configured_builder()
     b.prepare_sources()
+    # The shared builder has already staged the online Python package.
     shutil.copy2(ONLINE / 'client/main.py', b.STAGING / 'main.py')
-    package = b.STAGING / 'online'
-    package.mkdir()
-    (package / '__init__.py').write_text('')
-    for name in ('adapters','shared'):
-        if (ONLINE / name).is_dir():
-            shutil.copytree(ONLINE / name, package / name, ignore=shutil.ignore_patterns('__pycache__'))
     output = b.build_pygbag()
     b.finalize_webroot(output)
     # Transport is loaded before the deferred shell; no service worker or CDN requests at run time.

@@ -2,7 +2,7 @@
 
 PC 和 Web 单人版共用画面、战斗规则和数值。PC 端在原生窗口中运行，Web 端支持浏览器横竖屏触控和离线游玩。原生 PC 与 Web 共用单机和局域网双人入口。「创建房间」可分享电脑的局域网地址与四位房间码。
 
-战役共十一关，第九关为「机房重地（废弃工厂）」，第十关为「远古神庙」，第十一关直接迎战八岐大蛇。关卡机制、Boss 技能和难度参数见 [战役与无限模式](docs/战役与无限模式.md)。
+战役共十二关。第十一关「沉骨海沟」有十二种小怪和首领远古盾鱼·断颚，第十二关「大蛇之巢」直接迎战八岐大蛇。关卡机制、Boss 技能和难度参数见 [战役与无限模式](docs/战役与无限模式.md)。
 
 ## 安装
 
@@ -56,6 +56,8 @@ Web 游戏由浏览器中的 Python 3.12（WASM）执行。通过 HTTPS 或本�
 | `game_core/` | 两端共用的游戏循环、画面、战斗规则、数值和音效 |
 | `pc/` | 原生窗口启动入口和测试 |
 | `web/` | 浏览器外壳、构建与服务代码、测试 |
+| `online/` | PC 与 Web 共用的局域网服务、快照适配和联机测试；也保留独立战役预览入口 |
+| `phaser/` | 独立 Phaser 网页版及其构建和测试 |
 | `assets/` | 两端共用的素材和工具，`images/` 下按动画、背景、Boss、敌人、玩家、武器、特效和界面分类 |
 | `docs/` | Web 部署说明和玩法数值文档 |
 
@@ -63,5 +65,8 @@ Web 游戏由浏览器中的 Python 3.12（WASM）执行。通过 HTTPS 或本�
 
 ```sh
 python -m unittest discover
-node --test web/tests/test_loading_progress.js
+node --test web/tests/test_loading_progress.js online/tools/test_*.cjs
+(cd phaser && npm run build && npm test)
 ```
+
+Python 测试包含 PC、Web 和联机，部分用例需要在本机回环地址绑定临时端口。

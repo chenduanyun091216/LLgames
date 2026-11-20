@@ -55,7 +55,7 @@ class CampaignParityTests(unittest.TestCase):
                         self.assertEqual(single.large_enemy_slots, online.large_enemy_slots)
                         self.assertEqual(single._campaign_value(config.CAMPAIGN_KILLS),
                                          online._campaign_value(config.CAMPAIGN_KILLS))
-                        if level != 11:
+                        if not config.LEVEL_CONFIGS[level - 1].get('boss_on_start'):
                             for game in (single, online):
                                 random.seed(334)
                                 game._spawn_campaign_enemy()
@@ -80,13 +80,13 @@ class CampaignParityTests(unittest.TestCase):
 
     def test_final_stage_starts_boss_after_card_and_new_stages_have_waves(self):
         game = OnlineGame()
-        self.assertEqual(len(config.LEVEL_CONFIGS), 11)
-        for level in (9, 10):
+        self.assertEqual(len(config.LEVEL_CONFIGS), 12)
+        for level, species in ((9, 6), (10, 6), (11, 12)):
             game._start_level(level)
             self.assertIsNone(game.boss)
             self.assertEqual(game.state, GameState.PLAYING)
-            self.assertEqual(len(game.level_enemy_defs), 6)
-        game._start_level(11)
+            self.assertEqual(len(game.level_enemy_defs), species)
+        game._start_level(12)
         self.assertIsNone(game.boss)
         for _ in range(179):
             game.step()
@@ -94,7 +94,7 @@ class CampaignParityTests(unittest.TestCase):
         game.step()
         self.assertEqual(game.state, GameState.BOSS_FIGHT)
         self.assertEqual(game.boss.bdef['key'], 'boss_orochi')
-        self.assertEqual(game.snapshot()['total_levels'], 11)
+        self.assertEqual(game.snapshot()['total_levels'], 12)
 
     def test_clients_never_run_combat(self):
         for level in (9, 10):
@@ -210,6 +210,11 @@ class CampaignParityTests(unittest.TestCase):
         game.tick = 401
         game.step()
         self.assertEqual(game.lives, 0)
+        self.assertFalse(game.players)
+        for _ in range(179):
+            game.step()
+        self.assertFalse(game.players)
+        game.step()
         self.assertEqual(len(game.players), 2)
         for player in game.players:
             self.assertEqual(player.hp, player.max_hp)
@@ -226,6 +231,9 @@ class CampaignParityTests(unittest.TestCase):
         game._update_whale_suction(6000)
         game.tick = 401
         game.step()
+        self.assertFalse(game.players)
+        for _ in range(180):
+            game.step()
         self.assertEqual(len(game.players), 1)
         self.assertEqual(game.lives, 0)
         self.assertEqual(game.players[0].y, config.GAME_AREA_BOTTOM - 14)

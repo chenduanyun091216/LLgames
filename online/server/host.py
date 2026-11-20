@@ -136,7 +136,9 @@ class Host:
                 await peer.ws.close(code=1001, message=b'Room closed')
 
     async def remove(self, room, peer):
-        if room.game and room.mode == 'infinite' or not room.game and peer.slot == 2:
+        if (room.game and (room.mode == 'infinite' or
+                           not room.game.all_players[peer.slot - 1].alive)
+                or not room.game and peer.slot == 2):
             room.remove(peer)
             if room.players:
                 room.broadcast()

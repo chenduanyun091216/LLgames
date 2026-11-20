@@ -25,7 +25,7 @@ class CampaignAdapterTests(unittest.TestCase):
             p.x, p.y = x, y
             p.invincible_until = 0
 
-    def test_all_eleven_shared_boss_classes_and_short_ai_runs(self):
+    def test_all_twelve_shared_boss_classes_and_short_ai_runs(self):
         rng = random.getstate()
         try:
             random.seed(47)
@@ -35,15 +35,9 @@ class CampaignAdapterTests(unittest.TestCase):
                     expected = config.BOSS_DEFS[config.LEVEL_CONFIGS[level-1]['boss_idx']]['key']
                     self.assertEqual(game.boss.bdef['key'], expected)
                     self.assertFalse(game.infinite_mode)
-                    for p in game.all_players:
-                        p.hp = p.max_hp = 10000
+                    # Exercise AI continuously, independent of lethal signatures and revives.
+                    game._suppress_damage = True
                     for _ in range(1200):
-                        # Abyss bite is intentionally lethal regardless of HP.
-                        for p in game.all_players:
-                            if not p.alive:
-                                game.lives += 1
-                                game.action(p.slot, 'revive')
-                                p.hp = p.max_hp = 10000
                         game.step()
                     self.assertEqual(game.tick, 1200)
                     self.assertEqual(game.phase, 'playing')
@@ -236,7 +230,7 @@ class CampaignAdapterTests(unittest.TestCase):
     def test_orochi_slam_split_and_laser_geometry_hits_both(self):
         for skill in ('slam', 'split', 'laser'):
             with self.subTest(skill=skill):
-                game = self.boss_game(11)
+                game = self.boss_game(12)
                 boss = game.boss
                 boss._start_skill(skill, 0)
                 now = boss.SLAM_IMPACT if skill == 'slam' else boss.LASER_WARNING if skill == 'laser' else 100
@@ -259,7 +253,7 @@ class CampaignAdapterTests(unittest.TestCase):
 
     def test_orochi_special_contact_exclusions(self):
         for skill in ('split', 'storm', 'laser'):
-            game = self.boss_game(11)
+            game = self.boss_game(12)
             game.boss._start_skill(skill, 0)
             body = game.boss.hitboxes()[0]
             self.stack(game, body.centerx, body.centery)
@@ -284,7 +278,7 @@ class CampaignAdapterTests(unittest.TestCase):
         self.assertTrue(all(a < b for a, b in zip(boss.body_hp, bodies)))
 
     def test_orochi_threshold_and_death_animation_precede_victory(self):
-        game = self.boss_game(11)
+        game = self.boss_game(12)
         boss = game.boss
         boss.hit_by('pistol', boss.max_hp)
         self.assertEqual(boss.skill, 'storm')
@@ -333,7 +327,7 @@ class CampaignAdapterTests(unittest.TestCase):
 
     def test_orochi_sound_capture_restores_both_bindings_even_on_error(self):
         from game_core import orochi, entities
-        game = self.boss_game(11)
+        game = self.boss_game(12)
         original = core.play_sound, orochi.play_sound, entities.play_sound
         with self.assertRaises(RuntimeError):
             with game._capture_sounds():
@@ -365,7 +359,7 @@ class CampaignAdapterTests(unittest.TestCase):
             (8, lambda x, y: core.CrescentWave(x, y)),
             (8, lambda x, y: ZongFireball(x, y, 0, 0, damage=1)),
             (8, lambda x, y: ZongReflectBullet(x, y)),
-            (11, lambda x, y: OrochiFireball(x, y, (255, 58, 43), None)),
+            (12, lambda x, y: OrochiFireball(x, y, (255, 58, 43), None)),
         )
         for level, factory in cases:
             game = self.boss_game(level)

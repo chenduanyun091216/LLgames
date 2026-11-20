@@ -82,6 +82,23 @@ class UnifiedLANTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host.room.game.current_level, 11)
         self.assertEqual(self.host.room.snapshot()['start_level'], 11)
 
+    async def test_defeated_campaign_player_can_leave_without_stopping_teammate(self):
+        p1, p2 = await self.start('campaign')
+        room = self.host.room
+        game = room.game
+        game.lives = 0
+        game.player.gold = 0
+        game._damage_target = game.all_players[0]
+        game.all_players[0].invincible_until = 0
+        game._damage_player(0, 100, 'test')
+        response = await self.post('/rooms/leave', dict(
+            room_id=p1[1]['room_id'], token=p1[1]['token'], request_id='q' * 32))
+        self.assertEqual(response.status, 200)
+        tick = game.tick
+        await self.wait_for(lambda: game.tick > tick)
+        self.assertFalse(room.snapshot()['paused'])
+        self.assertTrue(game.all_players[1].alive)
+
     async def test_infinite_departure_keeps_p2_and_notice(self):
         p1, p2 = await self.start('infinite')
         room = self.host.room

@@ -69,7 +69,7 @@ class FactoryEnemiesTests(unittest.TestCase):
         self.assertIn(game.enemies[0].edef['key'], config.TEMPLE_ENEMY_KEYS)
         game._kill_boss()
         game.spawn_enemy()
-        self.assertIn(game.enemies[0].edef, game.level_enemy_defs)
+        self.assertIn(game.enemies[0].edef['key'], config.TRENCH_ENEMY_KEYS)
 
     def test_three_linked_enemies_survive_at_one_percent_and_die_without_splitting(self):
         group = [self.spawn() for _ in range(3)]

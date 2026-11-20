@@ -84,7 +84,8 @@ def _signature_pose(signature, now):
 
 
 def frame(name, index):
-    category = 'players' if name.startswith('player') else 'bosses'
+    category = ('players' if name.startswith('player') else
+                'enemies' if name.startswith('enemy_') else 'bosses')
     sheet = image_asset(f'animations/{category}/anim_{name}.png')
     if sheet is None:
         return None

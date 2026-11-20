@@ -1,4 +1,6 @@
 import asyncio
+import gzip
+import json
 import unittest
 import tempfile
 from pathlib import Path
@@ -7,6 +9,8 @@ from aiohttp.test_utils import TestServer, TestClient
 from online.server.app import create_app, ROOM_KEY
 
 class FakeGame:
+    phase = 'playing'
+
     def __init__(self,difficulty='medium',orientation='landscape'):
         self.tick=0
         self.inputs={}
@@ -18,7 +22,7 @@ class FakeGame:
     def step(self):
         self.tick+=1
     def snapshot(self):
-        return dict(tick=self.tick,phase='playing',players=[dict(slot=s,hp=100,max_hp=100,alive=True,shop_open=False) for s in (1,2)],gold=0,lives=3,world={})
+        return dict(tick=self.tick,phase=self.phase,players=[dict(slot=s,hp=100,max_hp=100,alive=True,shop_open=False) for s in (1,2)],gold=0,lives=3,world={})
 
 class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -171,16 +175,46 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_snapshot_failure_is_contained(self):
         a,b,wa,wb=await self.start()
-        previous=self.room.snapshot()
+        with patch('online.server.app.json.dumps', wraps=json.dumps) as encode:
+            self.room.broadcast()
+            encode.assert_called_once()
+        previous = self.room.last_state
         def fail():
-            raise ValueError('bad visual entity')
+            return dict(previous, world={'invalid': float('nan')})
         self.room.game.snapshot=fail
         with self.assertLogs('online.server.app',level='ERROR'):
-            state=self.room.snapshot()
+            self.room.broadcast()
+        state = self.room.snapshot()
         self.assertEqual(state['tick'],previous['tick'])
         self.assertEqual(state['pause_reason'],'server_error')
         await asyncio.sleep(.06)
         self.assertFalse(self.room.task.done())
+
+    async def test_versioned_runtime_cache_and_conditional_requests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            runtime = 'runtime-0123456789abcdef/cdn/main.wasm'
+            for name in ('index.html', 'sw.js', 'ttgames-0123456789abcdef.tar.gz', runtime):
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b'payload')
+            (root / (runtime + '.gz')).write_bytes(gzip.compress(b'payload'))
+            with patch('online.server.app.STATIC_ROOT', root):
+                for name in ('', 'sw.js'):
+                    response = await self.client.get('/' + name)
+                    self.assertEqual(response.headers['Cache-Control'], 'no-store')
+                    await response.read()
+                for name in ('ttgames-0123456789abcdef.tar.gz', runtime):
+                    response = await self.client.get('/' + name)
+                    self.assertIn('immutable', response.headers['Cache-Control'])
+                    self.assertEqual(await response.read(), b'payload')
+                self.assertEqual(response.headers['Content-Type'], 'application/wasm')
+                self.assertEqual(response.headers['Content-Encoding'], 'gzip')
+                cached = await self.client.get('/' + runtime, headers={'If-None-Match': response.headers['ETag']})
+                self.assertEqual(cached.status, 304)
+                missing = await self.client.get('/ttgames-9999999999999999.tar.gz')
+                self.assertEqual(missing.status, 404)
+                self.assertNotIn('immutable', missing.headers.get('Cache-Control', ''))
 
     async def test_static_isolation_headers(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:

@@ -173,6 +173,52 @@ CHARACTER_DEFS = {
 }
 _CHAR_KEYS_ORDERED = ['ice', 'water', 'fire', 'radiation']
 
+TRENCH_ENEMIES = (
+    ('trench_hermit', '骨钳寄居蟹', 0.34, 5),
+    ('trench_angler', '幽灯鮟鱇', 0.37, 4),
+    ('trench_urchin', '刺冠海胆', 0.28, 4),
+    ('trench_ammonite', '裂壳菊石', 0.3, 5),
+    ('trench_jelly', '骨伞水母', 0.38, 3),
+    ('trench_worm', '钻骨海虫', 0.57, 3),
+    ('trench_anomalocaris', '骨翼奇虾', 0.54, 4),
+    ('trench_tubeworm', '针冠管虫', 0.3, 3),
+    ('trench_comb', '灯囊栉水母', 0.42, 3),
+    ('trench_clam', '裂口古贝', 0.31, 5),
+    ('trench_brittle', '碎骨海蛇尾', 0.39, 4),
+    ('trench_dragon', '刃脊海龙', 0.46, 3),
+)
+TRENCH_ENEMY_KEYS = [key for key, _, _, _ in TRENCH_ENEMIES]
+# The first rotation introduces each of the twelve species once.
+TRENCH_WAVES = (
+    ('trench_hermit', 'trench_angler', 'trench_comb', 'trench_tubeworm'),
+    ('trench_worm', 'trench_anomalocaris', 'trench_urchin', 'trench_dragon'),
+    ('trench_clam', 'trench_brittle', 'trench_jelly', 'trench_ammonite'),
+)
+TRENCH_CANNON = {'opening': 2700, 'interval': 3250, 'warning': 550, 'freeze': 2000,
+                 'angles': {'portrait': (2, 9, 16, 23, 30, 37),
+                            'wide': (14, 24, 34, 44, 54, 64)},
+                 'colors': {'fire': (255, 48, 42), 'ice': (57, 155, 255)},
+                 'mouth_size': {'portrait': (.041, .035), 'wide': (.029, .057)},
+                 'muzzles': {'portrait': ((.247, .150), (.790, .150)),
+                             'wide': ((.226, .129), (.779, .129))}}
+TRENCH_ROLL_TIMING = (1000, 420, 900)
+TRENCH_BOLT_RADIUS = {'bone': 24, 'armor': 18, 'fire': 12, 'ice': 11}
+
+TRENCH_ATTACKS = {
+    'trench_hermit': (480, 3.1, False),
+    'trench_angler': (640, 2.8, True),
+    'trench_urchin': (550, 3.5, False),
+    'trench_ammonite': (620, 3.4, False),
+    'trench_jelly': (650, 2.1, False),
+    'trench_worm': (540, 4.4, True),
+    'trench_anomalocaris': (470, 4.1, True),
+    'trench_tubeworm': (460, 3.8, False),
+    'trench_comb': (590, 2.4, False),
+    'trench_clam': (610, 4.0, False),
+    'trench_brittle': (530, 4.5, False),
+    'trench_dragon': (500, 4.2, True),
+}
+
 ENEMY_DEFS = [
     {'key': 'lobster',  'name': '龙虾',   'is_large': False, 'base_speed': 0.4,   'gold': 1},
     {'key': 'crab',     'name': '螃蟹',   'is_large': False, 'base_speed': 0.255, 'gold': 1},
@@ -220,6 +266,10 @@ ENEMY_DEFS = [
     {'key': 'octopus',  'name': '章鱼',   'is_large': True,  'base_speed': 0.25,  'gold': 3,
      'size': (100, 87), 'sprite_asset': 'enemies/enemy_octopus.png'},
     {'key': 'shark',    'name': '鲨鱼',   'is_large': True,  'base_speed': 0.35,  'gold': 3},
+] + [
+    {'key': key, 'name': name, 'is_large': False, 'base_speed': speed, 'gold': 2,
+     'campaign_hp': hp}
+    for key, name, speed, hp in TRENCH_ENEMIES
 ]
 
 OCEAN_ENEMY_KEYS = [
@@ -315,6 +365,9 @@ BOSS_DEFS = [
     {'key': 'boss_ancient_whale', 'name': '远古巨鲸·溯潮', 'enemy_key': 'ancient_ray',
      'base_hp': 170, 'speed': 0.52, 'attack_interval': 3600, 'projectile_count': 5,
      'size': (340, 230)},
+    {'key': 'boss_shieldfish', 'name': '远古盾鱼·断颚', 'enemy_key': 'trench_anomalocaris',
+     'base_hp': 175, 'speed': 0.62, 'attack_interval': 4400, 'projectile_count': 7,
+     'size': (350, 272)},
     {'key': 'boss_orochi', 'name': '八岐大蛇·祸津', 'enemy_key': 'shark',
      'base_hp': 175, 'speed': 0.65, 'attack_interval': 3400, 'projectile_count': 8,
      'size': (360, 240)},
@@ -346,7 +399,9 @@ LEVEL_CONFIGS = [
      'enemy_pool': FACTORY_ENEMY_KEYS},
     {'level': 10, 'title': '远古神庙', 'kills_needed': 34, 'boss_idx': 9, 'gold_reward': 38,
      'enemy_pool': TEMPLE_ENEMY_KEYS},
-    {'level': 11, 'title': '大蛇之巢', 'kills_needed': 0, 'boss_idx': 10, 'gold_reward': 0,
+    {'level': 11, 'title': '沉骨海沟', 'kills_needed': 32, 'boss_idx': 10, 'gold_reward': 40,
+     'enemy_pool': TRENCH_ENEMY_KEYS},
+    {'level': 12, 'title': '大蛇之巢', 'kills_needed': 0, 'boss_idx': 11, 'gold_reward': 0,
      'enemy_pool': [], 'boss_on_start': True},
 ]
 
@@ -386,25 +441,25 @@ def make_font(size, bold=False):
 
 # PC、Web 与联机共用的权威战役数值。三元组按简单、中等、困难排列。
 CAMPAIGN_KILLS = ((12, 14, 15), (15, 17, 18), (17, 20, 21), (19, 22, 24),
-                  (21, 24, 26), (0, 0, 0), (23, 27, 29), (22, 26, 29), (22, 27, 30), (23, 28, 31), (0, 0, 0))
+                  (21, 24, 26), (0, 0, 0), (23, 27, 29), (22, 26, 29), (22, 27, 30), (23, 28, 31), (24, 29, 32), (0, 0, 0))
 CAMPAIGN_SPAWN_MS = ((2600, 2400, 2200), (2500, 2300, 2125), (2400, 2200, 2050),
                      (2320, 2100, 1975), (2250, 2000, 1900), (0, 0, 0),
-                     (2150, 1900, 1825), (2050, 1800, 1750), (2000, 1780, 1725), (1950, 1750, 1700), (0, 0, 0))
+                     (2150, 1900, 1825), (2050, 1800, 1750), (2000, 1780, 1725), (1950, 1750, 1700), (1850, 1700, 1550), (0, 0, 0))
 CAMPAIGN_ENEMY_CAP = ((4, 5, 6), (5, 6, 7), (5, 6, 7), (6, 7, 8),
-                      (6, 7, 8), (0, 0, 0), (6, 8, 9), (7, 8, 9), (5, 6, 7), (5, 6, 7), (0, 0, 0))
+                      (6, 7, 8), (0, 0, 0), (6, 8, 9), (7, 8, 9), (5, 6, 7), (5, 6, 7), (5, 6, 7), (0, 0, 0))
 CAMPAIGN_BOSS_HP = ((18, 24, 28), (30, 40, 46), (45, 60, 69), (62, 82, 94),
-                    (80, 106, 122), (99, 132, 152), (118, 156, 180), (128, 168, 198), (132, 175, 211), (136, 182, 222), (148, 200, 240))
+                    (80, 106, 122), (99, 132, 152), (118, 156, 180), (128, 168, 198), (132, 175, 211), (136, 182, 222), (142, 190, 230), (148, 200, 240))
 CAMPAIGN_BOSS_ATTACK_MS = ((5000, 4400, 3800), (4800, 4100, 3600), (4600, 3900, 3400),
                            (4400, 3700, 3200), (4200, 3500, 3000), (4000, 3400, 2900),
-                           (6800, 5800, 5000), (4700, 3900, 3100), (5600, 4600, 3600), (5800, 4800, 3800), (4600, 3600, 2900))
+                           (6800, 5800, 5000), (4700, 3900, 3100), (5600, 4600, 3600), (5800, 4800, 3800), (5200, 4400, 3600), (4600, 3600, 2900))
 CAMPAIGN_REINFORCEMENT_MS = ((0, 0, 0), (5500, 5000, 4600), (5100, 4600, 4100),
                              (4800, 4300, 3900), (4500, 4000, 3600), (4800, 4200, 3700),
-                             (4800, 4300, 3800), (5200, 4600, 4000), (6800, 5800, 4800), (7200, 6200, 5100), (0, 0, 0))
+                             (4800, 4300, 3800), (5200, 4600, 4000), (6800, 5800, 4800), (7200, 6200, 5100), (0, 0, 0), (0, 0, 0))
 CAMPAIGN_REINFORCEMENT_CAP = ((0, 0, 0), (1, 1, 2), (1, 2, 2), (1, 2, 2),
-                              (2, 2, 3), (2, 2, 3), (2, 2, 3), (1, 2, 2), (1, 1, 2), (1, 1, 2), (0, 0, 0))
-CAMPAIGN_LARGE_CHANCE = (0, 0.08, 0.12, 0.14, 0.16, 0.16, 0.18, 0.18, 0, 0, 0)
-CAMPAIGN_SPEED = (1.00, 1.03, 1.06, 1.09, 1.12, 1.15, 1.18, 1.20, 1.21, 1.22, 1.20)
-CAMPAIGN_REWARDS = (8, 12, 16, 20, 24, 24, 30, 0, 34, 38, 0)
+                              (2, 2, 3), (2, 2, 3), (2, 2, 3), (1, 2, 2), (1, 1, 2), (1, 1, 2), (0, 0, 0), (0, 0, 0))
+CAMPAIGN_LARGE_CHANCE = (0, 0.08, 0.12, 0.14, 0.16, 0.16, 0.18, 0.18, 0, 0, 0, 0)
+CAMPAIGN_SPEED = (1.00, 1.03, 1.06, 1.09, 1.12, 1.15, 1.18, 1.20, 1.21, 1.22, 1.23, 1.20)
+CAMPAIGN_REWARDS = (8, 12, 16, 20, 24, 24, 30, 0, 34, 38, 40, 0)
 CAMPAIGN_WEAPON_PRICES = {'pistol': (0, 0, 0), 'rifle': (8, 10, 12),
                           'shotgun': (12, 14, 16), 'sniper': (16, 18, 20)}
 CAMPAIGN_CHARACTER_PRICES = {'ice': (22, 26, 30), 'fire': (26, 30, 34),
@@ -415,10 +470,10 @@ CAMPAIGN_WEAPON_FIRE_RATES = {'pistol': 280, 'shotgun': 280, 'sniper': 466}
 SNIPER_MISSILE_RADIUS = 64
 
 # 无限模式 Boss 首轮参数，按 BOSS_DEFS 顺序排列。
-INFINITE_BOSS_HP = (30, 46, 66, 90, 116, 144, 170, 184, 192, 202, 220)
-INFINITE_BOSS_ATTACK_MS = (4400, 4100, 3900, 3700, 3500, 3400, 5800, 3900, 4600, 4800, 3600)
-INFINITE_REINFORCEMENT_MS = (5500, 5000, 4600, 4300, 4000, 4200, 4300, 4600, 5800, 6200, 0)
-INFINITE_REINFORCEMENT_CAP = (1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 0)
+INFINITE_BOSS_HP = (30, 46, 66, 90, 116, 144, 170, 184, 192, 202, 211, 220)
+INFINITE_BOSS_ATTACK_MS = (4400, 4100, 3900, 3700, 3500, 3400, 5800, 3900, 4600, 4800, 4400, 3600)
+INFINITE_REINFORCEMENT_MS = (5500, 5000, 4600, 4300, 4000, 4200, 4300, 4600, 5800, 6200, 0, 0)
+INFINITE_REINFORCEMENT_CAP = (1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 0, 0)
 INFINITE_PROGRESSION = {
     'boss_hp_per_chapter': 5,
     'boss_attack_reduction_per_round': 5,

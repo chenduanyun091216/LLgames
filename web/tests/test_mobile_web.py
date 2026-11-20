@@ -392,13 +392,9 @@ class MobileWebTests(unittest.TestCase):
         with patch.object(config, 'campaign_time_ms', game.level_transition_end):
             game.update()
             self.assertIsNot(game.bg, previous_background)
-            self.assertIsNotNone(game.bg_transition_prev)
-            game.draw()
-            self.assertEqual(game.bg_transition_prev.get_alpha(), 255)
+            self.assertEqual(game.state, GameState.PLAYING)
+            self.assertGreater(game.level_fade_in_until, config.game_ticks())
         self.assertEqual(game.current_level, 2)
-        with patch.object(config, 'campaign_time_ms', game.bg_transition_until):
-            game.draw()
-            self.assertIsNone(game.bg_transition_prev)
 
     def test_hud_level_buttons_switch_campaign_level(self):
         game = self.game
@@ -411,7 +407,7 @@ class MobileWebTests(unittest.TestCase):
     def test_campaign_boss_health_and_final_victory_timeout(self):
         game = self.game
         game._start_game('easy')
-        for level, hp in ((7, 118), (8, 128), (9, 132), (10, 136), (11, 148)):
+        for level, hp in ((7, 118), (8, 128), (9, 132), (10, 136), (11, 142), (12, 148)):
             game.boss = None
             game._start_level(level)
             game._trigger_boss()
@@ -465,7 +461,7 @@ class MobileWebTests(unittest.TestCase):
                     self.assertEqual(texts[index + 1], value)
                     self.assertTrue(viewport.contains(pygame.Rect(labels[index][4:8])))
                     self.assertTrue(viewport.contains(pygame.Rect(labels[index + 1][4:8])))
-                self.assertIn('从第 11 关开始', texts)
+                self.assertIn('从第 12 关开始', texts)
         game._start_game('easy')
         self.assertEqual((game.campaign_enemies_defeated, game.campaign_bosses_defeated,
                           game.campaign_deaths, game.campaign_restarts), (0, 0, 0, 0))
@@ -843,8 +839,8 @@ class MobileWebTests(unittest.TestCase):
         game._start_infinite_game()
         cycle = len(config.BOSS_DEFS)
         for defeated, hp, interval in ((0, 30, 4400), (cycle - 1, 220, 3600),
-                                       (cycle, 36, 4180), (2 * cycle, 42, 3960),
-                                       (6 * cycle, 66, 3080), (7 * cycle, 66, 3080)):
+                                       (cycle, 225, 3420), (2 * cycle, 285, 3240),
+                                       (6 * cycle, 525, 2520), (7 * cycle, 585, 2520)):
             with self.subTest(defeated=defeated):
                 game.chapter = defeated + 1
                 game.infinite_background_level = defeated % cycle + 1
@@ -908,6 +904,7 @@ class MobileWebTests(unittest.TestCase):
     def test_custom_defaults_and_boss_health_multiplier(self):
         game = self.game
         game._start_custom_game()
+        game._start_level(1)
         self.assertEqual(game.spawn_interval, 2400)
         self.assertEqual(game._bullet_cost('sniper'), 0)
         game._start_level(7)
@@ -948,11 +945,12 @@ class MobileWebTests(unittest.TestCase):
                 if infinite:
                     game._continue_infinite()
                 self.assertEqual(game.state, GameState.INFINITE_COUNTDOWN)
-                self.assertEqual((game.player.x, game.player.y),
-                                 (config.SCREEN_WIDTH // 2, config.GAME_AREA_BOTTOM - 14))
+                self.assertEqual((game.player.x, game.player.y), (100, 100))
                 with patch.object(pygame.time, 'get_ticks', return_value=game.infinite_countdown_end), \
                         patch.object(config, 'game_ticks', return_value=10000):
                     game.update()
+                self.assertEqual((game.player.x, game.player.y),
+                                 (config.SCREEN_WIDTH // 2, config.GAME_AREA_BOTTOM - 14))
                 self.assertTrue(game._player_is_invincible(11499))
                 self.assertFalse(game._player_is_invincible(11500))
 
@@ -1141,7 +1139,7 @@ class MobileWebTests(unittest.TestCase):
         self.assertEqual(game.selected_difficulty, 'medium')
         self.assertEqual(game.selected_level, 1)
         rects = game._campaign_rects()
-        self.assertEqual(set(rects) - {f'level:{i}' for i in range(1, 12)}, {'home', 'detail', 'start'})
+        self.assertEqual(set(rects) - {f'level:{i}' for i in range(1, len(config.LEVEL_CONFIGS) + 1)}, {'home', 'detail', 'start'})
         game._handle_click(rects['level:9'].center)
         self.assertEqual(game.state, GameState.DIFFICULTY_SELECT)
         game._handle_click(rects['start'].center)
@@ -1323,8 +1321,8 @@ class MobileWebTests(unittest.TestCase):
                     self.assertIn(boss['name'], labels)
                     self.assertRegex(boss['name'], r'^[\u4e00-\u9fff]{4}·[\u4e00-\u9fff]{2}$')
                     icons = blit.call_args_list
-                    self.assertEqual(len(icons), 1 if level == 11 else 4)
-                    if level == 11:
+                    self.assertEqual(len(icons), 1 if level == 12 else 4)
+                    if level == 12:
                         self.assertIn('直接挑战', labels)
                     self.assertTrue(all(icon.kwargs['logical_size'][0] <= 30 for icon in icons[:-1]))
                     plaque = pygame.Rect(*panel.call_args.args)
@@ -2134,7 +2132,7 @@ class MobileWebTests(unittest.TestCase):
                     boss = game.boss = game._make_boss(definition)
                     boss.y = 55
                     if definition['key'] in ('boss_niu', 'boss_zongzong', 'boss_orochi',
-                                              'boss_mecha_lizard', 'boss_ancient_whale'):
+                                              'boss_mecha_lizard', 'boss_ancient_whale', 'boss_shieldfish'):
                         self.assertFalse(game._try_boss_signature(1000))
                         self.assertIsNone(boss.signature)
                         continue

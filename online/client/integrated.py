@@ -449,8 +449,8 @@ class LAN:
         elif paused and state['pause_reason'] != 'shop':
             view.state = GameState.PAUSED
         elif not me['alive']:
-            view.state = (GameState.INFINITE_COUNTDOWN if me['continue_ms'] else GameState.INFINITE_CONTINUE
-                          ) if mode == 'infinite' else GameState.PAID_REVIVE
+            view.state = (GameState.INFINITE_COUNTDOWN if me['continue_ms'] else
+                          GameState.INFINITE_CONTINUE if mode == 'infinite' else GameState.GAME_OVER)
         view.game_over_reason = me.get('defeat_reason') or ''
         view.exit_confirmation = self.exit_confirmation
         config.SCR = hud
@@ -577,7 +577,8 @@ class LAN:
         level = view.infinite_background_level if view.infinite_mode else view.current_level
         if target.get_size() != view_size:
             target.fill(config.OCEAN_DEEP)
-        subpixel = self.render_scroll is not None and view._scrolls_background()
+        boss_background = view.trench_boss_background(view_size)
+        subpixel = boss_background is None and self.render_scroll is not None and view._scrolls_background()
         if not (subpixel and draw_scrolling_background_art(
                 target, offset, level, view_size, self.render_scroll / BACKGROUND_SCROLL_TICKS)):
             background = None if subpixel else view.scrolling_background(view_size)
