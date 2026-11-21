@@ -698,8 +698,15 @@ class AncientWhaleBoss(AbyssBoss):
     def swallow_progress(self, now):
         return min(1, max(0, now - self.skill_started_at) / self.SWALLOW_MS)
 
+    @property
+    def suction_damage_remaining(self):
+        cap = config.CAMPAIGN_WHALE_INTERRUPT_CAP[self.bdef.get('campaign_tier', 1)]
+        damage = min(self.max_hp * .20, cap)
+        target_hp = max(0, self.suction_start_hp - damage)
+        return max(0, self.hp - target_hp)
+
     def suction_interrupted(self):
-        return self.suction_start_hp - self.hp >= self.max_hp * .20
+        return self.suction_damage_remaining <= 0
 
     def suction_active(self, now):
         return (self.current_skill == 'whale_suction' and self.hp > 0

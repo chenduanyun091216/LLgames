@@ -378,6 +378,7 @@ class MobileControls:
                 selected = active = key == game.player.character
                 source = image_asset(_CHAR_ASSETS[key])
                 icon_box = (min(radius * 2 - 6, 38), min(radius * 2 - 6, 40))
+                upgrade_level = getattr(game.player, 'character_upgrades', {}).get(key, 0) if enabled else 0
 
             if source is not None:
                 source = trim_transparent(source)[0]
@@ -390,7 +391,8 @@ class MobileControls:
             blit_center(art, center)
             if upgrade_level:
                 cx, cy = center
-                badge = pygame.Rect(cx + radius - 14, cy - radius, 18, 18)
+                x = cx - radius - 4 if action.startswith('character:') else cx + radius - 14
+                badge = pygame.Rect(x, cy - radius, 18, 18)
                 Draw.circle(surface, (28, 36, 49), badge.center, 9)
                 game._draw_text_fit(str(upgrade_level), game.font_tiny, (255, 224, 110),
                                     badge, align='center')

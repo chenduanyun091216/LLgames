@@ -421,6 +421,8 @@ def shop_rects(game):
             tile = pygame.Rect(x + 12 + index * (card_w + gap), cards_y, card_w, card_h)
             if category == 'weapon' and game._weapon_upgrade_cost(key) is not None:
                 rects[f'upgrade:{key}'] = pygame.Rect(tile.right - 59, tile.y + 4, 55, 20)
+            elif category == 'character' and game._character_upgrade_cost(key) is not None:
+                rects[f'character_upgrade:{key}'] = pygame.Rect(tile.right - 59, tile.y + 4, 55, 20)
             rects[f'{category}:{key}'] = tile
             if category == 'character':
                 rects[f'skills:{key}'] = pygame.Rect(tile.x, tile.bottom + 2, tile.w, 24)
@@ -486,7 +488,7 @@ def draw_shop(game):
             status = _shop_status(game, key, characters)
             equipped = status == '已装备'
             _panel(game, tile, selected=equipped, fill=(21, 61, 66) if equipped else SURFACE)
-            upgrade = rects.get(f'upgrade:{key}')
+            upgrade = rects.get(f'{"character_upgrade" if characters else "upgrade"}:{key}')
             art = pygame.Rect(tile.x + 8, tile.y + 3, tile.w - 16, tile.h - 37)
             if upgrade:
                 art.w = upgrade.left - art.x - 3
@@ -498,13 +500,15 @@ def draw_shop(game):
                 number = index + (5 if characters else 1)
                 _text(game, str(number), pygame.Rect(tile.x + 5, tile.y + 3, 18, 16),
                       font=game.font_tiny, color=ACCENT, align='center')
-            level = game.player.weapon_upgrades.get(key, 0) if not characters else 0
+            upgrades = getattr(game.player, 'character_upgrades', {}) if characters else game.player.weapon_upgrades
+            level = upgrades.get(key, 0)
             name = f'{definitions[key].name} Lv.{level}' if level else definitions[key].name
             _text(game, name, pygame.Rect(tile.x + 4, tile.bottom - 34, tile.w - 8, 16),
                   font=game.font_tiny, align='center')
             if upgrade:
+                price = game._character_upgrade_cost(key) if characters else game._weapon_upgrade_cost(key)
                 _panel(game, upgrade, selected=True, fill=(28, 74, 74), radius=4)
-                _text(game, f'加强 {game._weapon_upgrade_cost(key)}', upgrade.inflate(-4, -2),
+                _text(game, f'加强 {price}', upgrade.inflate(-4, -2),
                       font=game.font_tiny, align='center')
             badge = pygame.Rect(tile.centerx - 28, tile.bottom - 17, 56, 15)
             color = config.GOLD_COLOR
@@ -528,8 +532,13 @@ def draw_shop(game):
           pygame.Rect(feature.centerx, feature.y + 5, feature.w // 2 - 10, 22),
           font=game.font_tiny, color=config.GOLD_COLOR, align='right')
     if characters:
+        field = config.CHARACTER_FIELDS[selected]
+        durations = '/'.join(f'{ms / 1000:g}' for ms in field['duration_ms'])
+        label = f'{field["name"]} · {config.CHARACTER_FIELD_CHANCE:.0%} · {durations} 秒 · {field["detail"]}'
+        _text(game, label, pygame.Rect(text_x, feature.y + 29, feature.w - 20, 19),
+              font=game.font_tiny, color=ACCENT)
         _draw_skills(game, selected,
-                     pygame.Rect(text_x, feature.y + 29, feature.w - 20, feature.h - 34))
+                     pygame.Rect(text_x, feature.y + 51, feature.w - 20, feature.h - 56))
     else:
         path = _WEAPON_ASSETS[selected]
         filename = path.rsplit('/', 1)[1]

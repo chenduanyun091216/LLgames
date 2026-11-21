@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),vm=require(
 function fixture(){const nodes={};function node(id){return nodes[id]??=( {hidden:false,textContent:'',value:'',style:{},dataset:{},firstChild:{style:{}},listeners:{},addEventListener(k,f){this.listeners[k]=f;},querySelector(s){return node(id+s);},append(){},replaceChildren(){},focus(){this.focused=true;}} );}
 class Bridge{constructor(o){this.options=o;this.slot=1;this.code='0123';this.actions=[];this.resets=[];this.sent=[];this.welcomed=true;}getOrientation(){return this.orientation||'landscape';}reportOrientation(){this.reported=true;}input(){}action(a){this.actions.push(a);}send(m){this.sent.push(m);}connect(code){this.lastConnect=code;}disconnect(){this.disconnected=true;}resetRejectedToken(code){this.resets.push(code);return true;}}
 const document={documentElement:{dataset:{}},hidden:false,body:{insertAdjacentHTML(){}},getElementById:node,querySelector:node,createElement:()=>node(Math.random()),listeners:{},addEventListener(k,f){this.listeners[k]=f;}};
-const context={window:{LLBridge:Bridge},document,addEventListener(){},setInterval(){},setTimeout(){}};vm.createContext(context);vm.runInContext(fs.readFileSync('online/web/shell.js','utf8'),context);return{context,nodes,node,bridge:context.window.LLOnline};}
+const listeners={};const context={window:{LLBridge:Bridge},document,addEventListener(k,f){listeners[k]=f;},setInterval(){},setTimeout(){}};vm.createContext(context);vm.runInContext(fs.readFileSync('online/web/shell.js','utf8'),context);return{context,nodes,node,listeners,bridge:context.window.LLOnline};}
 function state(lives){return {orientation:'landscape',phase:'playing',players:[{slot:1,alive:false,ready:true,hp:0,max_hp:5,character:'fisher'}],gold:100,lives,revive_cost:75,paid_revives_remaining:3,world:null};}
 test('revive UI consumes shared life before gold and terminal recovery remains accessible',()=>{const f=fixture();f.context.renderState(state(2));assert.equal(f.node('[data-action="revive"]').textContent,'复活（消耗 1 条共享生命）');f.context.renderState(state(0));assert.equal(f.node('[data-action="revive"]').textContent,'复活 75 金币（全队剩余 3 次）');f.bridge.options.onStatus('stopped','invalid_reconnect_token');assert.equal(f.node('recovery').hidden,false);assert.equal(f.node('reset-token').hidden,false);f.node('retry').onclick();assert.equal(f.bridge.lastConnect,'0123');assert.equal(f.bridge.resets.length,0);f.node('reset-token').onclick();assert.deepEqual(f.bridge.resets,['0123']);f.node('change-room').onclick();assert.equal(f.node('join').hidden,false);assert.equal(f.node('lobby').hidden,false);assert.equal(f.node('room').hidden,true);});
 test('non-token terminal failures never offer credential reset',()=>{const f=fixture();f.bridge.options.onStatus('stopped','room_full');assert.equal(f.node('reset-token').hidden,true);assert.equal(f.node('recovery').hidden,false);});
@@ -73,4 +73,22 @@ test('disconnected player is not shown as an orientation mismatch',()=>{
   f.context.renderState(s);
   assert.equal(f.node('orientation-warning').hidden,true);
   assert.match(f.node('online-status').textContent,/等待队友重新连接/);
+});
+
+test('shift plus sends one gold action per press during battle or in the shop',()=>{
+  const f=fixture();
+  const s=state(2);
+  s.players[0].alive=true;
+  f.context.renderState(s);
+  const press=(extra={})=>f.listeners.keydown({code:'Equal',key:'+',shiftKey:true,
+    target:{tagName:'BODY'},preventDefault(){},...extra});
+  press();
+  press({repeat:true});
+  press({ctrlKey:true});
+  press({shiftKey:false,key:'='});
+  s.paused=true;
+  press();
+  s.players[0].shop_open=true;
+  press({code:'NumpadAdd'});
+  assert.deepEqual(f.bridge.actions,['add_gold','add_gold']);
 });

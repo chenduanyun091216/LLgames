@@ -177,7 +177,7 @@ class AbyssBossTests(unittest.TestCase):
             shot.update()
             self.assertFalse(shot.hits_rect(rect))
 
-    def test_whale_suction_pulls_and_requires_twenty_percent_max_hp_in_five_seconds(self):
+    def test_whale_suction_has_a_damage_cap_and_a_five_second_deadline(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
         from game_core.game import Game
@@ -194,14 +194,14 @@ class AbyssBossTests(unittest.TestCase):
         self.assertFalse(game._update_whale_suction(2000))
         self.assertLess(game.player.move.call_args.args[1], 0)
         self.assertLess(enemy.y, 300)
-        boss.hp = boss.suction_start_hp - boss.max_hp * .20
+        boss.hp = boss.suction_start_hp - 10
         self.assertFalse(game._update_whale_suction(5999))
         self.assertEqual(boss.current_skill, '')
         self.assertEqual(game._player_fire_interval_multiplier(5999), 1)
         boss._pending_attack_skill = 'whale_suction'
         boss.attack(10000, 480)
         with patch.object(game, '_defeat_players_by_suction') as defeat:
-            boss.hp -= boss.max_hp * .19
+            boss.hp -= 9
             self.assertFalse(game._update_whale_suction(14999))
             self.assertTrue(game._update_whale_suction(15000))
             defeat.assert_not_called()

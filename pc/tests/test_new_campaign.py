@@ -116,6 +116,43 @@ class NewCampaignTests(unittest.TestCase):
                 self.assertEqual(game.state, expected)
                 self.assertEqual(game.lives, lives - 1)
 
+    def test_boss_only_campaign_starts_can_afford_a_rifle(self):
+        for desktop, level, difficulty in ((True, 6, 'easy'), (False, 12, 'hard')):
+            with self.subTest(desktop=desktop, level=level):
+                game = self.game(desktop, difficulty)
+                self.assertEqual(game.player.gold, 0)
+                game._start_game(difficulty, level)
+                rifle_price = game._weapon_cost('rifle')
+                self.assertEqual(game.player.gold, rifle_price)
+                game._buy_or_equip_shop_item('weapon', 'rifle')
+                self.assertEqual((game.player.current_weapon, game.player.gold), ('rifle', 0))
+                game._retry_level()
+                self.assertEqual((game.player.current_weapon, game.player.gold), ('pistol', rifle_price))
+
+    def test_whale_suction_can_be_interrupted_with_a_base_rifle(self):
+        for desktop, difficulty in ((True, 'easy'), (False, 'medium'), (True, 'hard'), (False, 'hard')):
+            with self.subTest(desktop=desktop, difficulty=difficulty):
+                config.campaign_time_ms = 1000
+                game = self.game(desktop, difficulty)
+                game._start_level(10)
+                game._trigger_boss()
+                boss = game.boss
+                boss.x, boss.y, boss.entered = boss._center_x(), 18, True
+                game.player.x = boss.x
+                game.player.current_weapon = 'rifle'
+                game.mobile_controls.auto_fire = True
+                game.mobile_controls.axis = (0, 1)
+                boss._pending_attack_skill = 'whale_suction'
+                boss.attack(1000, game.player.x)
+                for frame in range(1, 301):
+                    config.campaign_time_ms = 1000 + round(frame * 1000 / 60)
+                    game.update()
+                    if boss.current_skill != 'whale_suction':
+                        break
+                self.assertEqual(boss.current_skill, '', f'{boss.max_hp - boss.hp:g} damage')
+                self.assertLess(config.campaign_time_ms, 1000 + boss.SUCTION_MS)
+                self.assertGreater(game.player_hp, 0)
+
     def test_temple_rift_reopens_with_a_second_eye_only_if_it_survives(self):
         for survives in (False, True):
             for size in ((480, 720), (960, 540)):
@@ -261,7 +298,7 @@ class NewCampaignTests(unittest.TestCase):
 
     def test_new_shift_shortcuts_and_hud_reach_both_new_stages_and_final(self):
         game = self.game(True)
-        for key, level in ((pygame.K_9, 9), (pygame.K_0, 10), (pygame.K_MINUS, 11), (pygame.K_EQUALS, 12)):
+        for key, level in ((pygame.K_9, 9), (pygame.K_0, 10), (pygame.K_MINUS, 11), (pygame.K_RIGHTBRACKET, 12)):
             game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=key, mod=pygame.KMOD_SHIFT)])
             self.assertEqual(game.current_level, level)
         left, _, _ = game._hud_controls()
@@ -271,6 +308,29 @@ class NewCampaignTests(unittest.TestCase):
         game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SEMICOLON,
                                                mod=pygame.KMOD_SHIFT)])
         self.assertEqual(game.current_level, 11)
+
+    def test_shift_plus_adds_gold_once_in_battle_and_shop(self):
+        for desktop, infinite in ((True, False), (False, True)):
+            with self.subTest(desktop=desktop, infinite=infinite):
+                game = self.game(desktop)
+                if infinite:
+                    game._begin_infinite_run()
+                game.web = not desktop
+                game.level_title_until = 0
+                def press(key, mod=pygame.KMOD_SHIFT, repeat=False):
+                    game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=key, mod=mod, repeat=repeat)])
+                press(pygame.K_EQUALS, mod=0)
+                press(pygame.K_EQUALS, mod=pygame.KMOD_SHIFT | pygame.KMOD_CTRL)
+                self.assertEqual(game.player.gold, 0)
+                press(pygame.K_EQUALS)
+                press(pygame.K_EQUALS, repeat=True)
+                self.assertEqual(game.player.gold, 100)
+                self.assertEqual((game.current_level, game.chapter), (1, 1))
+                game._open_shop()
+                press(pygame.K_KP_PLUS)
+                press(pygame.K_PLUS)
+                self.assertEqual(game.player.gold, 300)
+                self.assertEqual(game.state, GameState.SHOP)
 
     def test_rotation_cancels_new_warning_and_active_geometry_safely(self):
         for infinite in (False, True):

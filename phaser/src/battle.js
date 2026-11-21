@@ -1,6 +1,6 @@
 import {fireTrenchCannon, holdTrenchShard, shedTrenchArmor, trenchRolling,
     trenchSpireHits, updateTrenchBoss} from './trench.js';
-import {attack, storm, railShape, tentacleShape} from './bosses.js';
+import {attack, storm, railShape, tentacleShape, updateOrochiSideHead} from './bosses.js';
 import {fixedView} from './layout.js';
 
 export const STEP = 1000 / 60;
@@ -19,8 +19,8 @@ export class Battle {
     constructor(data, options = {}, random = Math.random) {
         this.data = data;
         this.random = random;
-        this.tier = options.tier ?? 0;
         this.mode = options.mode ?? 'campaign';
+        this.tier = this.mode === 'endless' ? 1 : (options.tier ?? 0);
         this.custom = {speed: 1, hp: 1, attack: 1, spawn: 1, homing: 1, ...options.custom};
         this.time = 0;
         this.id = 0;
@@ -36,6 +36,7 @@ export class Battle {
         this.character = 'player1';
         this.weapons = new Set(['pistol']);
         this.weaponUpgrades = {};
+        this.characterUpgrades = {};
         this.sniperShots = 0;
         this.characters = new Set(['player1']);
         this.events = [];
@@ -46,12 +47,17 @@ export class Battle {
             this.weapon = 'rifle';
         }
         this.player = {w: 56 * this.view.entityScale, h: 66 * this.view.entityScale};
-        this.startLevel(options.level ?? 1);
+        const level = options.level ?? 1;
+        if (this.mode === 'campaign' && data.levels[level - 1].boss_on_start) {
+            this.gold = this.basePrice('weapon', 'rifle');
+        }
+        this.startLevel(level);
     }
 
     value(key) { return this.data[key][this.level - 1][this.tier]; }
     get laterEndlessRound() { return this.mode === 'endless' && this.round > 0; }
     get endlessChapterIndex() { return this.round * this.data.INFINITE_BOSS_HP.length + this.level - 1; }
+    get clearReward() { return this.mode === 'endless' ? 0 : this.data.CAMPAIGN_REWARDS[this.level - 1]; }
 
     bossBaseHp() {
         if (this.mode !== 'endless') return this.value('CAMPAIGN_BOSS_HP');
@@ -78,7 +84,8 @@ export class Battle {
         this.riftsDestroyed = 0;
         this.waterKills = 0;
         this.gift = null;
-        this.hasteUntil = 0;
+        this.hasteUntil = this.waterHasteUntil = 0;
+        this.fireSpeedLayers = {};
         this.waveSpawns = 0;
         this.cannonSide = this.freezeUntil = 0;
         this.cannonAt = 0;
@@ -95,11 +102,15 @@ export class Battle {
         this.lastFire = -Infinity;
         this.cooldowns = [0, 0, 0, 0];
         this.slowUntil = this.liftUntil = this.boostUntil = this.invulnerable = 0;
+        this.enemyFreezeUntil = this.swiftFieldUntil = this.fireShieldUntil = this.radiationFieldUntil = 0;
+        this.fireShieldHits = this.airWaveAt = 0;
+        this.airWave = null;
         this.player.x = this.width / 2;
         this.player.y = this.bottom - 14;
         this.checkpoint = {gold: this.gold, score: this.score, hp: this.hp, weapon: this.weapon,
             character: this.character, weapons: [...this.weapons], characters: [...this.characters],
-            weaponUpgrades: {...this.weaponUpgrades}, sniperShots: this.sniperShots};
+            weaponUpgrades: {...this.weaponUpgrades}, characterUpgrades: {...this.characterUpgrades},
+            sniperShots: this.sniperShots};
         this.event('level', {level});
         if (this.stage.boss_on_start) this.beginBoss();
     }
@@ -151,7 +162,12 @@ export class Battle {
         this.tasks = [];
         this.bullets = [];
         this.shots = [];
-        this.enemies = this.level === 11 ? [] : this.enemies.filter(e => e.kind !== 'ancient_rift' && e.kind !== 'ancient_worm');
+        if (this.mode === 'endless' || this.level === 11) {
+            this.enemies = [];
+            this.link = null;
+        } else {
+            this.enemies = this.enemies.filter(e => e.kind !== 'ancient_rift' && e.kind !== 'ancient_worm');
+        }
         const def = this.data.bosses[this.stage.boss_idx];
         const hp = Math.ceil(this.bossBaseHp() * this.custom.hp);
         const [baseW, baseH] = def.size ?? [130, 120];
@@ -174,11 +190,17 @@ export class Battle {
     }
 
     reinforcement(table) {
-        return this.mode === 'endless' ? this.data['INFINITE_REINFORCEMENT_' + table][this.level - 1]
-            : this.value('CAMPAIGN_REINFORCEMENT_' + table);
+        if (this.mode !== 'endless') return this.value('CAMPAIGN_REINFORCEMENT_' + table);
+        const base = this.data['INFINITE_REINFORCEMENT_' + table][this.level - 1];
+        if (!base) return 0;
+        const progression = this.data.INFINITE_PROGRESSION;
+        if (table === 'CAP') return base + Math.min(progression.reinforcement_extra_cap, this.round);
+        const percent = Math.max(progression.reinforcement_min_percent,
+            100 - progression.reinforcement_reduction_per_round * this.round);
+        return Math.floor(base * percent / 100);
     }
 
-    later(delay, action) { this.tasks.push({at: this.time + delay, action}); }
+    later(delay, action, friendly = false) { this.tasks.push({at: this.time + delay, action, friendly}); }
     zone(x, y, w, h, damage, warning, active, art, extra = {}) {
         this.zones.push({id: this.key(), x, y, w, h, damage, start: this.time,
             impact: this.time + warning, end: this.time + warning + active, art, ...extra});
@@ -240,20 +262,24 @@ export class Battle {
             this.beginBoss();
             return;
         }
-        const cap = wave ? this.mode === 'endless'
+        const endlessWave = wave && this.mode === 'endless';
+        const cap = wave ? endlessWave
             ? Math.min(this.level >= 9 ? 7 : 12, 4 + Math.floor(this.endlessChapterIndex / 3))
             : this.value('CAMPAIGN_ENEMY_CAP') : this.reinforcement('CAP');
-        if (cap && this.time >= this.spawnAt && this.enemies.filter(e => e.counts).length < cap) {
-            this.spawnWave();
-            const base = this.value('CAMPAIGN_SPAWN_MS') * this.custom.spawn;
-            let interval = Math.max(Math.min(base, this.custom.minSpawn ?? base),
-                base - this.kills * (this.custom.spawnDecrease ?? 0));
-            if (this.laterEndlessRound && wave) {
+        if (cap && this.time >= this.spawnAt) {
+            const hasRoom = this.enemies.filter(e => e.counts).length < cap;
+            if (hasRoom) this.spawnWave();
+            if (endlessWave) {
                 const progression = this.data.INFINITE_PROGRESSION;
-                interval = Math.max(progression.wave_spawn_min_ms, progression.wave_spawn_start_ms
+                this.spawnAt = this.time + Math.max(progression.wave_spawn_min_ms, progression.wave_spawn_start_ms
                     - progression.wave_spawn_step_ms * Math.floor(this.endlessChapterIndex / 2));
+            } else if (hasRoom && wave) {
+                const base = this.value('CAMPAIGN_SPAWN_MS') * this.custom.spawn;
+                this.spawnAt = this.time + Math.max(Math.min(base, this.custom.minSpawn ?? base),
+                    base - this.kills * (this.custom.spawnDecrease ?? 0));
+            } else if (hasRoom) {
+                this.spawnAt = this.time + this.reinforcement('MS');
             }
-            this.spawnAt = this.time + (wave ? interval : this.reinforcement('MS'));
         }
         if (wave && this.level === 10 && this.time >= this.riftAt) {
             const eyes = this.enemies.filter(e => e.kind === 'ancient_rift');
@@ -281,6 +307,7 @@ export class Battle {
     }
 
     updateEnemies() {
+        if (this.enemyFieldFrozen) return;
         for (const e of [...this.enemies]) {
             if (!this.enemies.includes(e)) continue;
             if (e.life && this.time >= e.born + e.life) { this.removeEnemy(e); continue; }
@@ -341,7 +368,7 @@ export class Battle {
                 e.attackAt = this.time + min + this.random() * (max - min);
                 e.shotAt = this.time;
             }
-            if (e.kind !== 'orochi_bubble' && this.time >= (e.contactAt ?? 0) && intersects(e, this.player)) this.hurt(e.def.is_large ? 2 : 1, e.def.name);
+            if (e.kind !== 'orochi_bubble' && intersects(e, this.player)) this.hurt(e.def.is_large ? 2 : 1, e.def.name, false, e);
             if (e.y - e.h / 2 > this.bottom) {
                 this.removeEnemy(e);
                 if (!e.noLeak) this.hurt(this.mode === 'endless' ? 1 : [1, 1, 2][this.tier], e.def.name + ' 入侵成功');
@@ -399,13 +426,14 @@ export class Battle {
     }
 
     hit(entity, amount, shape = null, source = 'skill', upgradeMultiplier = 1) {
+        const bonus = this.time < this.radiationFieldUntil ? this.data.characterFields.radiation.damage : 1;
         if (entity === this.boss) {
             if (entity.y < 30 || entity.shieldUntil > this.time || entity.stormUntil > this.time) return;
             const trench = entity.trench;
             const trenchActive = trench && this.time < entity.skillUntil;
             const exposed = trenchActive && (trench.index === 1 || this.time >= trench.recoveryAt);
-            const damage = Math.min(amount / upgradeMultiplier, this.mode === 'endless' ? 3 : [1, 2, 2][this.tier])
-                * upgradeMultiplier * (entity.resistUntil > this.time ? .5 : 1)
+            const baseDamage = this.mode === 'endless' ? Math.min(amount, 3 * upgradeMultiplier) : amount;
+            const damage = baseDamage * bonus * (entity.resistUntil > this.time ? .5 : 1)
                 * (this.level === 11 && !exposed ? .60 : 1);
             if (entity.def.key === 'boss_orochi' && entity.hp - damage <= entity.maxHp * [0.5, 0.01][entity.stormStep]) {
                 entity.hp = entity.maxHp * [0.5, 0.01][entity.stormStep];
@@ -446,6 +474,7 @@ export class Battle {
             if (entity.def.key === 'boss_shieldfish') shedTrenchArmor(this, entity);
             if (entity.hp <= 0) this.finishLevel();
         } else {
+            amount *= bonus;
             if (this.link?.group.includes(entity)) entity.hp = Math.max(.01 * entity.maxHp, entity.hp - amount);
             else entity.hp -= amount;
             if (entity.hp <= 0) this.defeatEnemy(entity);
@@ -457,7 +486,7 @@ export class Battle {
     finishLevel() {
         this.phase = this.level === this.data.levels.length && this.mode === 'campaign' ? 'victory' : 'clear';
         this.score += 100;
-        this.gold += this.data.CAMPAIGN_REWARDS[this.level - 1];
+        this.gold += this.clearReward;
         this.heal(this.mode === 'endless' ? 1 : [2, 2, 1][this.tier]);
         this.enemies = this.bullets = this.shots = this.zones = this.tasks = this.drops = [];
         this.event('clear', {x: this.boss.x, y: this.boss.y});
@@ -470,8 +499,14 @@ export class Battle {
         this.startLevel(this.level % this.data.levels.length + 1);
     }
 
-    hurt(amount, reason, fatal = false) {
-        if (!['boss', 'wave'].includes(this.phase) || (!fatal && this.invulnerable > this.time)) return;
+    hurt(amount, reason, fatal = false, contact = null) {
+        if (!['boss', 'wave'].includes(this.phase) || (!fatal && this.invulnerable > this.time)
+                || contact?.contactAt > this.time) return;
+        if (amount > 0 && this.fireShieldUntil > this.time && this.fireShieldHits > 0) {
+            this.fireShieldHits--;
+            if (contact) contact.contactAt = this.time + [850, 650, 550][this.tier];
+            return;
+        }
         this.hp = Math.max(0, this.hp - amount);
         this.invulnerable = this.time + [850, 650, 550][this.tier];
         this.event('hurt', {x: this.player.x, y: this.player.y});
@@ -494,9 +529,10 @@ export class Battle {
     }
 
     retry() {
-        const {weapons, characters, weaponUpgrades, ...saved} = this.checkpoint;
+        const {weapons, characters, weaponUpgrades, characterUpgrades, ...saved} = this.checkpoint;
         Object.assign(this, saved);
         this.weaponUpgrades = {...weaponUpgrades};
+        this.characterUpgrades = {...characterUpgrades};
         this.weapons = new Set(weapons);
         this.characters = new Set(characters);
         this.lives = 3;
@@ -511,13 +547,14 @@ export class Battle {
     basePrice(type, id) {
         const weapon = type === 'weapon';
         const prices = weapon ? this.data.CAMPAIGN_WEAPON_PRICES : this.data.CAMPAIGN_CHARACTER_PRICES;
-        return Math.round((prices[id]?.[this.tier] ?? 0) * (this.custom[type + 'Price'] ?? 1));
+        const tier = this.mode === 'endless' ? 2 : this.tier;
+        return Math.round((prices[id]?.[tier] ?? 0) * (this.custom[type + 'Price'] ?? 1));
     }
 
     upgradePrice(id) {
         const level = this.weaponUpgrades[id] ?? 0;
         if (id === 'pistol' || !this.weapons.has(id) || level >= 3) return null;
-        return this.basePrice('weapon', id) * (level + 1);
+        return this.basePrice('weapon', id) * (this.mode === 'endless' ? 2 ** level : level + 1);
     }
 
     upgradeWeapon(id) {
@@ -525,6 +562,20 @@ export class Battle {
         if (price === null || this.gold < price) return false;
         this.gold -= price;
         this.weaponUpgrades[id] = (this.weaponUpgrades[id] ?? 0) + 1;
+        return true;
+    }
+
+    characterUpgradePrice(id) {
+        const field = this.data.characterFields[id];
+        if (!field || !this.characters.has(id) || (this.characterUpgrades[id] ?? 0) >= field.duration_ms.length) return null;
+        return this.basePrice('character', id);
+    }
+
+    upgradeCharacter(id) {
+        const price = this.characterUpgradePrice(id);
+        if (price === null || this.gold < price) return false;
+        this.gold -= price;
+        this.characterUpgrades[id] = (this.characterUpgrades[id] ?? 0) + 1;
         return true;
     }
 
@@ -541,9 +592,82 @@ export class Battle {
         return true;
     }
 
+    get enemyFieldFrozen() { return this.time + .001 < this.enemyFreezeUntil; }
+
+    applyFireSpeedBuff(timer, duration) {
+        const previous = this[timer];
+        const deadline = this.time + duration;
+        if (previous > this.time) {
+            const layers = (this.fireSpeedLayers[timer] ?? []).filter(end => end > this.time);
+            layers.push(Math.min(previous, deadline));
+            this.fireSpeedLayers[timer] = layers;
+        } else delete this.fireSpeedLayers[timer];
+        this[timer] = Math.max(previous, deadline);
+    }
+
+    rollCharacterField() {
+        const level = this.characterUpgrades[this.character];
+        if (!level || this.random() >= this.data.characterFieldChance) return;
+        const field = this.data.characterFields[this.character];
+        const duration = field.duration_ms[level - 1];
+        const until = this.time + duration;
+        switch (this.character) {
+        case 'ice': this.enemyFreezeUntil = until; break;
+        case 'water': this.applyFireSpeedBuff('swiftFieldUntil', duration); break;
+        case 'fire':
+            this.fireShieldUntil = until;
+            this.fireShieldHits = level;
+            break;
+        case 'radiation':
+            this.radiationFieldUntil = until;
+            if (level === field.duration_ms.length) this.airWaveAt = until;
+            break;
+        }
+        this.event('field', {name: field.name});
+    }
+
+    updateCharacterFields(previous) {
+        const elapsed = Math.min(this.time, this.enemyFreezeUntil) - previous;
+        if (elapsed > 0) {
+            for (const task of this.tasks) if (!task.friendly) task.at += elapsed;
+            for (const enemy of this.enemies) {
+                enemy.attackAt += elapsed;
+                enemy.born += elapsed;
+                if (enemy.castingUntil) enemy.castingUntil += elapsed;
+            }
+            if (this.link) this.link.until += elapsed;
+            if (this.cannonAt) this.cannonAt += elapsed;
+            const boss = this.boss;
+            if (boss) {
+                for (const timer of ['attackAt', 'skillStarted', 'skillUntil', 'shieldUntil', 'fusionUntil',
+                    'stormUntil', 'sideHeadAt']) if (boss[timer]) boss[timer] += elapsed;
+                if (boss.rush) boss.rush.start += elapsed;
+                if (boss.pull) boss.pull.until += elapsed;
+                if (boss.trench) {
+                    boss.trench.start += elapsed;
+                    boss.trench.recoveryAt += elapsed;
+                }
+            }
+            for (const shot of this.shots) if (shot.orbit && previous < shot.orbit.until) {
+                shot.orbit.until += elapsed;
+                shot.born += elapsed;
+                shot.expires += elapsed;
+            }
+        }
+        if (this.airWaveAt && this.time + .001 >= this.airWaveAt) {
+            this.shots = this.shots.filter(shot => shot.orbit);
+            this.airWave = {x: this.player.x, y: this.player.y, started: this.time};
+            this.airWaveAt = 0;
+        }
+        if (this.airWave && this.time >= this.airWave.started + this.data.characterFields.radiation.wave_ms) {
+            this.airWave = null;
+        }
+    }
+
     updateBoss() {
         const b = this.boss;
         if (!b) return;
+        if (b.level === 12) updateOrochiSideHead(this, b);
         if (b.stormUntil && this.time >= b.stormUntil) {
             const intact = this.enemies.filter(e => e.kind === 'orochi_bubble');
             b.hp = Math.min(b.maxHp, b.hp + intact.length * b.maxHp * .023);
@@ -570,7 +694,7 @@ export class Battle {
                 if (age >= 5244) b.rush = null;
             }
             if ((age < 1322 || (age >= 3322 && age < 4644)) && intersects(b, this.player)) {
-                this.hurt(this.hp, '被深渊封潮击败');
+                this.hurt(this.hp, '被深渊封潮击败', false, b);
             }
         } else if (b.trench && this.time < b.skillUntil) {
             updateTrenchBoss(b, this);
@@ -601,9 +725,20 @@ export class Battle {
                 b.pull = b.destination = null;
                 this.hurt(this.hp, '被远古巨鲸吞没', true);
             } else {
+                const progress = (this.time - b.skillStarted) / (b.pull.until - b.skillStarted);
+                const pull = .012 + .014 * progress;
+                const mouthY = b.y + b.h * .31;
+                const swallowDistance = b.h * .4;
                 for (const entity of [this.player, ...this.enemies]) {
-                    entity.x += clamp((b.x - entity.x) * .008, -2.6, 2.6);
-                    entity.y += clamp((b.y + 35 - entity.y) * .008, -2.7, 2.7);
+                    const dx = b.x - entity.x, dy = mouthY - entity.y;
+                    let strength = pull;
+                    if (entity === this.player) {
+                        const distance = Math.hypot(dx, dy);
+                        if (distance <= swallowDistance) continue;
+                        strength = Math.min(strength, 1 - swallowDistance / distance);
+                    }
+                    entity.x += dx * strength;
+                    entity.y += dy * strength;
                 }
             }
         }
@@ -619,7 +754,9 @@ export class Battle {
             b.attackAt = this.time + (b.trench ? Math.max(duration, b.interval) : duration + b.interval);
         }
         const contact = !b.trench || this.time >= b.skillUntil || trenchRolling(b, this.time);
-        if (!b.rush && contact && b.y >= 35 && bossBoxes(b, this.time).some(box => intersects(box, this.player))) this.hurt(this.mode === 'endless' ? 2 : [1, 2, 2][this.tier], b.def.name);
+        if (!b.rush && contact && b.y >= 35 && bossBoxes(b, this.time).some(box => intersects(box, this.player))) {
+            this.hurt(this.mode === 'endless' ? 2 : [1, 2, 2][this.tier], b.def.name, false, b);
+        }
     }
 
     fire() {
@@ -627,14 +764,24 @@ export class Battle {
         if (Math.max(this.liftUntil, this.freezeUntil) > this.time) return;
         let rate = this.mode === 'endless' ? w.fire_rate
             : (this.data.CAMPAIGN_WEAPON_FIRE_RATES[this.weapon] ?? w.fire_rate);
-        if (this.hasteUntil > this.time) rate /= 2;
-        else if (this.boostUntil > this.time) rate /= this.mode === 'endless' ? 2 : 1.30;
         if (this.slowUntil > this.time) rate /= this.mode === 'endless' ? .5 : .8;
         const level = this.weaponUpgrades[this.weapon] ?? 0;
-        const speed = this.weapon === 'rifle' ? 1 + .1 * level : 1;
-        const delay = Math.ceil(Math.round(rate) / .70) * (this.boss?.pull ? 2 : 1) / speed;
+        const upgradeSpeed = this.weapon === 'rifle' ? 1 + .1 * level : 1;
+        let delay = Math.ceil(Math.round(rate) / .70) * (this.boss?.pull && !this.enemyFieldFrozen ? 2 : 1) / upgradeSpeed;
+        for (const [timer, speed] of [
+            ['boostUntil', this.mode === 'endless' ? 2 : 1.30],
+            ['waterHasteUntil', 1.5],
+            ['hasteUntil', 2],
+            ['swiftFieldUntil', this.data.characterFields.water.fire_rate],
+        ]) {
+            if (this[timer] > this.time) {
+                const layers = this.fireSpeedLayers[timer] ?? [];
+                const count = 1 + layers.filter(end => end > this.time).length;
+                delay *= speed ** -count;
+            }
+        }
         if (this.time - this.lastFire < delay) return;
-        const cost = this.mode === 'endless' ? 0 : (this.custom.ammo?.[this.weapon] ?? this.data.difficulty[this.tier]['bullet_cost_' + this.weapon] ?? 0);
+        const cost = this.mode === 'endless' ? 0 : (this.custom.ammo?.[this.weapon] ?? 0);
         if (this.gold < cost) {
             this.weapon = 'pistol';
             this.event('noAmmo');
@@ -720,12 +867,13 @@ export class Battle {
         case 'water_heal':
             duration = infinite ? 5000 : 0;
             this.heal(1);
+            if (infinite) this.applyFireSpeedBuff('waterHasteUntil', duration);
             this.invulnerable = Math.max(this.invulnerable, this.time + (infinite ? 2000 : 800));
             area(x, y, 140, 85, 0, 450, 'water', {circle: true});
             break;
         case 'water_boost':
             duration = infinite ? 10000 : 6000;
-            this.boostUntil = this.time + duration;
+            this.applyFireSpeedBuff('boostUntil', duration);
             area(x, y, 150, 105, 0, 650, 'water', {circle: true});
             break;
         case 'lightning': {
@@ -744,7 +892,7 @@ export class Battle {
             const center = Math.max(120, y - 170);
             duration = 3000;
             area(x, center, 180, 180, 0, duration, 'energy', {circle: true, magnet: true});
-            this.later(duration, () => area(x, center, 245, 245, 3, 300, 'energy', {circle: true, once: true}));
+            this.later(duration, () => area(x, center, 245, 245, 3, 300, 'energy', {circle: true, once: true}), true);
             break;
         }
         case 'radiation_laser':
@@ -763,10 +911,11 @@ export class Battle {
             }
             this.later(duration, () => {
                 for (let i = 0; i < 8; i++) projectile(i * 45, 6, 11, 1.5, {element: 'energy', pierce: true});
-            });
+            }, true);
             break;
         }
         this.cooldowns[index] = this.time + (infinite && type === 'grenade' ? 3900 : cooldown + duration);
+        this.rollCharacterField();
         this.event('skill');
     }
 
@@ -777,15 +926,16 @@ export class Battle {
         const index = Math.floor(this.random() * gifts.length);
         const type = gifts[index];
         if (type === 'heal') this.heal(1);
-        else if (type === 'haste') this.hasteUntil = this.time + 10000;
+        else if (type === 'haste') this.applyFireSpeedBuff('hasteUntil', 10000);
         else if (type === 'lightning') {
             const strikes = this.mode === 'endless' ? 3 : 2;
             for (let i = 0; i < strikes; i++) this.later(i * 3000, () => {
                 const targets = [...this.enemies, ...(this.boss ? [this.boss] : [])];
                 const nearest = targets.reduce((best, entity) => !best || Math.abs(entity.x - this.player.x)
                     < Math.abs(best.x - this.player.x) ? entity : best, null);
-                if (nearest) this.zone(nearest.x, nearest.y, 90, 96, -3, 100, 240, 'lightning_reactor', {effect: 'energy'});
-            });
+                if (nearest) this.zone(nearest.x, nearest.y, 90, 96, -3, 100, 240, 'lightning_reactor',
+                    {effect: 'energy', bossDamage: this.mode === 'endless' ? 3 : 2});
+            }, true);
         } else this.gift = {type, until: this.time + (type === 'fire' ? 7000 : 10000)};
         this.event('gift', {name: names[index]});
         this.event('pop', {x: drop.x, y: drop.y});
@@ -934,7 +1084,7 @@ export class Battle {
                 else s.expires = 0;
                 if (s.blast) this.zone(s.x, s.y, s.blast * 2, s.blast * 2, s.damage, 160, 300, null, {circle: true});
                 else {
-                    if (s.fossil === 'ice' && this.invulnerable <= this.time) {
+                    if ((s.fossil === 'ice' || s.orochiOrb === 'ice') && this.invulnerable <= this.time) {
                         this.freezeUntil = Math.max(this.freezeUntil, this.time + this.data.TRENCH_CANNON.freeze);
                     }
                     this.hurt(s.damage, '被敌方弹幕击败');
@@ -1010,13 +1160,16 @@ export class Battle {
 
     step(input = {}) {
         if (!['wave', 'boss'].includes(this.phase)) return;
+        const previous = this.time;
         this.time += STEP;
+        this.updateCharacterFields(previous);
         const ready = this.tasks.filter(task => task.at <= this.time);
         this.tasks = this.tasks.filter(task => task.at > this.time);
         for (const task of ready) task.action();
-        let speed = this.boss?.pull ? 2.6 : 5.2;
+        let speed = this.boss?.pull && !this.enemyFieldFrozen ? 2.6 : 5.2;
         if (this.boostUntil > this.time) speed *= this.mode === 'endless' ? 1.6 : 1.25;
         if (this.slowUntil > this.time) speed *= this.mode === 'endless' ? .5 : [.85, .80, .75][this.tier];
+        if (this.swiftFieldUntil > this.time) speed *= this.data.characterFields.water.move_speed;
         const frozen = this.freezeUntil > this.time;
         const dx = frozen ? 0 : (input.x ?? 0), dy = frozen ? 0 : (input.y ?? 0);
         const p = this.player;
@@ -1027,8 +1180,10 @@ export class Battle {
         if (input.fire) this.fire();
         if (input.skill != null) this.cast(input.skill);
         this.updateSpawns();
-        this.updateBoss();
-        fireTrenchCannon(this);
+        if (!this.enemyFieldFrozen) {
+            this.updateBoss();
+            fireTrenchCannon(this);
+        }
         this.updateEnemies();
         if (this.phase === 'defeat') return;
         this.updateProjectiles();

@@ -95,12 +95,18 @@ function updateHUD() {
     const b = world.boss;
     const labels = skillNames();
     const cooldowns = labels.map((_, index) => Math.max(0, Math.ceil((world.cooldowns[index] - world.time) / 1000)));
-    const text = noticeUntil > performance.now() ? notice : world.phase === 'wave'
+    let bossHint = b?.skillUntil > world.time ? b.skill : '';
+    if (b?.pull) {
+        const damage = Math.max(0, Math.ceil(b.hp - b.pull.hp));
+        const seconds = Math.max(0, (b.pull.until - world.time) / 1000).toFixed(1);
+        bossHint = '打断还差 ' + damage + ' 伤害 · ' + seconds + 's';
+    }
+    const text = b?.pull ? bossHint : noticeUntil > performance.now() ? notice : world.phase === 'wave'
         ? 'Boss ' + Math.max(0, Math.ceil((40000 - world.time + world.started) / 1000)) + ' 秒后入场'
-        : b?.skillUntil > world.time ? b.skill : '';
+        : bossHint;
     const hp = b ? Math.ceil(b.hp) : 0;
     const key = JSON.stringify([world.level, world.hp, world.gold, world.lives, world.kills, world.score, world.weapon,
-        world.character, b?.id, hp, text, auto, muted, cooldowns, world.round, world.weaponUpgrades]);
+        world.character, b?.id, hp, text, auto, muted, cooldowns, world.round, world.weaponUpgrades, world.characterUpgrades]);
     if (key === hudKey) return;
     hudKey = key;
     const chapter = world.mode === 'endless' ? '无限 ' + (world.round * world.data.levels.length + world.level) : '第 ' + world.level + ' 关';
@@ -130,11 +136,9 @@ function updateHUD() {
         node.disabled = !world[type === 'weapon' ? 'weapons' : 'characters'].has(key)
             || (world.mode === 'endless' && key === 'pistol');
         node.setAttribute('aria-pressed', String(world[type] === key));
-        if (type === 'weapon') {
-            const level = world.weaponUpgrades[key];
-            if (level) node.dataset.upgradeLevel = level;
-            else delete node.dataset.upgradeLevel;
-        }
+        const level = (type === 'weapon' ? world.weaponUpgrades : world.characterUpgrades)[key];
+        if (level) node.dataset.upgradeLevel = level;
+        else delete node.dataset.upgradeLevel;
     });
 }
 
@@ -181,6 +185,7 @@ function newRun(mode = 'campaign', settings = false) {
         next.character = menuLoadout.character;
         next.weapons = new Set(menuLoadout.weapons);
         next.weaponUpgrades = {...menuLoadout.weaponUpgrades};
+        next.characterUpgrades = {...menuLoadout.characterUpgrades};
         next.characters = new Set(menuLoadout.characters);
         next.startLevel(next.level);
     }
@@ -210,9 +215,13 @@ function shop(returnTo = 'playing', message = '') {
     const status = key => key === world[shopTab] ? '已装备' : owned.has(key) ? '已购' : world.price(shopTab, key) + ' 金币';
     const image = key => isWeapon ? weaponImage(key, 'ui/weapon_showcase') : 'players/player_' + key;
     const selected = definitions[shopPreview];
+    const field = !isWeapon && data.characterFields[shopPreview];
+    const fieldDescription = field ? '<p><strong>' + field.name + '</strong> · '
+        + Math.round(data.characterFieldChance * 100) + '% · '
+        + field.duration_ms.map(ms => ms / 1000).join('/') + ' 秒 · ' + field.detail + '</p>' : '';
     const skillLabels = isWeapon ? [] : selected.skills.map(skill => skill.name);
     if (shopPreview === 'radiation') skillLabels.push('辐射激光', '飞镖护盾');
-    const description = isWeapon ? '<p>' + weaponDescriptions[shopPreview] + '</p>' : '<ul>'
+    const description = isWeapon ? '<p>' + weaponDescriptions[shopPreview] + '</p>' : fieldDescription + '<ul>'
         + skillLabels.map((name, index) => '<li><strong>' + name + '</strong>'
             + skillDescriptions[shopPreview][index] + '</li>').join('') + '</ul>';
     const shelves = ['weapon', 'character'].map(type => {
@@ -223,21 +232,21 @@ function shop(returnTo = 'playing', message = '') {
             const label = equipped ? '已装备' : purchased ? '已购' : world.price(type, key) + ' 金币';
             const sprite = gear ? weaponImage(key) : 'players/player_' + key;
             const item = (gear ? data.weapons : data.characters)[key];
-            const level = gear ? world.weaponUpgrades[key] ?? 0 : 0;
-            const upgrade = gear ? world.upgradePrice(key) : null;
+            const level = (gear ? world.weaponUpgrades : world.characterUpgrades)[key];
+            const upgrade = gear ? world.upgradePrice(key) : world.characterUpgradePrice(key);
             return '<div><button type="button" data-action="equip-' + type + '-' + key
                 + '" data-return="' + returnTo + '" aria-pressed="' + equipped + '"><img alt="" src="./art/'
                 + sprite + '.webp"><strong>' + item.name + (level ? ' Lv.' + level : '') + '</strong><small class="'
                 + (equipped ? 'equipped' : purchased ? 'owned' : '') + '">' + label + '</small></button>'
                 + (upgrade === null ? '' : '<button class="shop-upgrade" type="button" data-action="upgrade-' + key
-                    + '" data-return="' + returnTo + '">加强 ' + upgrade + '</button>')
+                    + '" aria-label="加强' + item.name + '，' + upgrade + ' 金币" data-return="' + returnTo + '">加强 ' + upgrade + '</button>')
                 + (gear ? '' : '<button type="button" data-action="preview-' + key
                     + '" data-return="' + returnTo + '">看技能</button>') + '</div>';
         }).join('');
         return '<section class="shop-shelf"><h3>' + (gear ? '装备' : '角色') + '</h3><div class="shop">' + items + '</div></section>';
     }).join('');
     const back = returnTo === 'clear' ? 'clear' : returnTo === 'select' ? 'shop-menu-close' : 'resume';
-    panel('<div class="bar"><h2>商店</h2><span class="shop-gold"><img src="./art/ui/coin.webp" alt="金币">' + world.gold + '</span>'
+    panel('<div class="bar"><h2>商店</h2><span class="shop-gold"><img src="./art/ui/coin.webp" alt="金币"><span>' + world.gold + '</span></span>'
         + button(back, '×') + '</div>' + shelves
         + '<div class="shop-feature"><div><h3>' + selected.name + '</h3>' + description
         + '<p class="shop-price" role="status">' + (message || status(shopPreview)) + '</p></div>'
@@ -258,10 +267,10 @@ function results() {
                 + button('menu', '返回首页') + '</div>', phase, true);
         } else {
             const next = world.level % world.data.levels.length;
-            const reward = world.data.CAMPAIGN_REWARDS[world.level - 1];
+            const reward = world.clearReward;
             panel('<div class="clear-readout"><span class="clear-radar" aria-hidden="true">✓</span><div>'
                 + '<p>第 ' + world.level + ' 关 · ' + escapeText(world.stage.title) + '</p><h2>关卡通过</h2>'
-                + '<p>奖励 <strong>+' + reward + '</strong> 金币</p></div></div>'
+                + (reward ? '<p>奖励 <strong>+' + reward + '</strong> 金币</p>' : '') + '</div></div>'
                 + '<p class="clear-next">' + (world.mode === 'campaign' ? '即将进入' : '下一关') + '第 ' + (next + 1)
                 + ' 关 · ' + escapeText(world.data.levels[next].title) + '</p>'
                 + '<p>得分 ' + world.score + ' · 金币 ' + world.gold + '</p><div class="row">'
@@ -340,10 +349,13 @@ $('#app').addEventListener('click', event => {
         return;
     }
     if (action.startsWith('upgrade-')) {
-        shopTab = 'weapon';
-        shopPreview = action.slice(8);
-        const success = world.upgradeWeapon(shopPreview);
-        shop(node.dataset.return, success ? '已加强至 Lv.' + world.weaponUpgrades[shopPreview] : '金币不足');
+        const key = action.slice(8);
+        shopTab = data.characterFields[key] ? 'character' : 'weapon';
+        shopPreview = key;
+        const success = shopTab === 'weapon' ? world.upgradeWeapon(key) : world.upgradeCharacter(key);
+        const upgrades = shopTab === 'weapon' ? world.weaponUpgrades : world.characterUpgrades;
+        shop(node.dataset.return, success ? '已加强至 Lv.' + upgrades[key] : '金币不足');
+        screen.querySelector('[data-action="' + action + '"]')?.focus({preventScroll: true});
         return;
     }
     if (action.startsWith('equip-')) {
@@ -414,8 +426,19 @@ window.addEventListener('keydown', event => {
         if (!event.repeat) page === 'pause' ? resume() : pause();
         return;
     }
-    if (page !== 'playing' || event.ctrlKey || event.metaKey || event.altKey) return;
     const key = event.code;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (world && (page === 'playing' || page === 'shop') && event.shiftKey
+            && (event.key === '+' || key === 'Equal' || key === 'NumpadAdd')) {
+        event.preventDefault();
+        if (!event.repeat) {
+            world.gold += 100;
+            if (page === 'shop') screen.querySelector('.shop-gold span').textContent = world.gold;
+            else updateHUD();
+        }
+        return;
+    }
+    if (page !== 'playing') return;
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'KeyJ', 'KeyK', 'KeyL', 'KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(key)) {
         event.preventDefault();
         held.add(key);

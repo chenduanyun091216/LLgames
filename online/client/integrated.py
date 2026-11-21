@@ -542,6 +542,14 @@ class LAN:
                 world_target = self.world_target = RenderSurface(
                     self.projected, size, rect.size, (0, 0), track_damage=True)
         try:
+            # Map the local buttons onto the fitted room canvas used by the actors.
+            hud_scale = view_size[0] / local_surface.get_width()
+            room_scale = rect.w / size[0]
+            view._projected_field_badge_obstacles = [
+                pygame.Rect(round((button.x * hud_scale + offset[0] - rect.x) / room_scale),
+                            round((button.y * hud_scale + offset[1] - rect.y) / room_scale),
+                            round(button.w * hud_scale / room_scale), round(button.h * hud_scale / room_scale))
+                for button in view._field_badge_obstacles()]
             if new_state:
                 presentation.apply(state, slot)
             restored = []
@@ -571,6 +579,7 @@ class LAN:
                 for obj, x, y in restored:
                     obj.x, obj.y = x, y
         finally:
+            view._projected_field_badge_obstacles = None
             for name, value in local.items():
                 setattr(config, name, value)
         from game_core.background import background_art, draw_scrolling_background_art

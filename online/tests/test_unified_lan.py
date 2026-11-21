@@ -82,6 +82,24 @@ class UnifiedLANTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.host.room.game.current_level, 11)
         self.assertEqual(self.host.room.snapshot()['start_level'], 11)
 
+    async def test_gold_shortcut_credits_shared_wallet_in_battle_and_shop(self):
+        p1, p2 = await self.start('infinite')
+        room = self.host.room
+
+        def action(name, seq):
+            return dict(type='action', action=name, seq=seq, match_id=room.match_id)
+
+        await p1[0].send_json(action('add_gold', 1))
+        await self.wait_for(lambda: room.game.gold == 100)
+        await p1[0].send_json(action('shop_open', 2))
+        await self.wait_for(lambda: room.game.paused)
+        await p2[0].send_json(action('add_gold', 1))
+        await self.wait_for(lambda: room.game.gold == 200)
+        await p2[0].send_json(action('add_gold', 1))
+        await p2[0].send_json(action('shop_close', 2))
+        await self.wait_for(lambda: not room.game.all_players[1].shop_open)
+        self.assertEqual([p['gold'] for p in room.snapshot()['world']['players']], [200, 200])
+
     async def test_defeated_campaign_player_can_leave_without_stopping_teammate(self):
         p1, p2 = await self.start('campaign')
         room = self.host.room

@@ -30,9 +30,11 @@ SCHEMA = {
 }
 # Explicit inherited field groups keep the wire vocabulary reviewable. Surfaces,
 # fonts, cached animation frames and simulation-only sets are never transmitted.
+SCHEMA['Player'] += 'character_upgrades swift_field_until fire_shield_until fire_shield_hits radiation_field_until'.split()
 SCHEMA['NiuBoss'] = SCHEMA['Boss'] + 'opening_skill_pending lightning_xs lightning_warning_until lightning_until shield_until shield_damage shield_hit_at shield_hit_offset shield_break_at running_left axe_slam_impact'.split()
 SCHEMA['ZongBoss'] = SCHEMA['Boss'] + 'body_hp easy_campaign next_fusion_time fusion_until fusion_end_volley snow_until opening_snow_done expression_hit_at pending_projectiles crescent_projectiles crescent_started_at crescent_count crescent_target crescent_origin next_revive_check campaign_revived fusion_warning_mode'.split()
 SCHEMA['OrochiBoss'] = SCHEMA['Boss'] + 'skill skill_at next_skill opening_pending spawned_at emitted shots impacts head_hp bubble_breaks storm_target storm_warning_age final_storm invincible_until death_at death_particles split_hp split_xy split_dive split_next_dive split_charged split_charge_until split_velocity split_last_update split_regroup_at split_target'.split()
+SCHEMA['OrochiBoss'] += ['side_head', 'side_head_at']
 SCHEMA['ReturningAxe'] = SCHEMA['BossProjectile'] + 'boss origin side red target_x impact_x impact_pending blast_reason'.split()
 SCHEMA['CrescentWave'] = SCHEMA['BossProjectile'] + ['unblockable']
 SCHEMA['ZongBomb'] = SCHEMA['BossProjectile'] + 'color proximity_detonated'.split()
@@ -41,6 +43,7 @@ SCHEMA['ZongReflectBullet'] = list(SCHEMA['BossProjectile'])
 SCHEMA['NiuShieldShard'] = SCHEMA['BossProjectile'] + ['index', 'width', 'origin']
 SCHEMA['NiuFanBullet'] = SCHEMA['BossProjectile'] + ['red']
 SCHEMA['OrochiFireball'] = SCHEMA['BossProjectile'] + ['color']
+SCHEMA['OrochiSideOrb'] = SCHEMA['BossProjectile'] + ['ice']
 SCHEMA['MechaLizardBoss'] = SCHEMA['Boss'] + 'skill_index current_skill skill_started_at self_telegraphed'.split()
 SCHEMA['AncientWhaleBoss'] = SCHEMA['MechaLizardBoss'] + ['suction_start_hp', 'swim_direction', 'swim_turn_at']
 SCHEMA['ShieldfishBoss'] = SCHEMA['MechaLizardBoss'] + 'skill_end_at recovery_at motion_start motion_end'.split()
@@ -56,8 +59,10 @@ CLASSES.update({name: getattr(S, name) for name in (
 CLASSES.update({name: getattr(A, name) for name in ('MechaLizardBoss', 'AncientWhaleBoss', 'AbyssProjectile')})
 CLASSES.update(ShieldfishBoss=T.ShieldfishBoss, TrenchSpire=T.TrenchSpire, TrenchBolt=T.TrenchBolt)
 CLASSES.update(BossSignature=BossSignature, OrochiBoss=O.OrochiBoss, OrochiFireball=O.OrochiFireball)
+CLASSES['OrochiSideOrb'] = O.OrochiSideOrb
 COLLECTIONS = 'enemies bullets coins gift_boxes particles explosions fire_walls ice_floors skill_projectiles magnetic_storms radiation_lasers lightnings dart_shields boss_projectiles warned_boss_shots enemy_projectiles'.split()
 GAME_FIELDS = 'trench_cannon_at trench_cannon_side background_scroll_ticks bg_transition_until current_level chapter infinite_mode infinite_background_level player_invincible_until level_title_until level_transition_end level_fade_in_until rage_banner_until gift_lightning_icon_until gift_lightning_remaining gift_fire_until gift_ice_until player_hp max_player_hp score infinite_deaths infinite_start_time infinite_music_variant infinite_boss_index victory_end campaign_elapsed_ms campaign_start_level campaign_bosses_defeated campaign_enemies_defeated campaign_deaths campaign_restarts revive_count kill_count level_kills leak_count lives warned_boss_shots_at laser_impacts water_heal_effects muzzle_flashes skill_flash gift_messages'.split()
+GAME_FIELDS += ['enemy_freeze_until', 'ice_field_slot', 'radiation_wave']
 DATA_KEYS = set('x y vx vy life max_life color size start text until at kind key name is_large zongzong gold base_speed health_mult sprite_asset sprite_key enemy_key base_hp fixed_hp speed attack_interval projectile_count homing_chance laser_chance campaign_tier campaign_level warning duration h w radius released burst_at target_x target_y'.split()) | set(config.WEAPON_DEFS) | set(config.CHARACTER_DEFS) | set('fisher_grenade ice_balls water_heal lightning skill1 skill2 radiation_laser dart_shield fireball fire_wall ice_ball ice_floor magnetic_storm lightning_chain water_boost water_haste'.split())
 DEFINITION_KEYS = 'campaign_hp key name is_large zongzong gold base_speed health_mult sprite_asset sprite_key enemy_key base_hp fixed_hp speed attack_interval projectile_count homing_chance laser_chance campaign_tier campaign_level size damage_cap final_boss easy_campaign laser_offsets shield_thresholds laser_interval_mult'.split()
 

@@ -173,6 +173,16 @@ CHARACTER_DEFS = {
 }
 _CHAR_KEYS_ORDERED = ['ice', 'water', 'fire', 'radiation']
 
+CHARACTER_FIELD_CHANCE = 0.25
+CHARACTER_FIELDS = {
+    'ice': {'name': '冰冻结界', 'duration_ms': (1000, 1500, 2000), 'detail': '冻结全场敌人（含首领）'},
+    'water': {'name': '迅猛结界', 'duration_ms': (2000, 2500, 3000), 'detail': '全队射速 +50%，移速 +30%',
+              'fire_rate': 1.5, 'move_speed': 1.3},
+    'fire': {'name': '火甲结界', 'duration_ms': (3000, 4000, 5000), 'detail': '每人抵挡 1/2/3 次伤害'},
+    'radiation': {'name': '强化结界', 'duration_ms': (3000, 4000, 5000),
+                  'detail': '全队伤害 +100%，满级结束清除飞行敌弹', 'damage': 2, 'wave_ms': 500},
+}
+
 TRENCH_ENEMIES = (
     ('trench_hermit', '骨钳寄居蟹', 0.34, 5),
     ('trench_angler', '幽灯鮟鱇', 0.37, 4),
@@ -449,6 +459,7 @@ CAMPAIGN_ENEMY_CAP = ((4, 5, 6), (5, 6, 7), (5, 6, 7), (6, 7, 8),
                       (6, 7, 8), (0, 0, 0), (6, 8, 9), (7, 8, 9), (5, 6, 7), (5, 6, 7), (5, 6, 7), (0, 0, 0))
 CAMPAIGN_BOSS_HP = ((18, 24, 28), (30, 40, 46), (45, 60, 69), (62, 82, 94),
                     (80, 106, 122), (99, 132, 152), (118, 156, 180), (128, 168, 198), (132, 175, 211), (136, 182, 222), (142, 190, 230), (148, 200, 240))
+CAMPAIGN_WHALE_INTERRUPT_CAP = (8, 10, 12)
 CAMPAIGN_BOSS_ATTACK_MS = ((5000, 4400, 3800), (4800, 4100, 3600), (4600, 3900, 3400),
                            (4400, 3700, 3200), (4200, 3500, 3000), (4000, 3400, 2900),
                            (6800, 5800, 5000), (4700, 3900, 3100), (5600, 4600, 3600), (5800, 4800, 3800), (5200, 4400, 3600), (4600, 3600, 2900))
@@ -478,6 +489,9 @@ INFINITE_PROGRESSION = {
     'boss_hp_per_chapter': 5,
     'boss_attack_reduction_per_round': 5,
     'boss_attack_min_percent': 70,
+    'reinforcement_reduction_per_round': 5,
+    'reinforcement_min_percent': 75,
+    'reinforcement_extra_cap': 2,
     'enemy_health_start_percent': 150,
     'enemy_health_per_chapter': 2,
     'wave_spawn_start_ms': 1300,

@@ -117,6 +117,13 @@ class _IntegratedView(_View):
     def _upgrade_weapon(self, key):
         self.lan.send('upgrade', key)
 
+    def _upgrade_character(self, key):
+        self.shop_category, self.shop_character = 'character', key
+        self.lan.send('upgrade', key)
+
+    def _add_shortcut_gold(self):
+        self.lan.send('add_gold')
+
     def _handle_mobile_action(self, action):
         if action == 'pause':
             self.lan.send('pause')
@@ -171,6 +178,8 @@ class _IntegratedView(_View):
                     self.lan.leave()
                 elif key == pygame.K_ESCAPE or clicked and pos is not None and cancel.collidepoint(pos):
                     self.lan.exit_confirmation = False
+                continue
+            if self._handle_gold_shortcut(event):
                 continue
             if key == pygame.K_ESCAPE:
                 if self.state == GameState.SHOP:
@@ -288,6 +297,7 @@ class Presentation:
         if name == 'NiuShieldShard': return S.NiuShieldShard(0, 0, f['index'], f['width'])
         if name == 'NiuFanBullet': return S.NiuFanBullet(0, 0, 0, False)
         if name == 'OrochiFireball': return O.OrochiFireball(0, 0, f['color'], None)
+        if name == 'OrochiSideOrb': return O.OrochiSideOrb(0, 0, 0, f['ice'])
         raise ValueError('Unsupported constructor')
 
     def apply(self, full_snapshot, local_slot=1):

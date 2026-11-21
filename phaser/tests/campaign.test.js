@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {Battle, bossBoxes, STEP} from '../src/battle.js';
-import {attack} from '../src/bosses.js';
+import {attack, orochiSideHead} from '../src/bosses.js';
 import {mobileView} from '../src/layout.js';
 import {cannonMuzzle, fireTrenchCannon, updateTrenchBoss} from '../src/trench.js';
 import {homeContent} from '../src/campaign-menu.js';
@@ -44,6 +44,59 @@ test('campaign weapons use the configured base firing intervals and damage', () 
         battle.fire();
         assert.equal(battle.bullets.length, count * 2);
     }
+});
+
+test('preset weapons fire without gold and keep their damage against bosses in every tier', () => {
+    for (const tier of [0, 1, 2]) {
+        for (const [weapon, damage] of [['rifle', 1.5], ['sniper', 2]]) {
+            const battle = new Battle(data, {tier});
+            battle.gold = battle.price('weapon', weapon);
+            assert.ok(battle.equip('weapon', weapon));
+            assert.equal(battle.gold, 0);
+            battle.beginBoss();
+            const boss = battle.boss;
+            boss.y = 100;
+            battle.fire();
+            assert.equal(battle.weapon, weapon);
+            const [round] = battle.bullets;
+            Object.assign(round, {x: boss.x, y: boss.y - round.dy});
+            battle.updateProjectiles();
+            assert.equal(boss.maxHp - boss.hp, damage);
+        }
+    }
+
+    const custom = new Battle(data, {tier: 1, custom: {ammo: {rifle: 2}}});
+    custom.gold = custom.price('weapon', 'rifle') + 2;
+    assert.ok(custom.equip('weapon', 'rifle'));
+    custom.fire();
+    assert.equal(custom.gold, 0);
+    custom.time += 1000;
+    custom.fire();
+    assert.equal(custom.weapon, 'pistol');
+    assert.equal(custom.bullets.length, 1);
+});
+
+test('direct boss-only starts fund a rifle and leave normal progression alone', () => {
+    for (const tier of [0, 1, 2]) {
+        for (const level of [6, 12]) {
+            const battle = new Battle(data, {tier, level});
+            const price = battle.price('weapon', 'rifle');
+            assert.equal(battle.gold, price);
+            assert.ok(battle.equip('weapon', 'rifle'));
+            assert.equal(battle.gold, 0);
+            battle.retry();
+            assert.equal(battle.gold, price);
+            assert.equal(battle.weapon, 'pistol');
+        }
+    }
+    const campaign = new Battle(data, {level: 5, tier: 1});
+    assert.equal(campaign.gold, 0);
+    campaign.beginBoss();
+    campaign.finishLevel();
+    const gold = campaign.gold;
+    campaign.next();
+    assert.equal(campaign.level, 6);
+    assert.equal(campaign.gold, gold);
 });
 
 test('weapon upgrades cost consecutive multiples and sniper missiles fire every fourth shot', () => {
@@ -218,6 +271,77 @@ test('each boss executes its signature and later attack patterns', () => {
     }
 });
 
+test('Zong crescent speeds up, snow follows tier, and shield fusion heals both bodies once', () => {
+    for (const [tier, duration] of [3000, 4000, 5000].entries()) {
+        const battle = new Battle(data, {level: 8, tier});
+        battle.beginBoss();
+        const boss = battle.boss;
+        attack(battle, boss, 1);
+        for (const task of battle.tasks) task.action();
+        assert.equal(battle.shots.length, 4);
+        assert.ok(battle.shots.every(shot => shot.r === 38 && shot.speed === 7));
+        battle.tasks = [];
+        assert.equal(attack(battle, boss, 2)[1], duration);
+        assert.equal(battle.slowUntil - battle.time, duration);
+
+        for (const shield of [true, false]) {
+            const bodyMax = boss.maxHp / 2;
+            boss.bodyHp = [bodyMax * (shield ? .5 : .1), bodyMax * .9];
+            boss.hp = boss.bodyHp[0] + boss.bodyHp[1];
+            const before = [...boss.bodyHp];
+            battle.tasks = [];
+            battle.invulnerable = Infinity;
+            boss.attackAt = Infinity;
+            attack(battle, boss, 3);
+            stepFor(battle, boss.fusionUntil - battle.time - 30);
+            assert.deepEqual(boss.bodyHp, before);
+            stepFor(battle, 100);
+            const expected = shield ? [before[0] + bodyMax * .15, bodyMax] : before;
+            assert.deepEqual(boss.bodyHp, expected);
+            assert.equal(boss.hp, expected[0] + expected[1]);
+        }
+    }
+});
+
+test('Orochi warns from one side before each alternating fire and ice fan', () => {
+    assert.ok(manifest['animations/bosses/boss_orochi_laser']);
+    for (const [tier, interval] of [20000, 15000, 10000].entries()) {
+        const sides = [.25, .75];
+        const battle = new Battle(data, {level: 12, tier, view: mobileView(844, 390)}, () => sides.shift());
+        const boss = battle.boss;
+        boss.attackAt = Infinity;
+        battle.time = interval - 1;
+        battle.updateBoss();
+        assert.ok(!boss.sideHead);
+        for (const [start, side] of [[interval, -1], [2 * interval, 1]]) {
+            battle.time = start;
+            battle.updateBoss();
+            assert.equal(boss.sideHead, side);
+            battle.time = start + 899;
+            battle.updateBoss();
+            assert.equal(battle.shots.length, 0);
+            battle.time = start + 900;
+            battle.updateBoss();
+            assert.equal(boss.sideHead, null);
+            assert.deepEqual(battle.shots.map(s => s.orochiOrb), ['fire', 'ice', 'fire', 'ice', 'fire', 'ice']);
+            assert.deepEqual(battle.shots.map(s => s.damage), [2, 1, 2, 1, 2, 1]);
+            const {mouthX, mouthY} = orochiSideHead(battle, side);
+            assert.ok(battle.shots.every(s => s.x === mouthX && s.y === mouthY &&
+                Math.cos(s.angle) * side < 0 && Math.sin(s.angle) > 0));
+            const ice = battle.shots[1];
+            battle.shots = [ice];
+            ice.x = battle.player.x;
+            ice.y = battle.player.y;
+            battle.updateProjectiles();
+            assert.equal(battle.freezeUntil - battle.time, 2000);
+            assert.equal(battle.shots.length, 0);
+        }
+        battle.finishLevel();
+        assert.equal(battle.boss, null);
+        assert.equal(battle.shots.length, 0);
+    }
+});
+
 test('factory splits and fuses, temple eyes summon destructible worms', () => {
     const factory = new Battle(data, {level: 9}, () => .25);
     const target = factory.spawnEnemy('mecha_crab', {factory: 'original', y: 70});
@@ -283,6 +407,56 @@ test('endless chapter 13 carries upgrades forward and increases enemy pressure',
     endless.updateSpawns();
     assert.equal(endless.boss.def.key, 'boss_lobster');
     assert.deepEqual([endless.boss.maxHp, endless.boss.interval], [225, 3420]);
+});
+
+test('endless uses the shared wave pacing and upgrade economy from its first chapter', () => {
+    const endless = new Battle(data, {mode: 'endless', tier: 1}, () => .1);
+    endless.time = endless.spawnAt;
+    endless.updateSpawns();
+    assert.equal(endless.enemies.length, 1);
+    assert.equal(endless.spawnAt - endless.time, 1300);
+    endless.beginBoss();
+    assert.equal(endless.enemies.length, 0);
+    endless.gold = 100;
+    endless.finishLevel();
+    assert.equal(endless.gold, 100);
+    for (const price of [12, 24, 48]) {
+        assert.equal(endless.upgradePrice('rifle'), price);
+        assert.ok(endless.upgradeWeapon('rifle'));
+    }
+    assert.equal(endless.gold, 16);
+    endless.round = 1;
+    endless.startLevel(1);
+    assert.equal(endless.reinforcement('MS'), 5225);
+    assert.equal(endless.reinforcement('CAP'), 2);
+    endless.startLevel(11);
+    assert.equal(endless.reinforcement('MS'), 0);
+    assert.equal(endless.reinforcement('CAP'), 0);
+    endless.startLevel(9);
+    for (let i = 0; i < 3; i++) endless.spawnEnemy('mecha_ray', {factory: 'original', y: 90});
+    endless.updateFactoryLink();
+    assert.ok(endless.link);
+    endless.beginBoss();
+    assert.equal(endless.enemies.length, 0);
+    assert.equal(endless.link, null);
+});
+
+test('an unupgraded rifle can interrupt whale suction in every preset', () => {
+    for (const view of [undefined, mobileView(390, 844)]) {
+        for (const tier of [0, 1, 2]) {
+            const battle = new Battle(data, {level: 10, tier, view}, () => .6);
+            battle.gold = battle.price('weapon', 'rifle');
+            assert.ok(battle.equip('weapon', 'rifle'));
+            battle.beginBoss();
+            const boss = battle.boss;
+            Object.assign(boss, {y: 115, pattern: 3, attackAt: 0});
+            battle.step();
+            assert.ok(boss.pull);
+            for (let frame = 0; frame < 300 && boss.pull; frame++) battle.step({y: 1, fire: true});
+            assert.equal(boss.skill, '吸附已打断', `tier ${tier}, ${boss.maxHp - boss.hp} damage`);
+            assert.equal(battle.phase, 'boss');
+        }
+    }
 });
 
 test('whale absorption can be interrupted and Orochi bubbles decide storm healing', () => {

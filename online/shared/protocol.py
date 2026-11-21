@@ -5,7 +5,7 @@ import math
 VERSION = 1
 UNIFIED_VERSION = 2
 MAX_MESSAGE = 2048
-ACTIONS = frozenset(('skill1', 'skill2', 'laser', 'dart', 'shop_open', 'shop_close', 'revive', 'weapon', 'character', 'restart', 'suspend', 'resume', 'pause', 'unpause', 'continue', 'rage', 'upgrade'))
+ACTIONS = frozenset(('skill1', 'skill2', 'laser', 'dart', 'shop_open', 'shop_close', 'revive', 'weapon', 'character', 'restart', 'suspend', 'resume', 'pause', 'unpause', 'continue', 'rage', 'upgrade', 'add_gold'))
 
 class ProtocolError(ValueError):
     pass

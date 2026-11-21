@@ -158,8 +158,10 @@ class NiuShieldShard(BossProjectile):
 
 
 class CrescentWave(BossProjectile):
-    def __init__(self, x, y, half_width=30, angle=0):
-        super().__init__(x, y, angle, 8.5, damage=1)
+    HALF_WIDTH = 42
+
+    def __init__(self, x, y, half_width=HALF_WIDTH, angle=0):
+        super().__init__(x, y, angle, 12, damage=1)
         self.r = max(1, round(half_width * .65))
         self.unblockable = True
 
@@ -726,6 +728,8 @@ def _snow_edge(size):
 
 
 class ZongBoss(Boss):
+    SNOW_DURATION_MS = (3000, 4000, 5000)
+
     def __init__(self, bdef, difficulty):
         super().__init__(bdef, difficulty)
         self.body_hp = [self.max_hp / 2, self.max_hp / 2]
@@ -804,7 +808,9 @@ class ZongBoss(Boss):
         tier = self.bdef.get('campaign_tier')
         if self.crescent_started_at is not None:
             width_scale = (config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT) / 480
-            half_width = 30 if tier is None else round(30 * width_scale)
+            half_width = CrescentWave.HALF_WIDTH
+            if tier is not None:
+                half_width = round(half_width * width_scale)
             while self.crescent_count < 4 and now >= self.crescent_started_at + 1500 + self.crescent_count * 300:
                 x, y = self.crescent_target if target_x is None or target_y is None else (target_x, target_y)
                 angle = math.degrees(math.atan2(x - self.crescent_origin, y - (self.y + self.h - 8)))
@@ -840,7 +846,11 @@ class ZongBoss(Boss):
         if not self.next_fusion_time:
             self.next_fusion_time = now + (12000 if self.easy_campaign else 8000)
         if self.fusion_mode and now >= self.fusion_until:
-            if self.fusion_mode == 'rage' and not self.fusion_end_volley:
+            if self.fusion_mode == 'shield':
+                body_max_hp = self.max_hp / 2
+                self.body_hp[:] = [min(body_max_hp, hp + body_max_hp * 0.15) for hp in self.body_hp]
+                self.hp = sum(self.body_hp)
+            elif self.fusion_mode == 'rage' and not self.fusion_end_volley:
                 self.pending_projectiles.extend(self._fireball_fan())
             self.fusion_mode = None
             self.next_fusion_time = now + (14000 if self.easy_campaign else 8500)
@@ -859,7 +869,7 @@ class ZongBoss(Boss):
             self.fusion_started_at = now
             self.fusion_end_volley = False
             if (tier is None or self.fusion_mode == 'rage') and random.random() < 0.4:
-                self.snow_until = now + (5000 if tier is None else (2500, 3000, 3500)[tier])
+                self.snow_until = now + (5000 if tier is None else self.SNOW_DURATION_MS[tier])
             if self.fusion_mode == 'rage':
                 self.pending_projectiles.extend(self._fireball_fan())
 
@@ -878,7 +888,7 @@ class ZongBoss(Boss):
         skill = self._choose_attack_skill(skills)
         if skill == 'snow':
             tier = self.bdef.get('campaign_tier')
-            duration = 5000 if tier is None else (2500, 3000, 3500)[tier]
+            duration = 5000 if tier is None else self.SNOW_DURATION_MS[tier]
             self.snow_until = max(self.snow_until, now + duration)
             self.animation_attack_at = None
             return []
@@ -982,7 +992,7 @@ class ZongBoss(Boss):
         blit_effect(surf, halo, (int(x - 150), int(cy - 150)))
 
     @staticmethod
-    def draw_snow(surf, until, font, reduction=50):
+    def draw_snow(surf, until, font=None, reduction=50):
         now = config.game_ticks()
         if now >= until:
             return
@@ -1002,6 +1012,8 @@ class ZongBoss(Boss):
         blit(horizontal, (0, height - 5))
         blit(vertical, (0, 5))
         blit(vertical, (width - 5, 5))
+        if font is None:
+            return
         message = '极寒暴雪 · 移速与射速减半' if reduction == 50 else f'极寒暴雪 · 移速与射速降低 {reduction}%'
         text_width, text_height = font.size(message)
         box = pygame.Rect(width // 2 - text_width // 2 - 16, 246, text_width + 32, text_height + 12)

@@ -83,6 +83,23 @@ class OrochiFireball(BossProjectile):
             surf.blit(sprite, sprite.get_rect(center=tuple(round(value) for value in position)))
 
 
+class OrochiSideOrb(BossProjectile):
+    FIRE = (255, 100, 48)
+    ICE = (95, 205, 255)
+
+    def __init__(self, x, y, angle, ice):
+        super().__init__(x, y, angle, 5.4, damage=1 if ice else 2)
+        self.ice = ice
+        self.r = 11 if ice else 12
+
+    def draw(self, surf):
+        center = round(self.x), round(self.y)
+        color = self.ICE if self.ice else self.FIRE
+        draw_glow(surf, center, self.r + 6, color, 180)
+        Draw.circle(surf, color, center, self.r)
+        Draw.circle(surf, (234, 253, 255) if self.ice else (255, 232, 151), center, self.r - 4)
+
+
 class OrochiBoss(Boss):
     SKILLS = ('volley', 'slam', 'split', 'laser')
     FIRE_COLORS = ((255, 58, 43), (255, 211, 41))
@@ -123,6 +140,8 @@ class OrochiBoss(Boss):
     THUNDER_INTERVAL = 1400
     THUNDER_RADIUS = 50
     DEATH_DURATION = 1600
+    SIDE_INTERVAL = (20000, 15000, 10000)
+    SIDE_WARNING = 900
 
     def __init__(self, bdef, difficulty):
         super().__init__(bdef, difficulty)
@@ -130,6 +149,8 @@ class OrochiBoss(Boss):
         self.skill_at = 0
         self.opening_pending = True
         self.spawned_at = config.game_ticks()
+        self.side_head = None
+        self.side_head_at = self.spawned_at + self.SIDE_INTERVAL[bdef.get('campaign_tier', 1)]
         self.emitted = 0
         self.shots = []
         self.impacts = []
@@ -262,6 +283,32 @@ class OrochiBoss(Boss):
         body = self._body_art_rect()
         return body.x + x * body.w, body.y + y * body.h
 
+    def _side_head_rect(self, side):
+        left, right = config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT
+        bottom = config.GAME_AREA_BOTTOM
+        size = round(min(96, (right - left) * .15, bottom * .18))
+        rect = pygame.Rect(0, 0, size, size)
+        rect.center = (round(left + size * .68 if side < 0 else right - size * .68), round(bottom * .32))
+        return rect
+
+    @staticmethod
+    def _side_mouth(rect, side):
+        return rect.centerx - side * rect.w * .08, rect.centery + rect.h * .19
+
+    def _update_side_head(self, now):
+        if not self.entered or now < self.side_head_at:
+            return
+        if self.side_head is None:
+            self.side_head = random.choice((-1, 1))
+            self.side_head_at = now
+        elif now >= self.side_head_at + self.SIDE_WARNING:
+            side = self.side_head
+            x, y = self._side_mouth(self._side_head_rect(side), side)
+            for index, angle in enumerate((9, 19, 29, 39, 49, 59)):
+                self.shots.append(OrochiSideOrb(x, y, -side * angle, ice=bool(index % 2)))
+            self.side_head = None
+            self.side_head_at += self.SIDE_INTERVAL[self.bdef.get('campaign_tier', 1)]
+
     def update(self, target_x=None, target_y=None):
         now = config.game_ticks()
         for particles in self.bubble_breaks:
@@ -269,6 +316,7 @@ class OrochiBoss(Boss):
         self.bubble_breaks = [particles for particles in self.bubble_breaks if not particles.is_dead()]
         if self.death_at is not None:
             return
+        self._update_side_head(now)
         if self.skill is None:
             super().update()
             return
@@ -502,6 +550,7 @@ class OrochiBoss(Boss):
         self.hp = 0
         self.skill = None
         self.death_at = now
+        self.side_head = None
         self.shots.clear()
         self.impacts.clear()
         art = self.surface
@@ -694,6 +743,25 @@ class OrochiBoss(Boss):
         art = frames[(age // self.SPLIT_STEP + index * 3) % len(frames)] if frames else None
         self._draw_skill_sprite(surf, art, scale_rect(rect, visual_scale))
 
+    def _draw_side_head(self, surf, now):
+        side = self.side_head
+        rect = self._side_head_rect(side)
+        if self.laser_art is None:
+            self._draw_skill_sprite(surf, None, rect)
+        else:
+            scaled = isinstance(surf, RenderSurface)
+            size = surf.length(rect.w) if scaled else rect.w
+            art = _turn_fireball(scale_surface_cached(self.laser_art, (size, size)), -side * 24)
+            center = surf.point(rect.center) if scaled else rect.center
+            blit = surf.blit_pixels if scaled else surf.blit
+            blit(art, art.get_rect(center=center).topleft)
+        x, y = self._side_mouth(rect, side)
+        charge = min(1, max(0, (now - self.side_head_at) / self.SIDE_WARNING))
+        radius = round(rect.w * (.11 + charge * .14))
+        draw_glow(surf, (x - radius * .42, y), radius, OrochiSideOrb.FIRE, 190)
+        draw_glow(surf, (x + radius * .42, y), radius, OrochiSideOrb.ICE, 190)
+        Draw.circle(surf, (255, 238, 201, 225), (round(x), round(y)), radius, 2)
+
     def draw(self, surf, *, visual_scale=1):
         if self._hd_artwork != asset_loader.web_hd_assets:
             self._load_artwork()
@@ -756,3 +824,5 @@ class OrochiBoss(Boss):
         else:
             self._draw_idle(surf, now, visual_scale)
         self._draw_bubble_breaks(surf, now)
+        if getattr(self, 'side_head', None) is not None:
+            self._draw_side_head(surf, now)

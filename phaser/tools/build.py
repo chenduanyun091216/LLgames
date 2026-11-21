@@ -28,6 +28,7 @@ def campaign_data():
     tables = {key: value for key, value in vars(config).items()
               if key.startswith(('CAMPAIGN_', 'INFINITE_', 'TRENCH_')) and isinstance(value, (dict, tuple))}
     return dict(tables, levels=config.LEVEL_CONFIGS, bosses=config.BOSS_DEFS,
+                characterFields=config.CHARACTER_FIELDS, characterFieldChance=config.CHARACTER_FIELD_CHANCE,
                 enemies={value['key']: value for value in config.ENEMY_DEFS},
                 weapons={key: fields(value) for key, value in config.WEAPON_DEFS.items()},
                 characters={key: dict(fields(value), skills=[fields(s) for s in value.skills])

@@ -68,6 +68,7 @@ class Player:
         self.y = config.GAME_AREA_BOTTOM - 14
         self.owned_weapons = ['pistol']
         self.weapon_upgrades = {}
+        self.character_upgrades = {}
         self.sniper_shots = 0
         self.current_weapon = 'pistol'
         self.gold = 0
@@ -84,8 +85,13 @@ class Player:
         self.skill_active_cd = {}
         self.water_boost_until = 0
         self.water_haste_until = 0
+        self.swift_field_until = 0
+        self.fire_shield_until = 0
+        self.fire_shield_hits = 0
+        self.radiation_field_until = 0
         self.gift_speed_until = 0
         self.rage_until = 0
+        self.fire_speed_layers = {}
         self.snow_slow_until = 0
         self.niu_freeze_until = 0
         self.geyser_lift_until = 0
@@ -132,37 +138,57 @@ class Player:
         if now >= self.geyser_lift_until:
             self.geyser_lift_until = 0
 
+    def apply_fire_speed_buff(self, timer, now, duration):
+        previous = getattr(self, timer)
+        deadline = now + duration
+        if previous > now:
+            # The HUD uses the latest deadline; retain earlier layers for firing.
+            layers = [end for end in self.fire_speed_layers.get(timer, ()) if end > now]
+            layers.append(min(previous, deadline))
+            self.fire_speed_layers[timer] = layers
+        else:
+            self.fire_speed_layers.pop(timer, None)
+        setattr(self, timer, max(previous, deadline))
+
     def can_shoot(self, now, interval_multiplier=1):
-        if now < self.geyser_lift_until:
+        if now < max(self.geyser_lift_until, self.niu_freeze_until):
             return False
-        w = WEAPON_DEFS[self.current_weapon]
-        rate = w.fire_rate
-        upgrade_speed = 1 + 0.1 * self.weapon_upgrades.get('rifle', 0) if self.current_weapon == 'rifle' else 1
+        rate = WEAPON_DEFS[self.current_weapon].fire_rate
         if self.campaign:
             rate = config.CAMPAIGN_WEAPON_FIRE_RATES.get(self.current_weapon, rate)
-            boost = 1.30 if now < self.water_boost_until else 1.0
-            haste = 2.0 if now < self.gift_speed_until else 1.0
-            rate = round(rate / max(boost, haste))
-            if now < self.rage_until:
-                rate = min(rate, 120)
+        # Rage reaches its original solo fire rate, then stacks with other buffs.
+        rage_speed = max(1, rate / 120)
+        if self.campaign:
             if now < max(self.snow_slow_until, self.niu_slow_until):
                 rate = round(rate / getattr(self, 'hazard_slow', 0.8))
-            return now >= self.niu_freeze_until and now - self.last_shot_time >= math.ceil(rate / .70) * interval_multiplier / upgrade_speed
-        if now < getattr(self, 'water_boost_until', 0):
-            rate = int(rate / 2.0)
-        if now < getattr(self, 'water_haste_until', 0):
-            rate = int(rate * 2 / 3)
-        if now < getattr(self, 'gift_speed_until', 0):
-            rate = int(rate / 2.0)
-        if now < getattr(self, 'rage_until', 0):
-            rate = min(rate, 120)  # 终极狂暴：射击速度大幅提升（间隔极限 120ms）
-        if now < self.snow_slow_until:
-            rate *= 2
-        if now < self.niu_slow_until:
-            rate *= 2
-        if now < self.niu_freeze_until:
+        else:
+            if now < self.snow_slow_until:
+                rate *= 2
+            if now < self.niu_slow_until:
+                rate *= 2
+        delay = math.ceil(rate / .70) * interval_multiplier
+        if self.current_weapon == 'rifle':
+            delay /= 1 + 0.1 * self.weapon_upgrades.get('rifle', 0)
+        for timer, speed in (
+            ('water_boost_until', 1.30 if self.campaign else 2),
+            ('water_haste_until', 1.5),
+            ('gift_speed_until', 2),
+            ('swift_field_until', config.CHARACTER_FIELDS['water']['fire_rate']),
+            ('rage_until', rage_speed),
+        ):
+            if now < getattr(self, timer):
+                count = 1 + sum(now < end for end in self.fire_speed_layers.get(timer, ()))
+                delay *= speed ** -count
+        return now - self.last_shot_time >= delay
+
+    def damage_multiplier(self, now):
+        return config.CHARACTER_FIELDS['radiation']['damage'] if now < self.radiation_field_until else 1
+
+    def block_with_fire_shield(self, amount, now):
+        if amount <= 0 or now >= self.fire_shield_until or self.fire_shield_hits <= 0:
             return False
-        return now - self.last_shot_time >= math.ceil(rate / .70) * interval_multiplier / upgrade_speed
+        self.fire_shield_hits -= 1
+        return True
 
     def shoot(self, now):
         self.last_shot_time = now
@@ -270,6 +296,7 @@ class Enemy:
         self.last_burn_tick = 0
         self.burn_hits = 0
         self.burn_damage = False
+        self.burn_owner = None
         self.frozen = False
         self.frozen_until = 0
         self.snowflake_until = 0
@@ -281,6 +308,7 @@ class Enemy:
         self.slow_mult = 1.0
         self.infected = False
         self.infected_weapon = 'pistol'
+        self.infected_owner = None
         self.health_mult = edef.get('health_mult', 1.0)
         self.last_contact_damage_time = -1000
         self.last_attack_time = config.game_ticks() + random.randint(800, 2200)
@@ -331,7 +359,7 @@ class Enemy:
     def rect(self):
         return pygame.Rect(int(self.x - self.w // 2), int(self.y), self.w, self.h)
 
-    def update(self, target=None, *, speed_multiplier=1.0):
+    def update(self, target=None, *, speed_multiplier=1.0, field_frozen=False):
         now = config.game_ticks()
         if self.frozen:
             if now >= self.frozen_until:
@@ -343,9 +371,12 @@ class Enemy:
                 self.burning = False
                 self.burn_damage = False
             elif self.burn_damage and self.y + self.h > 0 and now - self.last_burn_tick >= 500:
-                self.burn_hits += 0.5 if self.y < self.ENTRY_END_Y else 1
+                multiplier = self.burn_owner.damage_multiplier(now) if self.burn_owner else 1
+                self.burn_hits += (0.5 if self.y < self.ENTRY_END_Y else 1) * multiplier
                 self._clamp_factory_health()
                 self.last_burn_tick = now
+        if field_frozen:
+            return
         move_mult = self.slow_mult if now < self.slowed_until else 1.0
         if move_mult == 1.0:
             self.slow_mult = 1.0

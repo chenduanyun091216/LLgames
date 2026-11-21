@@ -12,6 +12,34 @@ function aimed(world, x, y) {
 }
 
 export const bubbleColors = ['sky-blue', 'lavender', 'amber', 'rose', 'mint', 'gold', 'indigo', 'orchid'];
+export const orochiSideWarning = 900;
+
+export function orochiSideHead(world, side) {
+    const size = Math.round(Math.min(96, world.width * .15, world.bottom * .18));
+    const x = Math.round(side < 0 ? size * .68 : world.width - size * .68);
+    const y = Math.round(world.bottom * .32);
+    return {x, y, size, mouthX: x - side * size * .08, mouthY: y + size * .19};
+}
+
+export function updateOrochiSideHead(world, boss) {
+    const interval = [20000, 15000, 10000][world.mode === 'endless' ? 1 : world.tier];
+    boss.sideHeadAt ??= world.started + interval;
+    if (world.time < boss.sideHeadAt) return;
+    if (!boss.sideHead) {
+        boss.sideHead = world.random() < .5 ? -1 : 1;
+        boss.sideHeadAt = world.time;
+    } else if (world.time >= boss.sideHeadAt + orochiSideWarning) {
+        const side = boss.sideHead;
+        const {mouthX, mouthY} = orochiSideHead(world, side);
+        for (const [index, angle] of [9, 19, 29, 39, 49, 59].entries()) {
+            const ice = index % 2;
+            world.shot(mouthX, mouthY, (90 + side * angle) * Math.PI / 180, 5.4, null,
+                {r: ice ? 11 : 12, damage: ice ? 1 : 2, orochiOrb: ice ? 'ice' : 'fire'});
+        }
+        boss.sideHead = null;
+        boss.sideHeadAt += interval;
+    }
+}
 
 export function attack(world, boss, pattern) {
     const {width, bottom, tier} = world;
@@ -112,17 +140,27 @@ export function attack(world, boss, pattern) {
             fan(3, .39, 3.8, 'fisher_grenade', {r: 25, homing: .019, blast: 55, damage: 2}, 300);
             return ['追踪炸弹', 1300];
         case 1:
-            for (let i = 0; i < 4; i++) fan(1, 0, 5, 'whale_tidal_crescent', {r: 27}, 300 + i * 210, x, mouth, aimed(world, x, mouth));
+            for (let i = 0; i < 4; i++) fan(1, 0, 7, 'whale_tidal_crescent', {r: 38}, 300 + i * 210, x, mouth, aimed(world, x, mouth));
             return ['月牙连斩', 1400];
-        case 2:
-            world.slowUntil = world.time + 3000;
+        case 2: {
+            const duration = [3000, 4000, 5000][tier];
+            world.slowUntil = world.time + duration;
             for (let i = 0; i < 3; i++) fan(5, 1.1, 2.8, 'bubble_crab', {}, i * 500);
-            return ['暴雪', 3000];
-        default:
-            boss.fusionUntil = world.time + [2000, 2500, 3000][tier];
-            if (boss.hp > boss.maxHp * .55) boss.shieldUntil = boss.fusionUntil;
-            else fan(8, 1.05, 4.5, 'orochi_fireball', {r: 22, damage: 2}, 600);
+            return ['暴雪', duration];
+        }
+        default: {
+            const duration = [2000, 2500, 3000][tier];
+            boss.fusionUntil = world.time + duration;
+            if (boss.hp > boss.maxHp * .55) {
+                boss.shieldUntil = boss.fusionUntil;
+                world.later(duration, () => {
+                    const bodyMaxHp = boss.maxHp / 2;
+                    boss.bodyHp = boss.bodyHp.map(hp => Math.min(bodyMaxHp, hp + bodyMaxHp * .15));
+                    boss.hp = boss.bodyHp[0] + boss.bodyHp[1];
+                });
+            } else fan(8, 1.05, 4.5, 'orochi_fireball', {r: 22, damage: 2}, 600);
             return ['合体强化', 2900];
+        }
         }
     case 9:
         switch (pattern % 4) {
@@ -171,10 +209,12 @@ export function attack(world, boss, pattern) {
         case 2:
             fan(3, Math.PI * 24 / 180, 24, 'whale_ancient_pearl', {r: 25, bounces: 4, damage: 2}, 350);
             return ['圣珠齐射', 2700];
-        default:
+        default: {
             boss.destination = {x: width / 2, y: 115};
-            boss.pull = {until: world.time + 5000, hp: boss.hp - boss.maxHp * .20};
+            const damage = Math.min(boss.maxHp * .20, world.data.CAMPAIGN_WHALE_INTERRUPT_CAP[tier]);
+            boss.pull = {until: world.time + 5000, hp: Math.max(0, boss.hp - damage)};
             return ['巨鲸吸附 · 集火打断', 5000];
+        }
         }
     case 11:
         return trenchAttack(world, boss, pattern);

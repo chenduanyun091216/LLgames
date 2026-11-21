@@ -109,6 +109,7 @@ class OnlineGame(Game):
         self._inputs = {1: (0., 0., False), 2: (0., 0., False)}
         weapons, characters = self.player.owned_weapons, self.player.owned_characters
         weapon_upgrades = self.player.weapon_upgrades
+        character_upgrades = self.player.character_upgrades
         hp = self.max_player_hp if self.infinite_mode else (6, 5, 4)[self._campaign_tier()]
         for slot, player in enumerate(self._all_players, 1):
             player.slot = slot
@@ -122,6 +123,7 @@ class OnlineGame(Game):
             player.hazard_slow = (0.85, 0.80, 0.75)[self._campaign_tier()]
             player.owned_weapons, player.owned_characters = weapons, characters
             player.weapon_upgrades = weapon_upgrades
+            player.character_upgrades = character_upgrades
             player.x, player.y = self.world_size[0] / 2 + (slot - 1.5) * 180, config.GAME_AREA_BOTTOM - 14
         self._legacy_sync()
 
@@ -318,7 +320,7 @@ class OnlineGame(Game):
         if self._suppress_damage:
             return False
         p = self._damage_target or self._focus or self.player
-        if not p.alive or now < p.invincible_until:
+        if not p.alive or now < p.invincible_until or p.block_with_fire_shield(amount, now):
             return False
         p.hp = max(0, p.hp - amount)
         if amount > 0:
@@ -348,7 +350,11 @@ class OnlineGame(Game):
         return False
 
     def _defeat_players_by_suction(self, now):
+        origins = dict(self.boss.swallow_origins)
         for player in tuple(self.players):
+            if player.block_with_fire_shield(player.hp, now):
+                player.x, player.y = origins.get(player, (player.x, player.y))
+                continue
             with self._for_player(player):
                 player.invincible_until = min(player.invincible_until, now)
                 self._damage_player(now, player.hp, '被远古巨鲸吸入！')
@@ -506,13 +512,13 @@ class OnlineGame(Game):
                 age = boss.age(now)
                 strike = boss.hazard_strike(age)
                 if boss.hazard_hits(player.rect(), age):
-                    self._area_damage(player, ('orochi', now - age, boss.skill, strike), now, 2,
+                    self._area_damage(player, ('orochi', now - age - self._ice_phase_offset, boss.skill, strike), now, 2,
                                       f'被{boss.name}击败！')
             elif isinstance(boss, core_game.NiuBoss):
                 slam = boss.axe_slam_rect(now)
                 if slam is not None and slam.colliderect(player.rect()):
                     strike = (now - boss.axe_slam_start) // boss.AXE_SLAM_CYCLE_MS
-                    self._area_damage(player, ('axe', boss.axe_slam_start, strike), now, 1,
+                    self._area_damage(player, ('axe', boss.axe_slam_start - self._ice_phase_offset, strike), now, 1,
                                       '被牛魔王的巨斧击败！')
                 if lightning_due and any(r.colliderect(player.rect()) for r in boss.lightning_rects(now)):
                     self._area_damage(player, ('lightning', boss.lightning_next_tick), now,
@@ -634,6 +640,12 @@ class OnlineGame(Game):
         if not p.alive:
             return '阵亡玩家需要确认复活'
         if action == 'upgrade':
+            if key in config.CHARACTER_FIELDS:
+                if not p.shop_open or key not in p.owned_characters:
+                    return '请在商店选择已拥有角色'
+                with self._for_player(p):
+                    self._upgrade_character(key)
+                    return self.shop_notice
             if not p.shop_open or key not in p.owned_weapons:
                 return '请在商店选择已拥有武器'
             with self._for_player(p):
@@ -671,8 +683,11 @@ class OnlineGame(Game):
             return None if switch(key, p) else '切换冷却中或技能仍在持续'
         if self.state == GameState.LEVEL_TRANSITION or self.campaign_boss_intro_active():
             return '等待进入下一关'
-        if self.paused:
+        if self.paused and not (action == 'add_gold' and p.shop_open):
             return '等待开店玩家关闭商店后继续'
+        if action == 'add_gold':
+            self._add_shortcut_gold()
+            return None
         if action in ('skill1', 'skill2', 'laser', 'dart'):
             with self._for_player(p):
                 if action == 'laser':
@@ -705,7 +720,10 @@ class OnlineGame(Game):
                             'defeat_reason': self.defeat_reasons.get(p.slot, self.game_over_reason)})
         weapons = [{'key': k, 'name': d.name, 'price': self._weapon_cost(k), 'owned': k in self.player.owned_weapons} for k, d in config.WEAPON_DEFS.items()]
         characters = [{'key': 'fisher', 'name': '渔夫', 'price': 0, 'owned': True}]
-        characters += [{'key': k, 'name': d.name, 'price': self._character_cost(d), 'owned': k in self.player.owned_characters} for k, d in config.CHARACTER_DEFS.items()]
+        characters += [{'key': k, 'name': d.name, 'price': self._character_cost(d),
+                        'owned': k in self.player.owned_characters,
+                        'upgrade_level': self.player.character_upgrades.get(k, 0),
+                        'upgrade_cost': self._character_upgrade_cost(k)} for k, d in config.CHARACTER_DEFS.items()]
         stage = {GameState.LEVEL_TRANSITION: 'transition', GameState.BOSS_FIGHT: 'boss'}.get(self.state, self.phase)
         return {'tick': self.tick, 'phase': self.phase, 'paused': self.paused,
                 'orientation': self.orientation, 'world_size': list(self.world_size),

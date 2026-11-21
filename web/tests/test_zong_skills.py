@@ -31,11 +31,46 @@ class ZongSkillsTests(unittest.TestCase):
         self.assertTrue(boss.should_attack(4000))
         with patch('game_core.entities.random.choice', return_value='snow'):
             self.assertEqual(boss.attack(4000, 200), [])
-        self.assertEqual(boss.snow_until, 7000)
+        self.assertEqual(boss.snow_until, 8000)
         self.assertFalse(boss.should_attack(4001))
-        with patch('game_core.config.game_ticks', return_value=7001):
+        with patch('game_core.config.game_ticks', return_value=8001):
             boss.update()
-            self.assertEqual(boss.snow_until, 7000)
+            self.assertEqual(boss.snow_until, 8000)
+
+    def test_opening_and_rage_snow_use_difficulty_durations(self):
+        for tier, duration in enumerate((3000, 4000, 5000)):
+            with self.subTest(tier=tier):
+                boss = self.make_boss()
+                boss.bdef['campaign_tier'] = tier
+                with patch.object(boss, '_choose_attack_skill', return_value='snow'):
+                    boss.attack(4000, 200)
+                self.assertEqual(boss.snow_until, 4000 + duration)
+                boss.next_fusion_time = 10000
+                boss.fusion_warning_mode = 'rage'
+                with patch('game_core.config.game_ticks', return_value=10000), \
+                        patch('game_core.special_bosses.random.random', return_value=0):
+                    boss.update()
+                self.assertEqual(boss.snow_until, 10000 + duration)
+
+    def test_only_shield_fusion_heals_each_body_once_up_to_its_maximum(self):
+        for mode in ('shield', 'rage'):
+            with self.subTest(mode=mode):
+                boss = self.make_boss()
+                body_max = boss.max_hp / 2
+                boss.body_hp = [body_max * .5, body_max * .9]
+                boss.hp = sum(boss.body_hp)
+                boss.fusion_mode = mode
+                boss.fusion_until = 10000
+                with patch('game_core.config.game_ticks', return_value=9999):
+                    boss.update()
+                self.assertAlmostEqual(boss.hp, body_max * 1.4)
+                for now in (10000, 10001):
+                    with patch('game_core.config.game_ticks', return_value=now):
+                        boss.update()
+                    fractions = (.65, 1) if mode == 'shield' else (.5, .9)
+                    for hp, fraction in zip(boss.body_hp, fractions):
+                        self.assertAlmostEqual(hp, body_max * fraction)
+                    self.assertAlmostEqual(boss.hp, sum(boss.body_hp))
 
     def test_snow_composites_only_visible_effect_tiles(self):
         size = (960, 540)
@@ -85,7 +120,8 @@ class ZongSkillsTests(unittest.TestCase):
             self.assertEqual(len(boss.crescent_projectiles), count)
         shots = boss.crescent_projectiles
         width_scale = (config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT) / 480
-        self.assertTrue(all(0 < shot.r < 25 * width_scale for shot in shots))
+        self.assertTrue(all(shot.r == round(round(42 * width_scale) * .65) for shot in shots))
+        self.assertTrue(all(shot.speed == 12 for shot in shots))
         self.assertGreater(shots[0].angle, 0)
         self.assertAlmostEqual(shots[1].angle, 0)
         self.assertLess(shots[2].angle, 0)

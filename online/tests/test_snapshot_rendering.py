@@ -306,6 +306,31 @@ class SnapshotTests(unittest.TestCase):
             config.campaign_time_ms=now
             p.apply(encode_world(g));self.assert_boss_pixels(g,p)
 
+    def test_orochi_side_head_and_orbs_round_trip(self):
+        self.addCleanup(setattr, config, 'campaign_time_ms', config.campaign_time_ms)
+        g = self.campaign_boss(12)
+        p = Presentation(pygame.Surface((960, 720)))
+        boss = g.boss
+        config.campaign_time_ms = boss.side_head_at
+        boss.update()
+        p.apply(json.loads(json.dumps(encode_world(g))))
+        self.assertEqual(p.view.boss.side_head, boss.side_head)
+        self.assertIn(boss.side_head, (-1, 1))
+        self.assert_boss_pixels(g, p)
+
+        config.campaign_time_ms += boss.SIDE_WARNING
+        boss.update()
+        g._update_special_boss_hazards(config.game_ticks())
+        p.apply(json.loads(json.dumps(encode_world(g))))
+        self.assertIsNone(p.view.boss.side_head)
+        self.assertEqual([shot.ice for shot in p.view.boss_projectiles], [False, True] * 3)
+        for source, restored in zip(g.boss_projectiles, p.view.boss_projectiles):
+            expected = pygame.Surface((960, 720), pygame.SRCALPHA)
+            actual = expected.copy()
+            source.draw(expected)
+            restored.draw(actual)
+            self.assertEqual(pygame.image.tobytes(actual, 'RGBA'), pygame.image.tobytes(expected, 'RGBA'))
+
     def test_optional_fields_disappear_and_background_music_follow_level(self):
         g=self.campaign_boss(1);p=Presentation(pygame.Surface((960,720)))
         g.boss.animation_attack_at=100

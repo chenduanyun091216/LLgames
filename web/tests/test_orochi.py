@@ -8,7 +8,7 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 from game_core import config
 from game_core.game import Game, GameState
-from game_core.orochi import OrochiBoss
+from game_core.orochi import OrochiBoss, OrochiSideOrb
 
 
 class OrochiTests(unittest.TestCase):
@@ -49,6 +49,52 @@ class OrochiTests(unittest.TestCase):
             self.assertEqual(shot.color, self.boss.FIRE_COLORS[i % 2])
             self.tick(i * 200 + 199)
             self.assertEqual(len(self.boss.shots), i + 1)
+
+    def test_side_head_appears_on_difficulty_cadence_and_fires_one_mirrored_fan(self):
+        for difficulty, interval in (('easy', 20000), ('medium', 15000), ('hard', 10000)):
+            with self.subTest(difficulty=difficulty):
+                config.campaign_time_ms = 1000
+                self.game.difficulty = config.DIFFICULTY_PRESETS[difficulty]
+                self.game._start_level(12)
+                self.game._trigger_boss()
+                self.boss = self.game.boss
+                self.boss.y, self.boss.entered = 60, True
+                self.tick(interval - 1)
+                self.assertIsNone(self.boss.side_head)
+                with patch('game_core.orochi.random.choice', side_effect=(-1, 1)) as choose:
+                    for start, side in ((interval, -1), (interval * 2, 1)):
+                        self.tick(start)
+                        self.assertEqual(self.boss.side_head, side)
+                        self.tick(start + 899)
+                        self.assertFalse(self.boss.shots)
+                        self.tick(start + 900)
+                        self.assertIsNone(self.boss.side_head)
+                        shots = self.boss.shots
+                        self.assertEqual([shot.ice for shot in shots], [False, True] * 3)
+                        mouth = self.boss._side_mouth(self.boss._side_head_rect(side), side)
+                        self.assertTrue(all((shot.x, shot.y) == mouth for shot in shots))
+                        self.assertEqual([shot.angle for shot in shots], [-side * a for a in (9, 19, 29, 39, 49, 59)])
+                        shots.clear()
+                        self.tick(start + 901)
+                        self.assertFalse(shots)
+                    self.assertEqual(choose.call_count, 2)
+
+    def test_side_ice_orb_freezes_the_player_and_boss_death_stops_the_warning(self):
+        game, boss = self.game, self.boss
+        game.player_invincible_until = 0
+        game.player_hp = 5
+        x, y = game.player.rect().center
+        game.boss_projectiles = [OrochiSideOrb(x, y, 0, ice=True)]
+        game._update_boss_fight(1000)
+        self.assertEqual(game.player_hp, 4)
+        self.assertEqual(game.player.niu_freeze_until, 3000)
+
+        self.tick(15000)
+        self.assertIsNotNone(boss.side_head)
+        boss._start_death(16000)
+        self.tick(15900)
+        self.assertIsNone(boss.side_head)
+        self.assertFalse(boss.shots)
 
     def test_eight_paired_impacts(self):
         self.start('slam')
@@ -295,9 +341,9 @@ class OrochiTests(unittest.TestCase):
         self.assertIsInstance(self.game.boss, OrochiBoss)
         self.assertFalse(self.game.enemies)
 
-    def test_shift_equals_opens_orochi_from_campaign(self):
+    def test_shift_right_bracket_opens_orochi_from_campaign(self):
         self.game._start_level(11)
-        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_EQUALS, mod=pygame.KMOD_SHIFT)
+        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHTBRACKET, mod=pygame.KMOD_SHIFT)
         self.game.handle_events([event])
         self.assertEqual(self.game.current_level, 12)
         self.assertIsNone(self.game.boss)
@@ -422,7 +468,7 @@ class OrochiTests(unittest.TestCase):
         game = self.game
         game._start_infinite_game()
         for key, chapter, boss in ((pygame.K_0, 12, 'boss_orochi'),
-                                   (pygame.K_EQUALS, 11, 'boss_shieldfish'),
+                                   (pygame.K_RIGHTBRACKET, 11, 'boss_shieldfish'),
                                    (pygame.K_9, 9, 'boss_mecha_lizard'),
                                    (pygame.K_MINUS, 10, 'boss_ancient_whale')):
             with self.subTest(chapter=chapter):

@@ -1,6 +1,7 @@
 import {cannonMuzzle, trenchFrame, trenchSpireHeight} from './trench.js';
 import {bossBoxes, STEP, zoneX} from './battle.js';
-import {bubbleColors, railShape, tentacleShape} from './bosses.js';
+import {bubbleColors, orochiSideHead, orochiSideWarning, railShape, tentacleShape} from './bosses.js';
+import {drawCharacterFields} from './character-fields.js';
 
 const weaponArt = {pistol: 'pistol', rifle: 'rifle', shotgun: 'shortgun', sniper: 'awm'};
 export const weaponImage = (id, group = 'weapons') => group + '/weapon_' + weaponArt[id];
@@ -45,7 +46,8 @@ export class OceanScene extends Phaser.Scene {
             (world.level === 11 && key.startsWith('backgrounds/trench-boss-')) ||
             key === 'bosses/' + (world.level === 8 ? 'zongzong' : boss) ||
             (world.stage.enemy_pool.includes('zongzong') && key === 'bosses/zongzong') ||
-            (boss === 'boss_orochi' && key === 'animations/bosses/anim_boss_orochi_split') ||
+            (boss === 'boss_orochi' && ['animations/bosses/anim_boss_orochi_split',
+                'animations/bosses/boss_orochi_laser'].includes(key)) ||
             (boss === 'boss_niu' && key.startsWith(niuArt)) ||
             key === bossAnimation(boss, world.level) ||
             key.startsWith('players/') || /^animations\/players\/anim_.+_(idle|run|attack)$/.test(key) ||
@@ -163,7 +165,7 @@ export class OceanScene extends Phaser.Scene {
         }
         if (event.type === 'boss') this.playMusic('music-' + this.world.level + '-boss');
         if (event.type === 'clear') this.playMusic(null);
-        if (event.type === 'gift') this.hooks.notice(event.name);
+        if (event.type === 'gift' || event.type === 'field') this.hooks.notice(event.name);
         if (event.type === 'noAmmo') this.hooks.notice('金币不足，已切回手枪');
         if (event.x == null) return;
         const amount = event.type === 'clear' ? 36 : event.type === 'pop' ? 12 : 4;
@@ -215,8 +217,12 @@ export class OceanScene extends Phaser.Scene {
         this.drawPlayer(w, p, t);
         if (trenchBoss) this.drawTrenchCannonCharge(w, t);
         this.drawIceStatus(p, w.freezeUntil, t);
-        for (const e of w.enemies) this.drawEnemy(e, t);
-        if (w.boss) this.drawBoss(w.boss, t);
+        for (const e of w.enemies) this.drawEnemy(e, t, w.enemyFreezeUntil);
+        if (w.boss) {
+            this.drawBoss(w.boss, t);
+            for (const box of bossBoxes(w.boss, t)) this.drawIceStatus(box, w.enemyFreezeUntil, t);
+        }
+        if (w.boss?.sideHead) this.drawOrochiSideHead(w, t);
         for (const b of w.bullets) {
             const color = fxColors[b.element] ?? bulletColors[b.weapon];
             if (b.guided) {
@@ -248,6 +254,14 @@ export class OceanScene extends Phaser.Scene {
             this.effects.fillStyle(0xffffe3, .95).fillCircle(b.x, b.y, 2.5);
         }
         for (const s of w.shots) {
+            if (s.orochiOrb) {
+                const color = fxColors[s.orochiOrb];
+                const core = s.orochiOrb === 'ice' ? 0xeafdff : 0xffe897;
+                this.effects.fillStyle(color, .3).fillCircle(s.x, s.y, s.r + 6);
+                this.effects.fillStyle(color).fillCircle(s.x, s.y, s.r);
+                this.effects.fillStyle(core).fillCircle(s.x, s.y, s.r - 4);
+                continue;
+            }
             if (s.fossil) {
                 const dx = Math.cos(s.angle) * s.r, dy = Math.sin(s.angle) * s.r;
                 const reach = s.fossil === 'bone' ? 1.65 : 1;
@@ -284,6 +298,7 @@ export class OceanScene extends Phaser.Scene {
             const age = (this.time.now - q.born) / 1000;
             this.effects.fillStyle(q.color, Math.max(0, 1 - age * 2)).fillCircle(q.x + q.vx * age, q.y + q.vy * age, 2 + 2 * (1 - age));
         }
+        drawCharacterFields(this, w);
         for (const [id, object] of this.objects) {
             if (!this.live.has(id)) { object.destroy(); this.objects.delete(id); }
         }
@@ -302,7 +317,8 @@ export class OceanScene extends Phaser.Scene {
             .setDisplaySize(30 * world.view.entityScale, 24 * world.view.entityScale).setAngle(-78);
     }
 
-    drawEnemy(e, t) {
+    drawEnemy(e, t, iceFieldUntil) {
+        const frozenUntil = Math.max(e.frozenUntil ?? 0, iceFieldUntil);
         let key = 'enemies/enemy_' + e.kind, frame = '__BASE';
         if (e.kind === 'zongzong') key = 'bosses/zongzong';
         const action = 'animations/enemies/enemy_' + e.kind + '_action';
@@ -311,7 +327,7 @@ export class OceanScene extends Phaser.Scene {
         if (e.kind.startsWith('trench_')) {
             const loop = 'animations/enemies/anim_enemy_' + e.kind;
             const casting = e.castingUntil > t;
-            const pose = this.animated(loop, e.frozenUntil > t ? 0 : t - e.born, casting ? 68 : 115);
+            const pose = this.animated(loop, frozenUntil > t ? 0 : t - e.born, casting ? 68 : 115);
             if (pose !== null) { key = loop; frame = pose; }
             if (casting) this.effects.lineStyle(2, 0xf6c060, .8).strokeCircle(e.x, e.y + e.h * .22, e.w * .22);
         }
@@ -325,8 +341,8 @@ export class OceanScene extends Phaser.Scene {
         }
         const sprite = this.sprite(e.id, key, e.x, e.y, e.w, e.h, 2, frame);
         if (!sprite) return;
-        sprite.setTint(e.hitAt > t - 130 ? 0xffbdb4 : e.frozenUntil > t ? 0x89e9ff : e.tint ?? 0xffffff);
-        this.drawIceStatus(e, e.frozenUntil, t);
+        sprite.setTint(e.hitAt > t - 130 ? 0xffbdb4 : frozenUntil > t ? 0x89e9ff : e.tint ?? 0xffffff);
+        this.drawIceStatus(e, frozenUntil, t);
         if (e.hp < e.maxHp || e.kind === 'ancient_rift') {
             this.effects.fillStyle(0x071824, .85).fillRect(e.x - e.w * .36, e.y - e.h / 2 - 4, e.w * .72, 4);
             this.effects.fillStyle(0xffa060, 1).fillRect(e.x - e.w * .36, e.y - e.h / 2 - 4, e.w * .72 * e.hp / e.maxHp, 3);
@@ -382,6 +398,18 @@ export class OceanScene extends Phaser.Scene {
                 this.effects.fillStyle(color, .24).fillCircle(x, y, radius * (1 + .55 * pulse));
             }
         }
+    }
+
+    drawOrochiSideHead(world, time) {
+        const {sideHead, sideHeadAt} = world.boss;
+        const {x, y, size, mouthX, mouthY} = orochiSideHead(world, sideHead);
+        this.sprite('orochi-side-head', 'animations/bosses/boss_orochi_laser', x, y, size, size, 3)
+            ?.setAngle(sideHead * 24);
+        const charge = Math.min(1, Math.max(0, (time - sideHeadAt) / orochiSideWarning));
+        const radius = size * (.11 + charge * .14);
+        this.effects.fillStyle(fxColors.fire, .55).fillCircle(mouthX - radius * .42, mouthY, radius);
+        this.effects.fillStyle(fxColors.ice, .55).fillCircle(mouthX + radius * .42, mouthY, radius);
+        this.effects.lineStyle(2, 0xffeec9, .9).strokeCircle(mouthX, mouthY, radius);
     }
 
     drawBoss(b, t) {

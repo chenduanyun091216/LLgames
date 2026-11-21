@@ -102,13 +102,32 @@ function renderCatalog(s,me) {
     const items=s.catalog?.[group]||[];
     for(const [key,value] of (Array.isArray(items)?items.map(i=>[i.key,i]):Object.entries(items))) {
       const row=document.createElement('div');row.className='row'; const button=document.createElement('button');
-      button.textContent=`${value.name||key} · ${value.owned?'已拥有':`${value.price} 金币`}`;button.dataset.action=action;button.dataset.key=key;row.append(button);target.append(row);
+      button.textContent=`${value.name||key}${value.upgrade_level ? ` Lv.${value.upgrade_level}` : ''} · ${value.owned?'已拥有':`${value.price} 金币`}`;
+      button.dataset.action=action;button.dataset.key=key;row.append(button);
+      if(value.upgrade_cost!=null){
+        const upgrade=document.createElement('button');
+        upgrade.textContent=`加强 ${value.upgrade_cost}`;upgrade.dataset.action='upgrade';upgrade.dataset.key=key;
+        row.append(upgrade);
+      }
+      target.append(row);
     }
   }
 }
 const movement=new Set(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space']);
 const actions={KeyQ:'skill1',KeyE:'skill2',KeyR:'laser',KeyF:'dart',KeyB:'shop_open'};
-addEventListener('keydown',e=>{if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if(movement.has(e.code)){e.preventDefault();held.add(e.code);}if(actions[e.code]&&!e.repeat){e.preventDefault();sendAction(actions[e.code]);}});
+addEventListener('keydown',e=>{
+  if(/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;
+  if(e.shiftKey&&!e.ctrlKey&&!e.altKey&&!e.metaKey&&(e.key==='+'||e.code==='Equal'||e.code==='NumpadAdd')&&combatAvailable()){
+    const player=state.players.find(p=>p.slot===bridge.slot);
+    if(player?.alive&&(!state.paused||player.shop_open)){
+      e.preventDefault();
+      if(!e.repeat)bridge.action('add_gold');
+    }
+    return;
+  }
+  if(movement.has(e.code)){e.preventDefault();held.add(e.code);}
+  if(actions[e.code]&&!e.repeat){e.preventDefault();sendAction(actions[e.code]);}
+});
 addEventListener('keyup',e=>held.delete(e.code));addEventListener('blur',clearInput);document.addEventListener('visibilitychange',()=>{clearInput();bridge.reportOrientation();if(connected)bridge.action(document.hidden||!rendererReady?'suspend':'resume');});
 $('shoot').addEventListener('pointerdown',e=>{e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);pointerHeld.add(e.pointerId);});
 for(const type of ['pointerup','pointercancel','lostpointercapture'])$('shoot').addEventListener(type,e=>pointerHeld.delete(e.pointerId));
