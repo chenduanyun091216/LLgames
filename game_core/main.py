@@ -66,12 +66,19 @@ async def main(transport=None):
         if show_resolutions:
             show_resolutions(*(value for q in BROWSER_QUALITIES for value in _browser_size(viewport, q)))
     else:
-        try:
-            window_size = pygame.display.get_desktop_sizes()[0]
-        except (pygame.error, IndexError):
-            window_size = (960, 720)
+        window_size = (960, 720)
     window = pygame.display.set_mode(window_size, pygame.RESIZABLE)
     pygame.display.set_caption('海洋生物入侵 - Ocean Invaders')
+    native_window = None
+    fullscreen = False
+    if browser_window is None:
+        from pygame._sdl2 import Window
+        # Let the window manager fit the frame to the usable desktop area.
+        native_window = Window.from_display_module()
+        native_window.title = '海洋生物入侵 - Ocean Invaders · F11 全屏/窗口'
+        native_window.maximize()
+        pygame.event.pump()
+        pygame.key.stop_text_input()
     config.update_mobile_view(window.get_size(), viewport)
 
     from .game import Game, GameState
@@ -143,6 +150,17 @@ async def main(transport=None):
         previous_area = (config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT, config.GAME_AREA_BOTTOM)
         resized = False
         events = pygame.event.get()
+        if native_window is not None:
+            for event in events:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_F11 and not getattr(event, 'repeat', False):
+                    if fullscreen:
+                        native_window.set_windowed()
+                    else:
+                        native_window.set_fullscreen(desktop=True)
+                    fullscreen = not fullscreen
+                    pygame.event.pump()
+                    resized = True
+            events = [event for event in events if not (event.type == pygame.KEYDOWN and event.key == pygame.K_F11)]
         if browser_window is not None:
             hd_assets = quality != 1.5
             if hd_assets != asset_loader.web_hd_assets:
@@ -163,7 +181,8 @@ async def main(transport=None):
                         show_resolutions(*(value for q in BROWSER_QUALITIES for value in _browser_size(viewport, q)))
                     game.resize_view(previous_area)
                 resized = True
-        elif any(event.type in resize_events for event in events):
+        elif resized or any(event.type in resize_events for event in events):
+            window_size = window.get_size()
             config.update_mobile_view(window.get_size())
             game.resize_view(previous_area)
             resized = True
@@ -228,6 +247,8 @@ async def main(transport=None):
                 accumulator = 0.0
                 if not hidden and game.state == GameState.INFINITE_COUNTDOWN:
                     game.update()
+        if game.state == GameState.MENU:
+            start_music()
         if game.state in cutscene_states:
             if game.state == GameState.OPENING:
                 game.draw_opening(window)

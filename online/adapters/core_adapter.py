@@ -462,7 +462,8 @@ class OnlineGame(Game):
             self._signature_hits[p.slot] = (signature.last_hit, signature.trident_hits)
             if hit:
                 self._damage_target = p
-                damage = p.hp if signature.key == 'boss' else min(signature.damage, self.boss.bdef.get('damage_cap', 2))
+                damage = (self._boss_skill_damage('abyss_rush') if signature.key == 'boss'
+                          else min(signature.damage, self.boss.bdef.get('damage_cap', 2)))
                 core_game.play_sound('hit')
                 self._damage_player(now, damage, f'被{signature.name}击败！')
         self._damage_target = None
@@ -512,14 +513,15 @@ class OnlineGame(Game):
                 age = boss.age(now)
                 strike = boss.hazard_strike(age)
                 if boss.hazard_hits(player.rect(), age):
-                    self._area_damage(player, ('orochi', now - age - self._ice_phase_offset, boss.skill, strike), now, 2,
+                    self._area_damage(player, ('orochi', now - age - self._ice_phase_offset, boss.skill, strike), now,
+                                      self._boss_skill_damage('orochi_hazard'),
                                       f'被{boss.name}击败！')
             elif isinstance(boss, core_game.NiuBoss):
                 slam = boss.axe_slam_rect(now)
                 if slam is not None and slam.colliderect(player.rect()):
                     strike = (now - boss.axe_slam_start) // boss.AXE_SLAM_CYCLE_MS
-                    self._area_damage(player, ('axe', boss.axe_slam_start - self._ice_phase_offset, strike), now, 1,
-                                      '被牛魔王的巨斧击败！')
+                    self._area_damage(player, ('axe', boss.axe_slam_start - self._ice_phase_offset, strike), now,
+                                      self._boss_skill_damage('niu_slam'), '被牛魔王的巨斧击败！')
                 if lightning_due and any(r.colliderect(player.rect()) for r in boss.lightning_rects(now)):
                     self._area_damage(player, ('lightning', boss.lightning_next_tick), now,
                                       min(2, boss.bdef.get('damage_cap', 2)), '被牛魔王的雷电击败！')

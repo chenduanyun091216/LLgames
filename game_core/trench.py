@@ -17,7 +17,7 @@ def wave_key(index):
     return config.TRENCH_WAVES[index // 4 % 3][index % 4]
 
 
-def enemy_shots(enemy, target, now):
+def enemy_shots(enemy, target, now, tier=1):
     delay, speed, aimed = config.TRENCH_ATTACKS[enemy.edef['key']]
     enemy.last_attack_time = now
     enemy.attack_interval = random.randint(enemy.attack_interval_min, enemy.attack_interval_max)
@@ -25,7 +25,7 @@ def enemy_shots(enemy, target, now):
     dx, dy = target.rect().centerx - x, target.rect().centery - y
     angle = math.degrees(math.atan2(dx, dy)) if aimed else 0
     shots = []
-    for offset in (-24, -8, 8, 24):
+    for offset in config.TRENCH_FAN_ANGLES[tier]:
         shot = AbyssProjectile('pearl_fragment', x, y, angle=angle + offset,
                                speed=speed, warning_ms=delay, active_ms=3600, scale=enemy.size_scale)
         shot.spawn_time = shot.last_update = now

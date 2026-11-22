@@ -70,6 +70,7 @@ class Player:
         self.weapon_upgrades = {}
         self.character_upgrades = {}
         self.sniper_shots = 0
+        self.sniper_haste_until = 0
         self.current_weapon = 'pistol'
         self.gold = 0
         self.last_shot_time = 0
@@ -111,17 +112,41 @@ class Player:
         w, h = (max(1, round(size * scale)) for size in self.SIZE)
         return pygame.Rect(self.x - w // 2, self.y - h // 2, w, h)
 
-    def bottom_limit(self):
-        return config.SCREEN_HEIGHT - (self.rect().h + 1) // 2 - 8
+    def _sprite_name(self):
+        return ('player_' + self.character if self.character else
+                self.sprite_asset.rsplit('/', 1)[-1].removesuffix('.png'))
 
-    def move(self, dx, dy=0):
+    def _prepare_breath_base(self):
+        if self.breath_base is not None and self._breath_src is self.surface:
+            return
+        sw, sh = self.surface.get_size()
+        asset = _CHAR_ASSETS.get(self.character, self.sprite_asset)
+        hi = image_asset_supersampled(asset, (sw, sh), 1.5)
+        self.breath_base = hi if hi is not None else scale_surface_cached(
+            self.surface, (int(sw * 1.3), int(sh * 1.3)))
+        self._breath_src = self.surface
+        reference = animation.frame(self._sprite_name() + '_back', 0) or self.breath_base
+        self._sprite_bottom_ratio = max(
+            sprite.get_bounding_rect().bottom / sprite.get_height()
+            for sprite in (reference, self.breath_base))
+
+    def bottom_limit(self, visual_scale=config.ACTOR_BASE_SCALE):
+        self._prepare_breath_base()
+        # Reserve room for the full breathing cycle so the movement boundary stays fixed.
+        sprite_height = round(self.breath_base.get_height() * _mobile_entity_scale() * visual_scale)
+        # The lit sprite extends up to three pixels beyond the artwork.
+        sprite_bottom = math.ceil(sprite_height * self._sprite_bottom_ratio) - sprite_height // 2 + 3
+        return config.SCREEN_HEIGHT - config.PLAYER_BOTTOM_MARGIN - max(
+            sprite_bottom, (self.rect().h + 1) // 2)
+
+    def move(self, dx, dy=0, *, visual_scale=config.ACTOR_BASE_SCALE):
         previous = (self.x, self.y)
         width = self.rect().w
         half_width = width // 2
         min_x = max(40, config.GAME_AREA_LEFT + half_width)
         max_x = min(config.SCREEN_WIDTH - 40, config.GAME_AREA_RIGHT - (width + 1) // 2)
         self.x = max(min_x, min(max_x, self.x + dx))
-        self.y = max(80, min(self.bottom_limit(), self.y + dy))
+        self.y = max(80, min(self.bottom_limit(visual_scale), self.y + dy))
         self.animation_moving = (self.x, self.y) != previous
         if self.animation_moving:
             self.animation_move_at = config.game_ticks()
@@ -130,11 +155,12 @@ class Player:
         self.geyser_lift_until = now + self.GEYSER_LIFT_MS
         self.geyser_lift_y = self.y
 
-    def update_geyser_lift(self, now):
+    def update_geyser_lift(self, now, *, visual_scale=config.ACTOR_BASE_SCALE):
         if not self.geyser_lift_until:
             return
         progress = min(1, 1 - (self.geyser_lift_until - now) / self.GEYSER_LIFT_MS)
-        self.move(0, self.geyser_lift_y - 135 * (1 - (1 - progress) ** 2) - self.y)
+        self.move(0, self.geyser_lift_y - 135 * (1 - (1 - progress) ** 2) - self.y,
+                  visual_scale=visual_scale)
         if now >= self.geyser_lift_until:
             self.geyser_lift_until = 0
 
@@ -154,8 +180,6 @@ class Player:
         if now < max(self.geyser_lift_until, self.niu_freeze_until):
             return False
         rate = WEAPON_DEFS[self.current_weapon].fire_rate
-        if self.campaign:
-            rate = config.CAMPAIGN_WEAPON_FIRE_RATES.get(self.current_weapon, rate)
         # Rage reaches its original solo fire rate, then stacks with other buffs.
         rage_speed = max(1, rate / 120)
         if self.campaign:
@@ -168,12 +192,13 @@ class Player:
                 rate *= 2
         delay = math.ceil(rate / .70) * interval_multiplier
         if self.current_weapon == 'rifle':
-            delay /= 1 + 0.1 * self.weapon_upgrades.get('rifle', 0)
+            delay /= 1 + config.RIFLE_SPEED_PER_LEVEL * self.weapon_upgrades.get('rifle', 0)
         for timer, speed in (
             ('water_boost_until', 1.30 if self.campaign else 2),
             ('water_haste_until', 1.5),
             ('gift_speed_until', 2),
             ('swift_field_until', config.CHARACTER_FIELDS['water']['fire_rate']),
+            ('sniper_haste_until', 1.5),
             ('rage_until', rage_speed),
         ):
             if now < getattr(self, timer):
@@ -194,54 +219,54 @@ class Player:
         self.last_shot_time = now
         w = WEAPON_DEFS[self.current_weapon]
         if self.current_weapon == 'shotgun':
-            return [Bullet(self.x, self.y - 28, w, self.current_weapon, self.character, angle=a) for a in (-18, 0, 18)]
+            level = self.weapon_upgrades.get('shotgun', 0)
+            extra = level and random.random() < config.SHOTGUN_EXTRA_CHANCES[level - 1]
+            angles = (-18, -6, 6, 18) if extra else (-18, 0, 18)
+            shots = [Bullet(self.x, self.y - 28, w, self.current_weapon, self.character, angle=a) for a in angles]
+            if extra:
+                shots[0].color = shots[-1].color = (255, 230, 40)
+            return shots
         return [Bullet(self.x, self.y - 28, w, self.current_weapon, self.character)]
 
     def draw(self, surf, visual_scale=1, *, downed_age=None):
         now = config.game_ticks()
         size_scale = _mobile_entity_scale() * visual_scale
+        # An online snapshot can have been simulated at a different zoom.
+        y = min(self.y, self.bottom_limit(visual_scale))
         speed_active = now < getattr(self, 'gift_speed_until', 0)
         pulse = 1 + 0.12 * math.sin(now * 0.006 + self.x * 0.01)
         glow_r = int(42 * pulse * size_scale)
         if speed_active:
             # 极速 buff：金色能量脉冲光环 + 旋转星点（角色本体始终清晰，不做透明度闪断）
             sp = 1 + 0.15 * math.sin(now * 0.018)
-            _circle(surf, (255, 235, 130, 80), (int(self.x), int(self.y)), int((glow_r + 12 * size_scale) * sp), max(1, round(5 * size_scale)))
-            _circle(surf, (255, 190, 80, 45), (int(self.x), int(self.y)), int((glow_r + 20 * size_scale) * sp), max(1, round(2 * size_scale)))
+            _circle(surf, (255, 235, 130, 80), (int(self.x), int(y)), int((glow_r + 12 * size_scale) * sp), max(1, round(5 * size_scale)))
+            _circle(surf, (255, 190, 80, 45), (int(self.x), int(y)), int((glow_r + 20 * size_scale) * sp), max(1, round(2 * size_scale)))
             for i in range(8):
                 a = now * 0.012 + i * math.tau / 8
                 px = self.x + math.cos(a) * (glow_r + 24 * size_scale) * sp
-                py = self.y + math.sin(a) * (glow_r + 24 * size_scale) * sp
+                py = y + math.sin(a) * (glow_r + 24 * size_scale) * sp
                 _circle(surf, (255, 240, 160, 150), (int(px), int(py)), max(1, round((2 + i % 2) * size_scale)))
-        _circle(surf, (255, 230, 120, 42), (int(self.x), int(self.y)), glow_r, max(1, round(4 * size_scale)))
-        _circle(surf, (90, 210, 255, 34), (int(self.x), int(self.y - 6 * size_scale)), int(glow_r * 0.78), max(1, round(3 * size_scale)))
-        _ellipse(surf, (0, 0, 0, 50), (self.x - 22 * size_scale, self.y + 26 * size_scale,
+        _circle(surf, (255, 230, 120, 42), (int(self.x), int(y)), glow_r, max(1, round(4 * size_scale)))
+        _circle(surf, (90, 210, 255, 34), (int(self.x), int(y - 6 * size_scale)), int(glow_r * 0.78), max(1, round(3 * size_scale)))
+        _ellipse(surf, (0, 0, 0, 50), (self.x - 22 * size_scale, y + 26 * size_scale,
                                         44 * size_scale, 10 * size_scale))
-        if self.breath_base is None or self._breath_src is not self.surface:
-            sw, sh = self.surface.get_size()
-            asset = _CHAR_ASSETS.get(self.character, self.sprite_asset)
-            hi = image_asset_supersampled(asset, (sw, sh), 1.5)
-            self.breath_base = hi if hi is not None else scale_surface_cached(
-                self.surface, (int(sw * 1.3), int(sh * 1.3)))
-            self._breath_src = self.surface
         sw, sh = self.breath_base.get_size()
         # 呼吸缩放始终从高清基准缩小采样，避免放大模糊
         scale = _breathing_scale(now - self.breath_start_time, 0.24, 2000) / 1.24
         breathing_surface = scale_surface_cached(
             self.breath_base, (round(sw * scale * size_scale), round(sh * scale * size_scale))
         )
-        name = 'player_' + self.character if self.character else self.sprite_asset.rsplit('/', 1)[-1].removesuffix('.png')
-        sprite = animation.player_frame(self, name, now, downed_age)
+        sprite = animation.player_frame(self, self._sprite_name(), now, downed_age)
         if sprite is not None:
             breathing_surface = scale_surface_cached(sprite, breathing_surface.get_size())
         bsw, bsh = breathing_surface.get_size()
         accent = CHARACTER_DEFS[self.character].color if self.character in CHARACTER_DEFS else (117, 221, 255)
         boosted = now < max(self.water_boost_until, self.water_haste_until)
         if boosted:
-            draw_glow(surf, (round(self.x), round(self.y)), max(bsw, bsh) // 2 + 18,
+            draw_glow(surf, (round(self.x), round(y)), max(bsw, bsh) // 2 + 18,
                       (82, 249, 255), round(205 + 40 * math.sin(now * 0.012)))
             accent = (112, 255, 249)
-        blit_lit_sprite(surf, breathing_surface, (self.x - bsw // 2, self.y - bsh // 2),
+        blit_lit_sprite(surf, breathing_surface, (self.x - bsw // 2, y - bsh // 2),
                         accent, 245 if boosted else 140,
                         source=sprite or _CHAR_ASSETS.get(self.character, self.sprite_asset))
 
@@ -372,6 +397,8 @@ class Enemy:
                 self.burn_damage = False
             elif self.burn_damage and self.y + self.h > 0 and now - self.last_burn_tick >= 500:
                 multiplier = self.burn_owner.damage_multiplier(now) if self.burn_owner else 1
+                if field_frozen:
+                    multiplier *= config.CHARACTER_FIELDS['ice']['damage']
                 self.burn_hits += (0.5 if self.y < self.ENTRY_END_Y else 1) * multiplier
                 self._clamp_factory_health()
                 self.last_burn_tick = now
@@ -510,7 +537,7 @@ class Enemy:
     def should_attack(self, now):
         return now - self.last_attack_time >= self.attack_interval
 
-    def attack(self, now, target_x):
+    def attack(self, now, target_x, fan_angles=None):
         self.last_attack_time = now
         self.attack_interval = random.randint(self.attack_interval_min, self.attack_interval_max)
         if self.is_zongzong:
@@ -519,6 +546,10 @@ class Enemy:
             return [BossProjectile(self.x, self.y + self.h - 10, a, 3.0,
                                    homing=True, damage=1, bomb=True)
                     for a in (-22, 0, 22)]
+        if fan_angles is not None:
+            aim = math.degrees(math.atan2(target_x - self.x, config.GAME_AREA_BOTTOM - self.y))
+            return [BossProjectile(self.x, self.y + self.h - 8, aim + offset, 3.2)
+                    for offset in fan_angles]
         count = self.projectile_count()
         spread = 48
         projectiles = []
@@ -768,9 +799,9 @@ class Bullet:
         self.gift_kind = None
         self.hit_targets = set()
         self.radius = 10
-        if weapon_key == 'sniper' or (weapon_key == 'shotgun' and angle == 0):
+        if weapon_key == 'sniper' or (weapon_key == 'shotgun' and abs(angle) <= 6):
             self.radius = 13
-        if weapon_key == 'shotgun' and angle == 0:
+        if weapon_key == 'shotgun' and abs(angle) <= 6:
             self.color = (255, 55, 45)
         elif weapon_key == 'sniper':
             self.color = (190, 95, 255)
@@ -826,7 +857,7 @@ class Bullet:
                 else:
                     surf.blit(rotated, rotated.get_rect(center=head))
                 return
-        if self.gift_kind:
+        if self.gift_kind and not getattr(self, 'rifle_explosive', False):
             now = config.game_ticks()
             color = (255, 105, 35) if self.gift_kind == 'fire' else (65, 155, 255)
             core = (255, 235, 150) if self.gift_kind == 'fire' else (188, 237, 255)
@@ -851,13 +882,15 @@ class Bullet:
             _circle(surf, color, head, gr + 2)
             _circle(surf, core, (head[0] - 1, head[1] - 1), max(2, gr // 2))
             return
-        core = max(3, round(self.radius * 0.65))
+        scale = 3 if getattr(self, 'rifle_explosive', False) else 1
+        core = max(3, round(self.radius / scale * 0.65)) * scale
         length = {'rifle': 19, 'sniper': 22}.get(self.weapon_name, 13)
-        for fraction, alpha, radius in ((1, 55, core - 3), (0.7, 100, core - 2), (0.4, 160, core - 1)):
+        length *= scale
+        for fraction, alpha, radius in ((1, 55, core - 3 * scale), (0.7, 100, core - 2 * scale), (0.4, 160, core - scale)):
             trail = (int(self.x + dx * length * fraction), int(self.y + dy * length * fraction))
             _circle(surf, (*self.color, alpha), trail, radius)
         _circle(surf, self.color, head, core)
-        _circle(surf, (255, 248, 232), (head[0] - 2, head[1] - 2), 2)
+        _circle(surf, (255, 248, 232), (head[0] - 2 * scale, head[1] - 2 * scale), 2 * scale)
 
 class Coin:
     def __init__(self, x, y, value):
@@ -1198,7 +1231,7 @@ class SkillProjectile:
         self.lifetime = 900 if ptype == 'grenade' else 2500
         self.spawn_time = config.game_ticks()
         self.alive = True
-        self.damage = 1.5 if ptype == 'fireball' else 1.0
+        self.damage = config.SKILL_DAMAGE.get(ptype, 1.0)
         self.hit_targets = set()
         self.owner = owner
         self.skill_type = skill_type

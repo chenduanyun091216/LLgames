@@ -51,7 +51,7 @@ class OrochiTests(unittest.TestCase):
             self.assertEqual(len(self.boss.shots), i + 1)
 
     def test_side_head_appears_on_difficulty_cadence_and_fires_one_mirrored_fan(self):
-        for difficulty, interval in (('easy', 20000), ('medium', 15000), ('hard', 10000)):
+        for difficulty, interval in (('easy', 22000), ('medium', 15000), ('hard', 9500)):
             with self.subTest(difficulty=difficulty):
                 config.campaign_time_ms = 1000
                 self.game.difficulty = config.DIFFICULTY_PRESETS[difficulty]
@@ -317,13 +317,13 @@ class OrochiTests(unittest.TestCase):
         self.tick(9999)
         self.assertEqual(self.boss.hp, self.boss.max_hp / 2)
         self.tick(10000)
-        self.assertEqual(self.boss.hp, self.boss.max_hp * .90)
+        self.assertAlmostEqual(self.boss.hp, self.boss.max_hp * .90)
         self.tick(12999)
         self.boss.hit_by('pistol')
-        self.assertEqual(self.boss.hp, self.boss.max_hp * .90)
+        self.assertAlmostEqual(self.boss.hp, self.boss.max_hp * .90)
         self.tick(13000)
         self.boss.hit_by('pistol')
-        self.assertEqual(self.boss.hp, self.boss.max_hp * .90 - 1)
+        self.assertAlmostEqual(self.boss.hp, self.boss.max_hp * .90 - 1)
 
     def test_level_eleven_transitions_to_orochi_after_level_card(self):
         self.game._start_level(11)

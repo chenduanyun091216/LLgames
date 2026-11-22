@@ -37,6 +37,14 @@ class WebServerTests(unittest.TestCase):
             ifconfig.return_value.stdout = interfaces
             self.assertEqual(run_web.lan_addresses(Path('cert.pem')), ['192.168.1.10'])
 
+    def test_windows_lan_address_prefers_wifi_over_virtual_adapters_and_vpn_route(self):
+        with patch.object(run_web.sys, 'platform', 'win32'), \
+                patch.object(run_web.subprocess, 'run') as powershell, \
+                patch.object(socket, 'socket') as route:
+            powershell.return_value.stdout = '0 172.17.16.1\n1 198.18.0.1\n1 192.168.0.111\n'
+            self.assertEqual(run_web.lan_addresses(Path('cert.pem')), ['192.168.0.111'])
+            route.assert_not_called()
+
     @unittest.skipUnless(os.name == 'nt', 'Windows locks the current directory')
     def test_prepare_sources_reuses_staging_held_open_on_windows(self):
         with tempfile.TemporaryDirectory() as directory:

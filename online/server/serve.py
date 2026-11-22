@@ -4,6 +4,7 @@ import errno
 import ipaddress
 import json
 import signal
+import sys
 from pathlib import Path
 
 from aiohttp import web
@@ -14,7 +15,7 @@ from .host import create_host
 WEBROOT = Path(__file__).resolve().parents[2] / 'build' / 'web-offline'
 
 
-async def serve(host, port, *, root=WEBROOT, tls=None, addresses=()):
+async def serve(host, port, *, root=WEBROOT, tls=None, addresses=(), lan_warning=''):
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     signal_installed = False
@@ -28,7 +29,7 @@ async def serve(host, port, *, root=WEBROOT, tls=None, addresses=()):
     ip = ipaddress.ip_address(host)
     if not (ip.is_private or ip.is_loopback or ip.is_unspecified) or ip.is_multicast:
         raise ValueError('联机服务只监听局域网地址')
-    runner = web.AppRunner(create_host(root))
+    runner = web.AppRunner(create_host(root, lan_warning=lan_warning))
     await runner.setup()
     try:
         site = web.TCPSite(runner, host, port, ssl_context=tls)
@@ -39,6 +40,8 @@ async def serve(host, port, *, root=WEBROOT, tls=None, addresses=()):
         urls = [f'{scheme}://{name if ":" not in name else "[" + name + "]"}:{port}/' for name in names]
         runner.app[HOST_KEY].public_url = urls[0]
         print(json.dumps({'port': port, 'urls': urls}), flush=True)
+        if lan_warning:
+            print(lan_warning, file=sys.stderr, flush=True)
         await stopping.wait()
     finally:
         if signal_installed:

@@ -67,8 +67,8 @@ class CampaignAdapterTests(unittest.TestCase):
                 self.assertLess(p1.hp, 5)
                 self.assertEqual(p1.hp, p2.hp)
                 if level == 6:
-                    self.assertFalse(p1.alive or p2.alive)
-                    self.assertTrue(game.paused)
+                    self.assertEqual((p1.hp, p2.hp), (2, 2))
+                    self.assertTrue(p1.alive and p2.alive)
 
     def test_crab_bubbles_release_two_summons_once_and_chase_living_player(self):
         game = self.boss_game(2)

@@ -8,6 +8,7 @@ os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 from game_core import config
+from game_core.entities import Enemy
 from game_core.game import BACKGROUND_SCROLL_TICKS, Game, GameState
 from game_core.abyss_bosses import MechaLizardBoss, AncientWhaleBoss
 from game_core.orochi import OrochiBoss
@@ -92,7 +93,7 @@ class NewCampaignTests(unittest.TestCase):
                 game.spawn_enemy()
                 enemy = game.enemies.pop()
                 seen.add(enemy.edef['key'])
-                self.assertEqual(enemy.max_hp, enemy.edef['campaign_hp'])
+                self.assertEqual(enemy.max_hp, enemy.edef['campaign_hp'] + config.CAMPAIGN_ENEMY_HP_BONUS[level - 1][1])
             self.assertEqual(seen, set(expected))
         for old_level in config.LEVEL_CONFIGS[:8]:
             self.assertFalse(set(old_level['enemy_pool']) & set(config.FACTORY_ENEMY_KEYS + config.TEMPLE_ENEMY_KEYS))
@@ -200,6 +201,21 @@ class NewCampaignTests(unittest.TestCase):
         self.assertEqual(sum(enemy.temple_kind == 'worm' for enemy in game.enemies), 10)
         self.assertEqual(left.temple_worms_left + right.temple_worms_left, 7)
 
+    def test_late_wave_fans_follow_difficulty_and_endless_round(self):
+        for level, key, expected in ((10, 'ancient_ray', (1, 2, 3)), (11, 'trench_hermit', (3, 4, 5))):
+            for tier, difficulty in enumerate(('easy', 'medium', 'hard')):
+                game = self.game(difficulty=difficulty)
+                game._start_level(level)
+                enemy = Enemy(next(row for row in game.level_enemy_defs if row['key'] == key))
+                shots = game._enemy_shots(enemy, config.game_ticks())
+                self.assertEqual(len(shots), expected[tier])
+                self.assertEqual(len({shot.angle for shot in shots}), len(shots))
+            for cycle in (0, 1, 4):
+                game._begin_infinite_run(level + cycle * len(config.BOSS_DEFS))
+                self.assertEqual(game.infinite_background_level, level)
+                self.assertEqual(len(game._enemy_shots(enemy, config.game_ticks())), expected[min(2, cycle + 1)])
+                self.assertLessEqual(game._enemy_speed_multiplier(), config.INFINITE_PROGRESSION['enemy_move_max'])
+
     def test_infinite_leaks_remove_enemies_and_use_shared_hit_protection(self):
         game = self.game()
         game._begin_infinite_run(10)
@@ -227,33 +243,46 @@ class NewCampaignTests(unittest.TestCase):
         game._update_boss_fight(25000)
         self.assertFalse(game.enemies)
 
+    def test_infinite_wave_enemies_stay_active_when_boss_appears(self):
+        game = self.game()
+        game._begin_infinite_run(11)
+        game.spawn_enemy()
+        enemy, = game.enemies
+        first_y = enemy.y
+        game.background_scroll_ticks = BACKGROUND_SCROLL_TICKS - 1
+        game.update()
+        self.assertEqual(game.state, GameState.BOSS_FIGHT)
+        self.assertEqual(game.enemies, [enemy])
+        game.update()
+        self.assertGreater(enemy.y, first_y)
+
     def test_infinite_rollover_increases_difficulty_in_desktop_and_web_controls(self):
         for desktop in (True, False):
             with self.subTest(desktop=desktop):
                 game = self.game(desktop=desktop)
                 game._begin_infinite_run(12)
                 self.assertIsInstance(game.boss, OrochiBoss)
-                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (220, 3600))
+                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (264, 3500))
                 game.player.weapon_upgrades['rifle'] = 2
                 game.boss._start_death(config.game_ticks() - OrochiBoss.DEATH_DURATION)
                 self.assertTrue(game._settle_boss_if_killed())
                 self.assertEqual((game.chapter, game.infinite_background_level, game.state),
                                  (13, 1, GameState.PLAYING))
                 self.assertEqual(game.player.weapon_upgrades['rifle'], 2)
-                self.assertEqual((game.spawn_interval, game._infinite_density(config.game_ticks())), (1000, 8))
+                self.assertEqual((game.spawn_interval, game._infinite_density(config.game_ticks())), (1190, 8))
                 with patch('game_core.game.random.random', return_value=.99):
                     game._update_playing(game.last_spawn_time + game.spawn_interval)
                 enemy, = game.enemies
-                self.assertEqual(enemy.health_mult, 1.5)
+                self.assertAlmostEqual(enemy.max_hp, 3 * 1.24)
                 enemy.y = enemy.ENTRY_END_Y
-                enemy.hit_by('pistol', 4)
+                enemy.hit_by('pistol', 3)
                 self.assertFalse(enemy.is_killed('pistol'))
-                enemy.hit_by('pistol')
-                self.assertTrue(enemy.is_killed('pistol'))
+                enemy.hit_by('rifle', 1.5)
+                self.assertTrue(enemy.is_killed('rifle'))
                 game.background_scroll_ticks = BACKGROUND_SCROLL_TICKS - 1
                 game.update()
                 self.assertEqual(game.boss.bdef['key'], 'boss_lobster')
-                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (225, 3420))
+                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (271, 3360))
 
     def test_temple_worm_inherits_thirty_percent_hp_and_pursues(self):
         game = self.game()

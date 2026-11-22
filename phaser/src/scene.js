@@ -224,7 +224,7 @@ export class OceanScene extends Phaser.Scene {
         }
         if (w.boss?.sideHead) this.drawOrochiSideHead(w, t);
         for (const b of w.bullets) {
-            const color = fxColors[b.element] ?? bulletColors[b.weapon];
+            const color = b.color ?? fxColors[b.element] ?? bulletColors[b.weapon];
             if (b.guided) {
                 const scale = b.missile ? .7 : .35;
                 const trail = b.trail ?? [];
@@ -248,10 +248,11 @@ export class OceanScene extends Phaser.Scene {
                 this.effects.fillStyle(0xfff4d1, .9).fillCircle(b.x, b.y, b.w * .10);
                 continue;
             }
-            const tailX = b.x - Math.sin(b.angle) * 22, tailY = b.y + Math.cos(b.angle) * 22;
-            this.effects.lineStyle(9, color, .24).lineBetween(tailX, tailY, b.x, b.y);
-            this.effects.lineStyle(5, color, .93).lineBetween(tailX, tailY, b.x, b.y);
-            this.effects.fillStyle(0xffffe3, .95).fillCircle(b.x, b.y, 2.5);
+            const scale = b.rifleRed ? 3 : 1;
+            const tailX = b.x - Math.sin(b.angle) * 22 * scale, tailY = b.y + Math.cos(b.angle) * 22 * scale;
+            this.effects.lineStyle(9 * scale, color, .24).lineBetween(tailX, tailY, b.x, b.y);
+            this.effects.lineStyle(5 * scale, color, .93).lineBetween(tailX, tailY, b.x, b.y);
+            this.effects.fillStyle(0xffffe3, .95).fillCircle(b.x, b.y, 2.5 * scale);
         }
         for (const s of w.shots) {
             if (s.orochiOrb) {

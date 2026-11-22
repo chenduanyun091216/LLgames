@@ -26,10 +26,37 @@ function stepFor(battle, ms, input = {}) {
     }
 }
 
+test('active enemies and shots carry over to the boss fight', () => {
+    for (const mode of ['campaign', 'endless']) {
+        const battle = new Battle(data, {level: 11, mode}, () => .5);
+        battle.spawnWave();
+        const [enemy] = battle.enemies;
+        const oldY = enemy.y;
+        battle.time = 40000;
+        battle.shot(100, 150, Math.PI / 2, 1, null);
+        const [shot] = battle.shots;
+        battle.step();
+        assert.equal(battle.phase, 'boss');
+        assert.deepEqual(battle.enemies, [enemy]);
+        assert.ok(enemy.y > oldY);
+        assert.ok(battle.shots.includes(shot) && shot.y > 150);
+    }
+});
+
+test('player sprite keeps a 10 px bottom margin during movement and resize', () => {
+    const battle = new Battle(data);
+    for (const view of [mobileView(390, 844), mobileView(844, 390)]) {
+        battle.resize(view);
+        assert.ok(battle.player.y + battle.player.h / 2 <= view.height - 10);
+        stepFor(battle, 1500, {y: 1});
+        assert.equal(battle.player.y + battle.player.h / 2, view.height - 10);
+    }
+});
+
 test('campaign weapons use the configured base firing intervals and damage', () => {
     for (const [weapon, interval, damage, count] of [
         ['pistol', 400, 1, 1], ['rifle', 286, 1.5, 1],
-        ['shotgun', 400, .85, 3], ['sniper', 666, 2, 1],
+        ['shotgun', 420, 1, 3], ['sniper', 560, 3.25, 1],
     ]) {
         const battle = new Battle(data);
         battle.gold = 100;
@@ -48,7 +75,7 @@ test('campaign weapons use the configured base firing intervals and damage', () 
 
 test('preset weapons fire without gold and keep their damage against bosses in every tier', () => {
     for (const tier of [0, 1, 2]) {
-        for (const [weapon, damage] of [['rifle', 1.5], ['sniper', 2]]) {
+        for (const [weapon, damage] of [['rifle', 1.5], ['sniper', 3.25]]) {
             const battle = new Battle(data, {tier});
             battle.gold = battle.price('weapon', weapon);
             assert.ok(battle.equip('weapon', weapon));
@@ -118,7 +145,7 @@ test('weapon upgrades cost consecutive multiples and sniper missiles fire every 
         battle.time += 1000;
         battle.fire();
     }
-    assert.deepEqual(battle.bullets.map(b => b.blastDamage ?? b.damage), [2, 2, 2, 1]);
+    assert.deepEqual(battle.bullets.map(b => b.blastDamage ?? b.damage), [3.25, 3.25, 3.25, 3.25]);
     const missile = battle.bullets[3];
     assert.ok(missile.explosive);
     const targets = [0, 45, 200].map((offset, id) => ({
@@ -127,20 +154,77 @@ test('weapon upgrades cost consecutive multiples and sniper missiles fire every 
     battle.bullets = [missile];
     battle.enemies = targets;
     battle.updateProjectiles();
-    assert.deepEqual(targets.map(enemy => enemy.hp), [19, 19, 20]);
+    assert.deepEqual(targets.map(enemy => enemy.hp), [16.75, 16.75, 20]);
     assert.equal(battle.bullets.length, 1);
-    assert.ok(battle.bullets.every(b => b.guided && b.w === missile.w / 2 && b.damage === .5));
+    assert.ok(battle.bullets.every(b => b.guided && b.w === missile.w / 2 && b.damage === 1.625));
     const followup = {id: 4, x: missile.x + 120, y: targets[0].y - 95, w: 38, h: 38, hp: 20, def: {}};
     battle.enemies = [followup];
     for (let i = 0; i < 90 && battle.bullets.length; i++) {
         battle.time += STEP;
         battle.updateProjectiles();
     }
-    assert.equal(followup.hp, 19.5);
+    assert.equal(followup.hp, 18.375);
     assert.equal(battle.bullets.length, 0);
     battle.gold = 0;
     assert.equal(battle.upgradeWeapon('sniper'), false);
     assert.equal(battle.weaponUpgrades.sniper, 1);
+});
+
+test('upgraded red rounds, extra pellets and missile haste use the shared thresholds', () => {
+    for (const mode of ['campaign', 'endless']) {
+        const battle = new Battle(data, {mode});
+        battle.time = 10000;
+        battle.weapon = 'rifle';
+        battle.weaponUpgrades.rifle = 1;
+        battle.random = () => data.rifleRedChances[0];
+        battle.fire();
+        assert.equal(battle.bullets[0].rifleRed, undefined);
+        battle.bullets = [];
+        battle.lastFire = 0;
+        battle.random = () => data.rifleRedChances[0] - .001;
+        battle.fire();
+        const [red] = battle.bullets;
+        assert.ok(red.rifleRed);
+        const direct = battle.spawnEnemy('lobster', {x: red.x, y: red.y + red.dy, hp: 20});
+        const near = battle.spawnEnemy('lobster', {x: direct.x + 75, y: direct.y, hp: 20});
+        battle.updateProjectiles();
+        const base = data.CAMPAIGN_BULLET_DAMAGE.rifle * 1.1;
+        assert.ok(Math.abs(20 - direct.hp - 3.5 * base) < .0001);
+        assert.ok(Math.abs(20 - near.hp - 2 * base) < .0001);
+        battle.weapon = 'shotgun';
+        battle.weaponUpgrades.shotgun = 1;
+        battle.lastFire = 0;
+        battle.random = () => 0;
+        battle.fire();
+        assert.equal(battle.bullets.length, 4);
+        battle.weapon = 'sniper';
+        battle.weaponUpgrades.sniper = 1;
+        battle.sniperShots = 3;
+        battle.lastFire = 0;
+        battle.fire();
+        assert.equal(battle.sniperHasteUntil, battle.time + 3000);
+        battle.applyFireSpeedBuff('boostUntil', 1000);
+        battle.detonate(battle.bullets.find(b => b.missile));
+        const tideDamage = mode === 'endless' ? 1.5 : 1;
+        assert.equal(battle.zones.at(-1).damage, -data.sniperMissileDamage[0] * tideDamage);
+    }
+});
+
+test('temple and trench waves gain wider volleys in the specified tiers and rounds', () => {
+    for (const [level, kind, counts] of [[10, 'ancient_ray', [1, 2, 3]], [11, 'trench_hermit', [3, 4, 5]]]) {
+        for (const [mode, tier, round, count] of [
+            ['campaign', 0, 0, counts[0]], ['campaign', 1, 0, counts[1]], ['campaign', 2, 0, counts[2]],
+            ['endless', 1, 0, counts[1]], ['endless', 1, 1, counts[2]],
+        ]) {
+            const battle = new Battle(data, {mode, level, tier}, () => .5);
+            battle.round = round;
+            battle.spawnEnemy(kind, {x: 120, y: 120, attackAt: 0});
+            battle.updateEnemies();
+            for (const task of battle.tasks) task.action();
+            assert.equal(battle.shots.length, count);
+            assert.equal(new Set(battle.shots.map(shot => shot.angle)).size, count);
+        }
+    }
 });
 
 test('a split missile flies away before returning to its original target', () => {
@@ -305,7 +389,7 @@ test('Zong crescent speeds up, snow follows tier, and shield fusion heals both b
 
 test('Orochi warns from one side before each alternating fire and ice fan', () => {
     assert.ok(manifest['animations/bosses/boss_orochi_laser']);
-    for (const [tier, interval] of [20000, 15000, 10000].entries()) {
+    for (const [tier, interval] of [22000, 15000, 9500].entries()) {
         const sides = [.25, .75];
         const battle = new Battle(data, {level: 12, tier, view: mobileView(844, 390)}, () => sides.shift());
         const boss = battle.boss;
@@ -367,6 +451,26 @@ test('factory splits and fuses, temple eyes summon destructible worms', () => {
     assert.equal(temple.kills, 0);
 });
 
+test('factory fragments occupy regular spawn slots and can fire without awarding kills', () => {
+    for (const mode of ['campaign', 'endless']) {
+        const battle = new Battle(data, {mode, level: 9, tier: 1}, () => .5);
+        const cap = mode === 'endless' ? 6 : data.CAMPAIGN_ENEMY_CAP[8][1];
+        for (let i = 0; i < cap; i++) {
+            battle.spawnEnemy('mecha_crab', {factory: 'child', counts: false, y: 100, attackAt: 0});
+        }
+        battle.time = battle.spawnAt;
+        battle.updateSpawns();
+        assert.equal(battle.waveSpawns, 0);
+        battle.updateEnemies();
+        assert.equal(battle.shots.length, 1);
+        battle.defeatEnemy(battle.enemies[0]);
+        assert.equal(battle.kills, 0);
+        battle.time = battle.spawnAt;
+        battle.updateSpawns();
+        assert.equal(battle.waveSpawns, 1);
+    }
+});
+
 test('shop, retry and portrait resize use the selected rules', () => {
     const battle = new Battle(data, {tier: 2, level: 5, custom: {hp: 1.25}});
     assert.equal(battle.equip('weapon', 'rifle'), false);
@@ -377,7 +481,7 @@ test('shop, retry and portrait resize use the selected rules', () => {
     assert.equal(battle.width, 480);
     assert.equal(battle.player.x, 240);
     battle.beginBoss();
-    assert.equal(battle.boss.maxHp, Math.ceil(122 * 1.25));
+    assert.equal(battle.boss.maxHp, Math.ceil(data.CAMPAIGN_BOSS_HP[4][2] * 1.25));
     battle.hurt(99, 'test');
     assert.ok(battle.revive());
     assert.equal(battle.lives, 2);
@@ -391,22 +495,22 @@ test('endless chapter 13 carries upgrades forward and increases enemy pressure',
     assert.ok(endless.equip('weapon', 'sniper'));
     assert.ok(endless.equip('character', 'radiation'));
     endless.weaponUpgrades.sniper = 2;
-    assert.deepEqual([endless.boss.maxHp, endless.boss.interval], [220, 3600]);
+    assert.deepEqual([endless.boss.maxHp, endless.boss.interval], [264, 3500]);
     endless.finishLevel();
     assert.equal(endless.phase, 'clear');
     endless.next();
     assert.deepEqual([endless.round, endless.level, endless.phase], [1, 1, 'wave']);
     assert.equal(endless.weaponUpgrades.sniper, 2);
     const firstRound = new Battle(data, {mode: 'endless', tier: 1});
-    assert.equal(endless.spawnEnemy('lobster').maxHp, firstRound.spawnEnemy('lobster').maxHp * 1.5);
+    assert.equal(endless.spawnEnemy('lobster').maxHp, firstRound.spawnEnemy('lobster').maxHp * 1.24);
     endless.time = endless.spawnAt;
     endless.updateSpawns();
-    assert.equal(endless.spawnAt - endless.time, 1000);
+    assert.equal(endless.spawnAt - endless.time, 1190);
     assert.ok(endless.enemies.at(-1).def.is_large);
     endless.time = endless.started + 40000;
     endless.updateSpawns();
     assert.equal(endless.boss.def.key, 'boss_lobster');
-    assert.deepEqual([endless.boss.maxHp, endless.boss.interval], [225, 3420]);
+    assert.deepEqual([endless.boss.maxHp, endless.boss.interval], [271, 3360]);
 });
 
 test('endless uses the shared wave pacing and upgrade economy from its first chapter', () => {
@@ -414,9 +518,11 @@ test('endless uses the shared wave pacing and upgrade economy from its first cha
     endless.time = endless.spawnAt;
     endless.updateSpawns();
     assert.equal(endless.enemies.length, 1);
-    assert.equal(endless.spawnAt - endless.time, 1300);
+    assert.ok(endless.enemies[0].def.is_large);
+    assert.equal(endless.spawnAt - endless.time, 1550);
+    const [waveEnemy] = endless.enemies;
     endless.beginBoss();
-    assert.equal(endless.enemies.length, 0);
+    assert.deepEqual(endless.enemies, [waveEnemy]);
     endless.gold = 100;
     endless.finishLevel();
     assert.equal(endless.gold, 100);
@@ -436,9 +542,10 @@ test('endless uses the shared wave pacing and upgrade economy from its first cha
     for (let i = 0; i < 3; i++) endless.spawnEnemy('mecha_ray', {factory: 'original', y: 90});
     endless.updateFactoryLink();
     assert.ok(endless.link);
+    const link = endless.link;
     endless.beginBoss();
-    assert.equal(endless.enemies.length, 0);
-    assert.equal(endless.link, null);
+    assert.equal(endless.enemies.length, 3);
+    assert.equal(endless.link, link);
 });
 
 test('an unupgraded rifle can interrupt whale suction in every preset', () => {
@@ -533,7 +640,7 @@ test('crab bubbles hatch two chasing enemies and the plasma whip damages only wh
     stepFor(crab, 890);
     const hatchlings = crab.enemies.filter(e => e.chases);
     assert.equal(hatchlings.length, 2);
-    assert.deepEqual(hatchlings.map(e => e.maxHp), [8, 8]);
+    assert.ok(hatchlings.every(e => e.maxHp === crab.boss.maxHp * .20));
     const oldX = hatchlings[0].x;
     crab.player.x = oldX + 100;
     stepFor(crab, 100);
@@ -583,8 +690,9 @@ test('trench cannon bursts, rock roll, bones and armor thresholds', () => {
     assert.ok(manifest['backgrounds/trench-boss-wide']);
     assert.ok(manifest['backgrounds/trench-boss-portrait']);
 
+    const remaining = [...battle.enemies];
     battle.beginBoss();
-    assert.equal(battle.enemies.length, 0);
+    assert.deepEqual(battle.enemies, remaining);
     stepFor(battle, 4100);
     const boss = battle.boss;
     assert.equal(boss.trench.index, 0);
@@ -600,12 +708,13 @@ test('trench cannon bursts, rock roll, bones and armor thresholds', () => {
     boss.trenchOrder = [1, 2];
     battle.time = boss.attackAt + 20;
     boss.y = 110;
+    const pending = battle.tasks.length;
     battle.updateBoss();
     assert.equal(boss.trench.index, 1);
-    assert.equal(battle.tasks.length, 4);
-    battle.tasks[0].action();
+    assert.equal(battle.tasks.length - pending, 4);
+    battle.tasks[pending].action();
     assert.equal(battle.shots.find(shot => shot.fossil === 'bone').r, 24 * battle.view.bossScale);
-    for (let i = 0; i < 25; i++) battle.hit(boss, 2);
+    for (let i = 0; i < Math.ceil(boss.maxHp / 8); i++) battle.hit(boss, 2);
     assert.equal(battle.shots.filter(shot => shot.orbit).length, 4);
     const [armor] = battle.shots.filter(shot => shot.orbit);
     assert.equal(armor.orbit.until - battle.time, 1000);

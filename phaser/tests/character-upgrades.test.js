@@ -40,10 +40,10 @@ test('every character uses its purchase price per level and checkpoints restore 
 
 test('only successful upgraded casts roll at 25% and use all three durations', () => {
     const cases = [
-        ['ice', 'enemyFreezeUntil', [1000, 1500, 2000], 0],
-        ['water', 'swiftFieldUntil', [2000, 2500, 3000], 0],
-        ['fire', 'fireShieldUntil', [3000, 4000, 5000], 0],
-        ['radiation', 'radiationFieldUntil', [3000, 4000, 5000], 2],
+        ['ice', 'enemyFreezeUntil', [1000, 2000, 3000], 0],
+        ['water', 'swiftFieldUntil', [4000, 6000, 8000], 0],
+        ['fire', 'fireShieldUntil', [10000, 10000, 10000], 0],
+        ['radiation', 'radiationFieldUntil', [5000, 7000, 9000], 2],
     ];
     for (const [character, state, durations, skill] of cases) {
         for (const [index, duration] of durations.entries()) {
@@ -75,7 +75,7 @@ test('ice holds boss, small enemies and delayed attacks while existing shots mov
     battle.later(100, () => fires++);
     battle.later(100, () => friendly++, true);
     battle.cast(0);
-    for (let i = 0; i < 119; i++) battle.step();
+    for (let i = 0; i < 179; i++) battle.step();
     assert.equal(enemy.y, 240);
     assert.equal(battle.boss.x, bossX);
     assert.equal(fires, 0);
@@ -111,10 +111,10 @@ test('fire shield absorbs arbitrary damage and keeps an independent time and hit
     battle.equip('character', 'fire');
     battle.characterUpgrades.fire = 3;
     battle.cast(0);
-    for (const [index, amount] of [100, 1, 2].entries()) {
+    for (const [index, amount] of [100, 1, 2, 3].entries()) {
         battle.hurt(amount, 'hit', index === 0);
         assert.equal(battle.hp, battle.maxHp);
-        assert.equal(battle.fireShieldHits, 2 - index);
+        assert.equal(battle.fireShieldHits, 3 - index);
     }
     battle.hurt(1, 'hit');
     assert.equal(battle.hp, battle.maxHp - 1);
@@ -125,8 +125,8 @@ test('fire shield absorbs arbitrary damage and keeps an independent time and hit
     assert.equal(battle.hp, battle.maxHp - 2);
 });
 
-test('radiation doubles damage and the level-three wave only clears enemy shots that have launched', () => {
-    for (const level of [2, 3]) {
+test('radiation doubles damage and the wave at every level only clears enemy shots that have launched', () => {
+    for (const level of [1, 2, 3]) {
         const battle = new Battle(data, {mode: 'endless', tier: 1, level: 11}, () => .1);
         battle.beginBoss();
         battle.equip('character', 'radiation');
@@ -150,8 +150,8 @@ test('radiation doubles damage and the level-three wave only clears enemy shots 
         const count = battle.bullets.length;
         battle.step();
         assert.equal(battle.bullets.length, count);
-        assert.equal(battle.shots.length, level === 3 ? 1 : 2);
-        assert.equal(Boolean(battle.airWave), level === 3);
+        assert.equal(battle.shots.length, 1);
+        assert.ok(battle.airWave);
         battle.hit(enemy, 3);
         assert.equal(enemy.hp, 91);
     }

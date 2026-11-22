@@ -22,7 +22,7 @@ export function orochiSideHead(world, side) {
 }
 
 export function updateOrochiSideHead(world, boss) {
-    const interval = [20000, 15000, 10000][world.mode === 'endless' ? 1 : world.tier];
+    const interval = world.data.CAMPAIGN_OROCHI_SIDE_INTERVAL_MS[world.tier];
     boss.sideHeadAt ??= world.started + interval;
     if (world.time < boss.sideHeadAt) return;
     if (!boss.sideHead) {
@@ -125,7 +125,7 @@ export function attack(world, boss, pattern) {
                 250, x, mouth, aimed(world, x, mouth));
             return ['回旋战斧', 1800];
         case 1:
-            lane(target(world), 100, 2, warning, 650, 'boss_niu_slam_axe');
+            lane(target(world), 100, world.data.CAMPAIGN_BOSS_SKILL_DAMAGE.niu_slam[tier], warning, 650, 'boss_niu_slam_axe');
             return ['巨斧震地', warning + 750];
         case 2:
             for (const offset of [-150, 0, 150]) lane(target(world, offset), 65, 2, warning, 1250);
@@ -227,17 +227,17 @@ export function attack(world, boss, pattern) {
         case 1:
             for (let i = 0; i < 3; i++) {
                 for (const side of [-1, 1]) lane(target(world, side * (57 + i * 23)), 52,
-                    2, 900 + i * 1350, 300, 'boss_bite');
+                    world.data.CAMPAIGN_BOSS_SKILL_DAMAGE.orochi_hazard[tier], 900 + i * 1350, 300, 'boss_bite');
             }
             return ['双首砸击', 4050];
         case 2:
             for (let i = 0; i < 8; i++) {
                 world.spawnEnemy('orochi_head', {x: (i + .5) * width / 8, y: -32, hp: boss.maxHp * .03,
-                    speed: 2.6, life: 4150, counts: false, noLeak: true, index: i});
+                    speed: 2.6, life: 4150, counts: false, noLeak: true, index: i, contactDamage: world.data.CAMPAIGN_BOSS_SKILL_DAMAGE.orochi_hazard[tier]});
             }
             return ['八首分裂', 4150];
         default:
-            for (let i = 0; i < 4; i++) lane(width * (i + .5) / 4, 28, 2, 850, 3000, null, {sway: 30});
+            for (let i = 0; i < 4; i++) lane(width * (i + .5) / 4, 28, world.data.CAMPAIGN_BOSS_SKILL_DAMAGE.orochi_hazard[tier], 850, 3000, null, {sway: 30});
             return ['蛇瞳激光', 3850];
         }
     default:
@@ -258,7 +258,7 @@ export function storm(world, boss, final) {
     for (let i = 0; i < 7; i++) {
         world.later(i * 1400, () => {
             const x = target(world, between(world, -37, 37));
-            world.zone(x, world.player.y, 100, 100, 2, 1000, 260, null, {circle: true});
+            world.zone(x, world.player.y, 100, 100, world.data.CAMPAIGN_BOSS_SKILL_DAMAGE.orochi_hazard[world.tier], 1000, 260, null, {circle: true});
         });
     }
 }

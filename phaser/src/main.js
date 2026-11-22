@@ -17,7 +17,7 @@ let stickOrigin;
 let stickId = null, fireId = null, skill = null, auto = false;
 let scene, world, menuLoadout, data, manifest, selected = 1, tier = 0, page = 'loading', muted = false;
 const customFields = [
-    ['spawnStart', '初始刷怪间隔（毫秒）', 200, 4000, 100, 2400],
+    ['spawnStart', '初始刷怪间隔（毫秒）', 200, 4000, 100, 2300],
     ['minSpawn', '最小刷怪间隔（毫秒）', 100, 2000, 50, 1800],
     ['spawnDecrease', '每次击杀缩短（毫秒）', 0, 30, 1, 0],
     ['speed', '小怪移速倍率', .5, 3, .05, 1],
@@ -28,8 +28,8 @@ const customFields = [
     ['shotgun', '散弹每次金币', 0, 8, 1, 0],
     ['sniper', '狙击每发金币', 0, 8, 1, 0],
     ['hp', 'Boss 生命倍率', .3, 4, .05, 1],
-    ['enemyMin', '小怪最短开火间隔（毫秒）', 1000, 10000, 250, 8000],
-    ['enemyMax', '小怪最长开火间隔（毫秒）', 1500, 14000, 250, 12000],
+    ['enemyMin', '小怪最短开火间隔（毫秒）', 1000, 10000, 250, 7500],
+    ['enemyMax', '小怪最长开火间隔（毫秒）', 1500, 14000, 250, 10500],
     ['attack', 'Boss 出招间隔倍率', .5, 2.5, .05, 1],
     ['homing', 'Boss 追踪强度倍率', .5, 3, .05, 1],
 ];
@@ -175,7 +175,7 @@ function escapeText(value) {
 function newRun(mode = 'campaign', settings = false) {
     auto = touch();
     showNotice('');
-    const settingsData = settings ? {...custom, spawn: custom.spawnStart / 2400,
+    const settingsData = settings ? {...custom, spawn: custom.spawnStart / data.CAMPAIGN_SPAWN_MS[0][1],
         enemyMin: Math.min(custom.enemyMin, custom.enemyMax), enemyMax: Math.max(custom.enemyMin, custom.enemyMax),
         ammo: {rifle: custom.rifle, shotgun: custom.shotgun, sniper: custom.sniper}} : {};
     const next = new Battle(data, {level: mode === 'endless' ? 1 : selected,

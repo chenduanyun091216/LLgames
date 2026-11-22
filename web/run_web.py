@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import gzip
 import hashlib
+import ipaddress
 import json
 import os
 import signal
@@ -29,6 +30,7 @@ WEB_BUILD_DIR = ROOT / '.web-build'
 TLS_DIR = WEB_BUILD_DIR / 'tls'
 GAME_PORT = 8001
 SETUP_PORT = 8000
+PROXY_IPV4_RANGE = ipaddress.IPv4Network('198.18.0.0/15')
 STAGING = WEB_BUILD_DIR / 'ttgames'
 RESOURCE_CACHE = WEB_BUILD_DIR / 'resources'
 WEBROOT = BUILD / 'web-offline'
@@ -494,7 +496,46 @@ def certificate_addresses(cert):
     return set()
 
 
+def windows_lan_addresses():
+    # Enumerate active Ethernet and Wi-Fi adapters even when a VPN owns the default route.
+    command = r"""
+foreach ($adapter in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+    if ($adapter.OperationalStatus -ne 'Up' -or
+        $adapter.NetworkInterfaceType -notmatch 'Ethernet|^Wireless80211$') { continue }
+    $properties = $adapter.GetIPProperties()
+    $hasGateway = [int][bool]($properties.GatewayAddresses | Where-Object {
+        $_.Address.AddressFamily -eq 'InterNetwork' -and $_.Address -ne [System.Net.IPAddress]::Any
+    })
+    foreach ($entry in $properties.UnicastAddresses) {
+        if ($entry.Address.AddressFamily -eq 'InterNetwork') {
+            '{0} {1}' -f $hasGateway, $entry.Address
+        }
+    }
+}
+"""
+    try:
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', command],
+                                capture_output=True, text=True, check=True, timeout=5,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.SubprocessError):
+        return []
+    with_gateway, directly_connected = set(), set()
+    for line in result.stdout.splitlines():
+        gateway, _, raw_address = line.strip().partition(' ')
+        if gateway not in ('0', '1'):
+            continue
+        address = ipaddress.IPv4Address(raw_address)
+        if (address.is_private and address not in PROXY_IPV4_RANGE
+                and not (address.is_loopback or address.is_link_local or address.is_unspecified)):
+            (with_gateway if gateway == '1' else directly_connected).add(raw_address)
+    return sorted(with_gateway or directly_connected)
+
+
 def lan_addresses(cert=None):
+    if sys.platform == 'win32':
+        addresses = windows_lan_addresses()
+        if addresses:
+            return addresses
     if sys.platform == 'darwin':
         try:
             result = subprocess.run(['/sbin/ifconfig', '-a'], capture_output=True,
@@ -512,12 +553,16 @@ def lan_addresses(cert=None):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route:
             route.connect(('1.1.1.1', 443))
-            return [route.getsockname()[0]]
+            address = route.getsockname()[0]
+            if ipaddress.IPv4Address(address) not in PROXY_IPV4_RANGE:
+                return [address]
     except OSError:
         pass
 
     addresses = set()
     for address in certificate_addresses(cert):
+        if ipaddress.IPv4Address(address) in PROXY_IPV4_RANGE:
+            continue
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
                 probe.bind((address, 0))
@@ -529,7 +574,7 @@ def lan_addresses(cert=None):
     try:
         for result in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             address = result[4][0]
-            if not address.startswith('127.'):
+            if not address.startswith('127.') and ipaddress.IPv4Address(address) not in PROXY_IPV4_RANGE:
                 addresses.add(address)
     except OSError:
         pass
@@ -636,14 +681,23 @@ def serve_lan_site(host, port, setup_port, tls, setup_certificate, cert):
 
     setup_server = None
     try:
+        addresses = lan_addresses(cert if tls else None) if host == '0.0.0.0' else [host]
+        lan_warning = ''
+        if tls and cert and host == '0.0.0.0':
+            signed = certificate_addresses(cert)
+            covered = [address for address in addresses if address in signed]
+            if covered:
+                addresses = covered
+            elif addresses:
+                lan_warning = f'联机证书未覆盖 {addresses[0]}，请重新签发证书后重启'
         if tls and setup_certificate is not None:
             page = (WEB_SOURCE / 'setup.html').read_text(encoding='utf-8')
             page = page.replace('__GAME_PORT__', str(port)).encode('utf-8')
             handler = partial(SetupHandler, page=page, certificate=setup_certificate)
             setup_server = ThreadingHTTPServer((host, setup_port), handler)
             threading.Thread(target=setup_server.serve_forever, daemon=True).start()
-        addresses = lan_addresses(cert if tls else None)
-        asyncio.run(serve_lan(host, port, root=WEBROOT, tls=tls, addresses=addresses))
+        asyncio.run(serve_lan(host, port, root=WEBROOT, tls=tls, addresses=addresses,
+                              lan_warning=lan_warning))
     except KeyboardInterrupt:
         pass
     finally:

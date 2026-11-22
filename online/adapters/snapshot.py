@@ -31,6 +31,8 @@ SCHEMA = {
 # Explicit inherited field groups keep the wire vocabulary reviewable. Surfaces,
 # fonts, cached animation frames and simulation-only sets are never transmitted.
 SCHEMA['Player'] += 'character_upgrades swift_field_until fire_shield_until fire_shield_hits radiation_field_until'.split()
+SCHEMA['Player'] += ['sniper_haste_until']
+SCHEMA['Bullet'] += ['rifle_explosive']
 SCHEMA['NiuBoss'] = SCHEMA['Boss'] + 'opening_skill_pending lightning_xs lightning_warning_until lightning_until shield_until shield_damage shield_hit_at shield_hit_offset shield_break_at running_left axe_slam_impact'.split()
 SCHEMA['ZongBoss'] = SCHEMA['Boss'] + 'body_hp easy_campaign next_fusion_time fusion_until fusion_end_volley snow_until opening_snow_done expression_hit_at pending_projectiles crescent_projectiles crescent_started_at crescent_count crescent_target crescent_origin next_revive_check campaign_revived fusion_warning_mode'.split()
 SCHEMA['OrochiBoss'] = SCHEMA['Boss'] + 'skill skill_at next_skill opening_pending spawned_at emitted shots impacts head_hp bubble_breaks storm_target storm_warning_age final_storm invincible_until death_at death_particles split_hp split_xy split_dive split_next_dive split_charged split_charge_until split_velocity split_last_update split_regroup_at split_target'.split()

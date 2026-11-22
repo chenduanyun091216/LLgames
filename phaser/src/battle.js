@@ -4,6 +4,7 @@ import {attack, storm, railShape, tentacleShape, updateOrochiSideHead} from './b
 import {fixedView} from './layout.js';
 
 export const STEP = 1000 / 60;
+const PLAYER_BOTTOM_MARGIN = 10;
 export const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const angleDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 const intersects = (a, b) => Math.abs(a.x - b.x) < (a.w + b.w) / 2 && Math.abs(a.y - b.y) < (a.h + b.h) / 2;
@@ -58,6 +59,7 @@ export class Battle {
     get laterEndlessRound() { return this.mode === 'endless' && this.round > 0; }
     get endlessChapterIndex() { return this.round * this.data.INFINITE_BOSS_HP.length + this.level - 1; }
     get clearReward() { return this.mode === 'endless' ? 0 : this.data.CAMPAIGN_REWARDS[this.level - 1]; }
+    get playerBottomLimit() { return this.view.height - this.player.h / 2 - PLAYER_BOTTOM_MARGIN; }
 
     bossBaseHp() {
         if (this.mode !== 'endless') return this.value('CAMPAIGN_BOSS_HP');
@@ -84,7 +86,7 @@ export class Battle {
         this.riftsDestroyed = 0;
         this.waterKills = 0;
         this.gift = null;
-        this.hasteUntil = this.waterHasteUntil = 0;
+        this.hasteUntil = this.waterHasteUntil = this.sniperHasteUntil = 0;
         this.fireSpeedLayers = {};
         this.waveSpawns = 0;
         this.cannonSide = this.freezeUntil = 0;
@@ -106,7 +108,7 @@ export class Battle {
         this.fireShieldHits = this.airWaveAt = 0;
         this.airWave = null;
         this.player.x = this.width / 2;
-        this.player.y = this.bottom - 14;
+        this.player.y = Math.min(this.bottom - 14, this.playerBottomLimit);
         this.checkpoint = {gold: this.gold, score: this.score, hp: this.hp, weapon: this.weapon,
             character: this.character, weapons: [...this.weapons], characters: [...this.characters],
             weaponUpgrades: {...this.weaponUpgrades}, characterUpgrades: {...this.characterUpgrades},
@@ -137,7 +139,7 @@ export class Battle {
         this.width = view.width;
         this.bottom = view.bottom;
         this.player.x = clamp(this.player.x, this.player.w / 2, this.width - this.player.w / 2);
-        this.player.y = clamp(this.player.y, 80, this.view.height - this.player.h / 2 - 8);
+        this.player.y = clamp(this.player.y, 80, this.playerBottomLimit);
         this.zones = [];
         this.tasks = [];
         if (this.level === 11) this.shots = this.shots.filter(shot => !shot.fossil);
@@ -158,15 +160,6 @@ export class Battle {
         if (this.level === 11) {
             this.cannonSide = 0;
             this.cannonAt = this.time + this.data.TRENCH_CANNON.opening;
-        }
-        this.tasks = [];
-        this.bullets = [];
-        this.shots = [];
-        if (this.mode === 'endless' || this.level === 11) {
-            this.enemies = [];
-            this.link = null;
-        } else {
-            this.enemies = this.enemies.filter(e => e.kind !== 'ancient_rift' && e.kind !== 'ancient_worm');
         }
         const def = this.data.bosses[this.stage.boss_idx];
         const hp = Math.ceil(this.bossBaseHp() * this.custom.hp);
@@ -218,36 +211,58 @@ export class Battle {
             : def.size ?? (def.is_large ? [110, 96] : def.zongzong ? [74, 66] : [64, 56]);
         const w = baseW * this.view.entityScale, h = baseH * this.view.entityScale;
         const x = w / 2 + this.random() * (this.width - w);
-        let hp = def.campaign_hp ?? (def.is_large ? 9 : def.zongzong ? 8 : 3);
-        if (this.laterEndlessRound && kind in this.data.enemies) {
-            const progression = this.data.INFINITE_PROGRESSION;
-            const chaptersInLaterRounds = this.endlessChapterIndex - this.data.INFINITE_BOSS_HP.length;
-            hp *= (progression.enemy_health_start_percent
-                + progression.enemy_health_per_chapter * chaptersInLaterRounds) / 100;
+        const baseHp = this.data.waveEnemyHp[def.is_large ? 'large' : def.zongzong ? 'zongzong' : 'normal'];
+        let hp = def.campaign_hp ?? baseHp;
+        const progression = this.data.INFINITE_PROGRESSION;
+        const endless = this.mode === 'endless';
+        if (endless) {
+            const steps = Math.min(this.endlessChapterIndex, this.data.INFINITE_BOSS_HP.length);
+            hp *= (100 + steps * progression.enemy_health_first_round_step
+                + (this.endlessChapterIndex - steps) * progression.enemy_health_per_chapter) / 100;
+        } else hp += this.value('CAMPAIGN_ENEMY_HP_BONUS');
+        let speed;
+        if (endless && kind in this.data.enemies) {
+            const move = Math.min(progression.enemy_move_max,
+                progression.enemy_move_start + this.round * progression.enemy_move_per_round);
+            speed = (def.base_speed + (this.random() - .5) * .30) * this.data.difficulty[2].enemy_speed_mult * .82 * move;
+            if (!def.is_large && this.random() < progression.fast_spawn_chance) speed *= 2;
+        } else {
+            speed = def.base_speed * ((this.bottom + 20 + h) / (384 + baseH * .64)) * this.data.CAMPAIGN_SPEED[this.level - 1]
+                * [.88, 1, 1.08][this.tier] * this.custom.speed * (.88 + this.random() * .24);
+            speed *= this.data.CAMPAIGN_MOVE_MULT[this.tier];
         }
-        const speed = def.base_speed * ((this.bottom + 20 + h) / (384 + baseH * .64)) * this.data.CAMPAIGN_SPEED[this.level - 1]
-            * [.88, 1, 1.08][this.tier] * this.custom.speed * (.88 + this.random() * .24);
+        const [minAttack, maxAttack] = this.data.INFINITE_ENEMY_ATTACK_MS;
+        const opening = endless ? 800 + this.random() * 1400 + minAttack + this.random() * (maxAttack - minAttack)
+            : [4500, 3800, 3200][this.tier] + Math.ceil(h * this.data.CAMPAIGN_MOVE_MULT[this.tier]
+                / Math.max(.01, speed) * STEP);
         const entity = {id: this.key(), kind, def, w, h, x, anchor: extra.x ?? x, y: -h / 2, hp, speed,
-            counts: true, born: this.time, attackAt: this.time + [8500, 7500, 6400][this.tier], ...extra};
+            counts: true, born: this.time, attackAt: this.time + opening, ...extra};
         entity.maxHp = entity.hp;
         this.enemies.push(entity);
         return entity;
     }
 
     spawnWave() {
-        const regularLaterWave = this.laterEndlessRound && this.level < 9;
-        const enemyPool = regularLaterWave ? this.data.levels[7].enemy_pool : this.stage.enemy_pool;
+        const endless = this.mode === 'endless';
+        const mixedOcean = endless && (this.level < 9 || this.level === 12);
+        const enemyPool = mixedOcean ? this.data.levels[7].enemy_pool : this.stage.enemy_pool;
         const normal = enemyPool.filter(k => !this.data.enemies[k].is_large && k !== 'zongzong');
         const large = enemyPool.filter(k => this.data.enemies[k].is_large);
-        const largeChance = regularLaterWave ? .16 : this.data.CAMPAIGN_LARGE_CHANCE[this.level - 1];
         let pool = normal;
-        if (!this.laterEndlessRound && this.level === 1 && this.waveSpawns < 6) pool = normal.filter(key => key !== 'goldfish');
-        if (!this.lastElite && (regularLaterWave || this.level >= 4) && !this.enemies.some(e => e.kind === 'zongzong')
-                && this.random() < .04 && enemyPool.includes('zongzong')) pool = ['zongzong'];
-        else if (!this.lastElite && large.length && this.random() < largeChance) pool = large;
-        if (!this.laterEndlessRound && this.level === 1 && this.waveSpawns < 2) pool = [['lobster', 'crab'][this.waveSpawns]];
+        if (endless) {
+            const progression = this.data.INFINITE_PROGRESSION;
+            const zongChance = progression.zong_spawn_chance * (this.level === 8 ? 2 : 1);
+            if (enemyPool.includes('zongzong') && this.random() < zongChance) pool = ['zongzong'];
+            else if (large.length && this.random() < progression.large_spawn_chance) pool = large;
+        } else {
+            if (this.level === 1 && this.waveSpawns < 6) pool = normal.filter(key => key !== 'goldfish');
+            if (!this.lastElite && this.level >= 4 && !this.enemies.some(e => e.kind === 'zongzong')
+                    && this.random() < .04 && enemyPool.includes('zongzong')) pool = ['zongzong'];
+            else if (!this.lastElite && large.length && this.random() < this.data.CAMPAIGN_LARGE_CHANCE[this.level - 1]) pool = large;
+            if (this.phase === 'wave' && this.level === 1 && this.waveSpawns < 2) pool = [['lobster', 'crab'][this.waveSpawns]];
+            if (this.phase === 'wave' && this.level === 2 && this.waveSpawns === 3) pool = ['octopus'];
+        }
         if (!pool.length) return;
-        if (!this.laterEndlessRound && this.phase === 'wave' && this.level === 2 && this.waveSpawns === 3) pool = ['octopus'];
         const kind = this.level === 11 ? this.data.TRENCH_WAVES[Math.floor(this.waveSpawns / 4) % 3][this.waveSpawns % 4]
             : pool[Math.floor(this.random() * pool.length)];
         this.waveSpawns++;
@@ -267,7 +282,7 @@ export class Battle {
             ? Math.min(this.level >= 9 ? 7 : 12, 4 + Math.floor(this.endlessChapterIndex / 3))
             : this.value('CAMPAIGN_ENEMY_CAP') : this.reinforcement('CAP');
         if (cap && this.time >= this.spawnAt) {
-            const hasRoom = this.enemies.filter(e => e.counts).length < cap;
+            const hasRoom = this.enemies.filter(e => e.counts || e.factory === 'child').length < cap;
             if (hasRoom) this.spawnWave();
             if (endlessWave) {
                 const progression = this.data.INFINITE_PROGRESSION;
@@ -344,8 +359,9 @@ export class Battle {
                 e.summons = false;
                 for (let i = 0, n = 1 + Math.floor(this.random() * (this.tier === 2 ? 3 : 2)); i < n; i++) this.worm(e);
             }
-            if (e.counts && !e.chases && e.y > 28 && e.y < this.bottom - 100 && this.time >= Math.max(e.attackAt, this.enemyShotAt)) {
-                this.enemyShotAt = this.time + (this.phase === 'boss' ? 1000 : 500);
+            if ((e.counts || e.factory === 'child') && !e.chases && e.y > 28 && e.y < this.bottom - 100 && this.time >= Math.max(e.attackAt, this.enemyShotAt)) {
+                this.enemyShotAt = this.time + (this.phase === 'boss' || (this.mode !== 'endless' && this.tier === 0) ? 1000 : 500);
+                const fanTier = this.mode === 'endless' ? Math.min(2, 1 + this.round) : this.tier;
                 const factory = this.level === 9;
                 const trench = this.data.TRENCH_ATTACKS?.[e.kind];
                 if (trench) {
@@ -354,21 +370,26 @@ export class Battle {
                     const angle = aimed ? Math.atan2(this.player.y - y, this.player.x - x) : Math.PI / 2;
                     e.castingUntil = this.time + delay;
                     this.later(delay, () => {
-                        for (const offset of [-24, -8, 8, 24]) this.shot(x, y,
+                        for (const offset of this.data.TRENCH_FAN_ANGLES[fanTier]) this.shot(x, y,
                             angle + offset * Math.PI / 180, speed, null,
                             {r: 8, fossil: true, expires: this.time + 3600});
                     });
+                } else if (this.data.CAMPAIGN_TEMPLE_FAN_ENEMIES.includes(e.kind)) {
+                    const aim = Math.atan2(this.bottom - e.y, this.player.x - e.x);
+                    for (const offset of this.data.CAMPAIGN_TEMPLE_FAN_ANGLES[fanTier]) {
+                        this.shot(e.x, e.y + 12, aim + offset * Math.PI / 180, 3.2, 'bubble_crab', {r: 8});
+                    }
                 } else {
                     this.shot(e.x, e.y + 12, Math.atan2(this.player.y - e.y, this.player.x - e.x),
                         factory ? 2.7 : 2.1, factory ? 'mecha_guided_missile' : 'bubble_crab',
                         {homing: factory ? .014 : 0, r: factory ? 9 : 8});
                 }
-                const min = this.custom.enemyMin ?? [10000, 8000, 6500][this.tier];
-                const max = this.custom.enemyMax ?? [14000, 12000, 10000][this.tier];
+                const interval = this.mode === 'endless' ? this.data.INFINITE_ENEMY_ATTACK_MS : this.data.CAMPAIGN_ENEMY_ATTACK_MS[this.tier];
+                const min = this.custom.enemyMin ?? interval[0], max = this.custom.enemyMax ?? interval[1];
                 e.attackAt = this.time + min + this.random() * (max - min);
                 e.shotAt = this.time;
             }
-            if (e.kind !== 'orochi_bubble' && intersects(e, this.player)) this.hurt(e.def.is_large ? 2 : 1, e.def.name, false, e);
+            if (e.kind !== 'orochi_bubble' && intersects(e, this.player)) this.hurt(e.contactDamage ?? (e.def.is_large ? 2 : 1), e.def.name, false, e);
             if (e.y - e.h / 2 > this.bottom) {
                 this.removeEnemy(e);
                 if (!e.noLeak) this.hurt(this.mode === 'endless' ? 1 : [1, 1, 2][this.tier], e.def.name + ' 入侵成功');
@@ -387,7 +408,7 @@ export class Battle {
                 this.link = null;
                 const [first] = group;
                 for (const e of group) this.removeEnemy(e);
-                const baseHp = this.laterEndlessRound ? this.bossBaseHp() : this.value('CAMPAIGN_BOSS_HP');
+                const baseHp = this.bossBaseHp();
                 this.spawnEnemy('mecha_mini', {x: first.x, y: first.y, speed: 1.8, weight: 3,
                     hp: Math.ceil((this.boss?.maxHp ?? baseHp) * [.12, .16, .20][this.tier])});
             }
@@ -419,21 +440,21 @@ export class Battle {
         if (enemy.factory === 'original') {
             for (let i = 0, n = 1 + Math.floor(this.random() * 3); i < n; i++) {
                 this.spawnEnemy(enemy.kind, {x: clamp(enemy.x + (i - (n - 1) / 2) * 48, 25, this.width - 25),
-                    y: enemy.y, w: enemy.w * .55, h: enemy.h * .55, hp: enemy.maxHp * .25,
+                    y: enemy.y, w: enemy.w * .55, h: enemy.h * .55, hp: enemy.maxHp * .25, speed: enemy.speed,
                     factory: 'child', counts: false});
             }
         }
     }
 
-    hit(entity, amount, shape = null, source = 'skill', upgradeMultiplier = 1) {
-        const bonus = this.time < this.radiationFieldUntil ? this.data.characterFields.radiation.damage : 1;
+    hit(entity, amount, shape = null, source = 'skill') {
+        let bonus = this.time < this.radiationFieldUntil ? this.data.characterFields.radiation.damage : 1;
+        if (this.enemyFieldFrozen) bonus *= this.data.characterFields.ice.damage;
         if (entity === this.boss) {
             if (entity.y < 30 || entity.shieldUntil > this.time || entity.stormUntil > this.time) return;
             const trench = entity.trench;
             const trenchActive = trench && this.time < entity.skillUntil;
             const exposed = trenchActive && (trench.index === 1 || this.time >= trench.recoveryAt);
-            const baseDamage = this.mode === 'endless' ? Math.min(amount, 3 * upgradeMultiplier) : amount;
-            const damage = baseDamage * bonus * (entity.resistUntil > this.time ? .5 : 1)
+            const damage = amount * bonus * (entity.resistUntil > this.time ? .5 : 1)
                 * (this.level === 11 && !exposed ? .60 : 1);
             if (entity.def.key === 'boss_orochi' && entity.hp - damage <= entity.maxHp * [0.5, 0.01][entity.stormStep]) {
                 entity.hp = entity.maxHp * [0.5, 0.01][entity.stormStep];
@@ -524,7 +545,7 @@ export class Battle {
         this.phase = this.phaseBeforeDeath;
         this.invulnerable = this.time + 2400;
         this.player.x = this.width / 2;
-        this.player.y = this.bottom - 14;
+        this.player.y = Math.min(this.bottom - 14, this.playerBottomLimit);
         return true;
     }
 
@@ -616,11 +637,11 @@ export class Battle {
         case 'water': this.applyFireSpeedBuff('swiftFieldUntil', duration); break;
         case 'fire':
             this.fireShieldUntil = until;
-            this.fireShieldHits = level;
+            this.fireShieldHits = field.hits[level - 1];
             break;
         case 'radiation':
             this.radiationFieldUntil = until;
-            if (level === field.duration_ms.length) this.airWaveAt = until;
+            this.airWaveAt = until;
             break;
         }
         this.event('field', {name: field.name});
@@ -693,8 +714,10 @@ export class Battle {
                 b.y = below + (rush.y - below) * progress;
                 if (age >= 5244) b.rush = null;
             }
-            if ((age < 1322 || (age >= 3322 && age < 4644)) && intersects(b, this.player)) {
-                this.hurt(this.hp, '被深渊封潮击败', false, b);
+            const pass = age < 1322 ? 1 : age >= 3322 && age < 4644 ? 2 : 0;
+            if (pass && rush.hitPass !== pass && this.invulnerable <= this.time && intersects(b, this.player)) {
+                rush.hitPass = pass;
+                this.hurt(this.data.CAMPAIGN_BOSS_SKILL_DAMAGE.abyss_rush[this.tier], '被深渊封潮击败', false, b);
             }
         } else if (b.trench && this.time < b.skillUntil) {
             updateTrenchBoss(b, this);
@@ -762,17 +785,17 @@ export class Battle {
     fire() {
         const w = this.data.weapons[this.weapon];
         if (Math.max(this.liftUntil, this.freezeUntil) > this.time) return;
-        let rate = this.mode === 'endless' ? w.fire_rate
-            : (this.data.CAMPAIGN_WEAPON_FIRE_RATES[this.weapon] ?? w.fire_rate);
+        let rate = w.fire_rate;
         if (this.slowUntil > this.time) rate /= this.mode === 'endless' ? .5 : .8;
         const level = this.weaponUpgrades[this.weapon] ?? 0;
-        const upgradeSpeed = this.weapon === 'rifle' ? 1 + .1 * level : 1;
+        const upgradeSpeed = this.weapon === 'rifle' ? 1 + this.data.rifleSpeedPerLevel * level : 1;
         let delay = Math.ceil(Math.round(rate) / .70) * (this.boss?.pull && !this.enemyFieldFrozen ? 2 : 1) / upgradeSpeed;
         for (const [timer, speed] of [
             ['boostUntil', this.mode === 'endless' ? 2 : 1.30],
             ['waterHasteUntil', 1.5],
             ['hasteUntil', 2],
             ['swiftFieldUntil', this.data.characterFields.water.fire_rate],
+            ['sniperHasteUntil', 1.5],
         ]) {
             if (this[timer] > this.time) {
                 const layers = this.fireSpeedLayers[timer] ?? [];
@@ -792,22 +815,28 @@ export class Battle {
         if (this.weapon === 'sniper' && level) this.sniperShots = (this.sniperShots + 1) % 4;
         const missile = this.weapon === 'sniper' && level > 0 && this.sniperShots === 0;
         const multiplier = this.weapon === 'rifle' ? 1 + .1 * level : this.weapon === 'shotgun' ? 1 + .2 * level : 1;
-        const baseDamage = missile ? .5 * (1 + level) : this.data.CAMPAIGN_BULLET_DAMAGE[this.weapon];
-        const damage = baseDamage * multiplier * (this.boostUntil > this.time ? 1.35 : 1);
+        if (missile && this.random() < this.data.sniperHasteChances[level - 1]) this.sniperHasteUntil = this.time + 3000;
+        const red = this.weapon === 'rifle' && level > 0 && this.random() < this.data.rifleRedChances[level - 1];
+        const extra = this.weapon === 'shotgun' && level > 0 && this.random() < this.data.shotgunExtraChances[level - 1];
         const element = this.gift?.until > this.time ? this.gift.type : null;
-        const fire = this.character === 'fire' ? (this.mode === 'endless' ? 1.5 : 1.2) : 1;
-        const angles = missile ? [this.player.x < this.width / 2 ? .49 : -.49]
-            : this.weapon === 'shotgun' ? [-Math.PI / 10, 0, Math.PI / 10] : [0];
-        for (const angle of angles) this.bullets.push({id: this.key(), x: this.player.x, y: this.player.y - 28,
-            dx: Math.sin(angle) * w.speed * .8, dy: -Math.cos(angle) * w.speed * .8,
-            w: this.weapon === 'sniper' || (this.weapon === 'shotgun' && angle === 0) ? 26 : 20,
-            h: this.weapon === 'sniper' || (this.weapon === 'shotgun' && angle === 0) ? 26 : 20,
-            angle, weapon: this.weapon,
-            damage, character: this.character, element, upgradeMultiplier: missile ? 1 + level : multiplier,
-            ...(missile ? {missile: true, guided: true, splitCount: level, explosive: 64,
-                dx: Math.sin(angle) * 7, dy: -Math.cos(angle) * 7, w: 24, h: 24,
-                expires: this.time + 4500, blastDamage: damage * fire * (element === 'fire' ? 1.4 : 1)} : {}),
-            pierce: this.weapon === 'sniper' && !missile, hit: new Set()});
+        let base = this.data.CAMPAIGN_BULLET_DAMAGE[this.weapon];
+        if (element === 'ice' && this.mode === 'endless') base = Math.max(base, this.weapon === 'shotgun' ? 1.1 : 2.2);
+        const damage = missile ? this.data.sniperMissileDamage[level - 1] : base * multiplier;
+        const angles = this.weapon === 'shotgun' ? (extra ? [-18, -6, 6, 18] : [-18, 0, 18]) : [0];
+        for (const degrees of angles) {
+            const angle = missile ? (this.player.x < this.width / 2 ? .49 : -.49) : degrees * Math.PI / 180;
+            const center = this.weapon === 'shotgun' && Math.abs(degrees) <= 6;
+            const size = red ? 60 : this.weapon === 'sniper' || center ? 26 : 20;
+            this.bullets.push({id: this.key(), x: this.player.x, y: this.player.y - 28,
+                dx: Math.sin(angle) * w.speed * .8, dy: -Math.cos(angle) * w.speed * .8,
+                w: size, h: size, angle, weapon: this.weapon, damage, character: this.character, element,
+                color: red || center ? 0xff3730 : extra ? 0xffe628 : null,
+                ...(red ? {rifleRed: true, explosive: this.data.rifleBlastRadius, blastDamage: damage * 2} : {}),
+                ...(missile ? {missile: true, guided: true, splitCount: level, explosive: this.data.sniperMissileRadius,
+                    dx: Math.sin(angle) * 7, dy: -Math.cos(angle) * 7, w: 24, h: 24,
+                    expires: this.time + 4500} : {}),
+                pierce: this.weapon === 'sniper' && !missile, hit: new Set()});
+        }
         this.event('shoot', {weapon: this.weapon});
     }
 
@@ -836,10 +865,13 @@ export class Battle {
                 dy: -Math.cos(angle) * speed, w: radius * 2, h: radius * 2, angle, damage,
                 hit: new Set(), expires: this.time + 2500, ...extra});
         };
+        const skillDamage = this.data.skillDamage;
+        const castHits = infinite ? null : new Map();
         let duration = 0;
         switch (type) {
         case 'grenade':
-            projectile(0, 6, 12, 0, {expires: this.time + 900, explosive: 90, blastDamage: 3,
+            projectile(0, 6, 12, 0, {expires: this.time + 900, explosive: 90, blastDamage: skillDamage.grenade,
+                bossDamage: infinite ? skillDamage.grenade : skillDamage.grenade_boss,
                 element: 'fire', art: 'fisher_grenade'});
             break;
         case 'fire_wall':
@@ -848,8 +880,9 @@ export class Battle {
             break;
         case 'fireball':
             duration = 2500;
-            for (const angle of [-32, 0, 32]) projectile(angle, 7, 28, 1.5, {element: 'fire', pierce: true});
-            for (const angle of [-16, 16]) projectile(angle, 7, 8, 0, {element: 'fire', explosive: 55, blastDamage: 1.5});
+            for (const angle of [-32, 0, 32]) projectile(angle, 7, 28, skillDamage.fireball,
+                {element: 'fire', pierce: true, castHits, castCap: this.data.CAMPAIGN_CAST_DAMAGE_CAP.fireball});
+            for (const angle of [-16, 16]) projectile(angle, 7, 8, 0, {element: 'fire', explosive: 44, blastDamage: skillDamage.fire_rocket});
             break;
         case 'ice_floor': {
             duration = infinite ? 8000 : 5000;
@@ -861,7 +894,8 @@ export class Battle {
         case 'ice_balls':
             duration = 2500;
             for (const angle of [-56, -40, -24, -8, 8, 24, 40, 56]) {
-                projectile(angle, 6, 18, 1, {element: 'ice', freeze: true});
+                projectile(angle, 6, 18, skillDamage.ice_ball,
+                    {element: 'ice', freeze: true, castHits, castCap: this.data.CAMPAIGN_CAST_DAMAGE_CAP.ice_ball});
             }
             break;
         case 'water_heal':
@@ -884,15 +918,16 @@ export class Battle {
                 .slice(0, infinite ? 5 : 4);
             if (!targets.length) return;
             duration = 400;
-            for (const entity of targets) this.zone(entity.x, entity.y, 70, 76, -2, 0, 230, 'lightning_reactor',
-                {effect: 'energy', once: true});
+            for (const entity of targets) this.zone(entity.x, entity.y, 70, 76, -skillDamage.lightning, 0, 230, 'lightning_reactor',
+                {effect: 'energy', once: true, targetId: entity.id});
             break;
         }
         case 'magnetic_storm': {
             const center = Math.max(120, y - 170);
             duration = 3000;
             area(x, center, 180, 180, 0, duration, 'energy', {circle: true, magnet: true});
-            this.later(duration, () => area(x, center, 245, 245, 3, 300, 'energy', {circle: true, once: true}), true);
+            const damage = infinite ? skillDamage.infinite_storm : skillDamage.magnetic_storm;
+            this.later(duration, () => area(x, center, 245, 245, damage, 300, 'energy', {circle: true, once: true}), true);
             break;
         }
         case 'radiation_laser':
@@ -941,11 +976,19 @@ export class Battle {
         this.event('pop', {x: drop.x, y: drop.y});
     }
 
+    weaponHitDamage(bullet) {
+        const endless = this.mode === 'endless';
+        const fire = bullet.character === 'fire' ? (endless ? 1.5 : 1.2) : 1;
+        const tide = endless && this.boostUntil > this.time ? 1.5 : 1;
+        return bullet.damage * fire * tide * (bullet.element === 'fire' ? 1.4 : 1);
+    }
+
     detonate(bullet, target = null) {
-        const {x, y, explosive: radius, blastDamage} = bullet;
+        const {x, y, explosive: radius} = bullet;
+        const blastDamage = bullet.missile ? this.weaponHitDamage(bullet) : bullet.blastDamage;
         this.zone(x, Math.max(0, y), radius * 2, radius * 2, -blastDamage, 0, 270, null,
             {circle: true, effect: 'fire', once: true, missile: bullet.missile,
-                upgradeMultiplier: bullet.upgradeMultiplier, bossDamage: radius === 90 && this.mode !== 'endless' ? 2 : blastDamage});
+                rifleRed: bullet.rifleRed, bossDamage: bullet.bossDamage ?? blastDamage});
         for (let i = 0; i < (bullet.splitCount ?? 0); i++) {
             const angle = bullet.angle + (target ? Math.PI : 0)
                 + (i - (bullet.splitCount - 1) / 2) * Math.PI * 48 / 180;
@@ -1018,18 +1061,32 @@ export class Battle {
                 if (e === b.originalTarget && !b.canHitOriginal) continue;
                 const boxes = e === this.boss ? bossBoxes(e, this.time) : [e];
                 if (!boxes.some(box => intersects(b, box))) continue;
-                if (b.explosive) { this.detonate(b, e); break; }
+                if (b.explosive) {
+                    if (b.rifleRed) {
+                        const damage = this.weaponHitDamage(b);
+                        this.hit(e, damage * 1.5, b, 'bullet');
+                        if (this.phase === 'clear' || this.phase === 'victory') return;
+                        b.blastDamage = damage * 2;
+                    }
+                    this.detonate(b, e);
+                    break;
+                }
                 if (e !== this.boss) {
                     if (b.character === 'ice' || b.element === 'ice') e.slowedUntil = this.time + 2500;
                     if (b.element === 'ice' && !e.def.is_large && !e.def.zongzong) e.frozenUntil = this.time + (b.freeze ? 2000 : 800);
                 }
-                const boost = b.character === 'fire' ? (this.mode === 'endless' ? 1.5 : 1.2) : 1;
-                this.hit(e, b.damage * boost * (b.weapon && b.element === 'fire' ? 1.4 : 1), b,
-                    b.weapon ? 'bullet' : 'skill', b.upgradeMultiplier);
+                let damage = b.weapon ? this.weaponHitDamage(b) : b.damage;
+                if (b.castHits) {
+                    const dealt = b.castHits.get(e.id) ?? 0;
+                    damage = Math.min(damage, b.castCap - dealt);
+                    b.castHits.set(e.id, dealt + damage);
+                }
+                this.hit(e, damage, b, b.weapon ? 'bullet' : 'skill');
                 if (this.phase === 'clear' || this.phase === 'victory') return;
                 b.hit.add(e.id);
                 if (!b.pierce) { b.y = -100; break; }
                 if (b.weapon) b.damage *= this.mode === 'endless' ? .7 : .65;
+                else if (b.element === 'fire') b.damage *= .7;
             }
         }
         this.bullets = this.bullets.filter(b => b.y > -24 && b.x > -24 && b.x < this.width + 24);
@@ -1128,7 +1185,7 @@ export class Battle {
             }
             const hits = entity => {
                 if (z.trenchSpire) return trenchSpireHits(z, entity, this.time);
-                if (z.missile) {
+                if (z.missile || z.rifleRed) {
                     const x = Math.max(0, Math.abs(z.x - entity.x) - entity.w / 2);
                     const y = Math.max(0, Math.abs(z.y - entity.y) - entity.h / 2);
                     return Math.hypot(x, y) <= z.w / 2;
@@ -1145,11 +1202,12 @@ export class Battle {
             if (z.damage < 0 && this.time >= (z.nextHit ?? 0)) {
                 z.nextHit = z.once ? Infinity : this.time + (z.interval ?? 500);
                 for (const e of targets) {
+                    if (z.targetId != null && z.targetId !== e.id) continue;
                     const boxes = e === this.boss ? bossBoxes(e, this.time) : [e];
                     const box = boxes.find(hits);
                     if (e.hp <= 0 || !box) continue;
                     this.hit(e, e === this.boss && z.bossDamage != null ? z.bossDamage : -z.damage, box,
-                        'skill', z.upgradeMultiplier);
+                        'skill');
                     if (this.phase === 'clear' || this.phase === 'victory') return;
                     if (z.freeze) e.frozenUntil = this.time + 720;
                 }
@@ -1176,7 +1234,7 @@ export class Battle {
         p.moving = Boolean(dx || dy);
         const margin = this.view.offset ? p.w / 2 : Math.max(40, p.w / 2);
         p.x = clamp(p.x + dx * speed, margin, this.width - margin);
-        p.y = clamp(p.y + (this.liftUntil > this.time ? -4.6 : dy * speed), 80, this.view.height - p.h / 2 - 8);
+        p.y = clamp(p.y + (this.liftUntil > this.time ? -4.6 : dy * speed), 80, this.playerBottomLimit);
         if (input.fire) this.fire();
         if (input.skill != null) this.cast(input.skill);
         this.updateSpawns();

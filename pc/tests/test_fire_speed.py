@@ -44,11 +44,11 @@ class FireSpeedTests(unittest.TestCase):
                 self.assert_shot_gap(player, 10000, 103)
                 player.current_weapon = 'rifle'
                 player.weapon_upgrades['rifle'] = 3
-                self.assert_shot_gap(player, 10000, 57)
+                self.assert_shot_gap(player, 10000, 51)
                 player.current_weapon = 'pistol'
                 game._activate_rage()
                 self.assert_shot_gap(player, 10000, 44)
-                self.assert_shot_gap(player, 12000, 66)
+                self.assert_shot_gap(player, 12000, 44)
                 self.assert_shot_gap(player, 16000, 86)
                 self.assert_shot_gap(player, 20000, 172)
                 self.assert_shot_gap(player, 30000, 400)
@@ -83,8 +83,9 @@ class FireSpeedTests(unittest.TestCase):
             self.assertIsNone(game.action(2, 'character', 'water'))
             self.assertIsNone(game.action(2, 'skill1'))
         for player in (first, second):
-            self.assert_shot_gap(player, 11000, 85)
-            self.assert_shot_gap(player, 12000, 128)
-            self.assert_shot_gap(player, 13000, 191)
-            self.assert_shot_gap(player, 15000, 286)
-            self.assert_shot_gap(player, 16000, 429)
+            self.assert_shot_gap(player, 11000, 80)
+            self.assert_shot_gap(player, 12000, 80)
+            self.assert_shot_gap(player, 13000, 80)
+            self.assert_shot_gap(player, 14000, 119)
+            self.assert_shot_gap(player, 15000, 267)
+            self.assert_shot_gap(player, 16000, 400)

@@ -140,7 +140,7 @@ class OrochiBoss(Boss):
     THUNDER_INTERVAL = 1400
     THUNDER_RADIUS = 50
     DEATH_DURATION = 1600
-    SIDE_INTERVAL = (20000, 15000, 10000)
+    SIDE_INTERVAL = config.CAMPAIGN_OROCHI_SIDE_INTERVAL_MS
     SIDE_WARNING = 900
 
     def __init__(self, bdef, difficulty):

@@ -367,7 +367,10 @@ _SOUND_BUILDERS = {
 
 
 def make_sound(key):
-    if key in _sound_cache:
+    if not pygame.mixer.get_init():
+        # SDL sounds cached before the mixer shut down cannot be played here.
+        _sound_cache.clear()
+    elif key in _sound_cache:
         return _sound_cache[key]
     if not ensure_audio():
         return None

@@ -67,13 +67,14 @@ class NativeTransport:
                     raise ValueError('8001 未运行 TTgames 联机服务')
                 info = await response.json()
         except aiohttp.ClientConnectorError as exc:
-            if exc.errno == errno.ECONNREFUSED:
+            # Windows IOCP may report refusal as EINVAL / ERROR_CONNECTION_REFUSED.
+            if exc.errno == errno.ECONNREFUSED or getattr(exc.os_error, 'winerror', None) == 1225:
                 return False
             raise
         if info.get('version') != UNIFIED_VERSION or not info.get('ready') or not info.get('url'):
             raise ValueError('8001 的 TTgames 联机服务未就绪')
         self.origin = origin
-        self.address = info['url']
+        self.address = info.get('lan_warning') or info['url']
         return True
 
     def http(self):

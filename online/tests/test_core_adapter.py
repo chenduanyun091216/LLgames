@@ -73,8 +73,9 @@ class CoOpRulesTests(unittest.TestCase):
 
                 self.assertIsNone(game.action(2, 'weapon', 'rifle'))
                 game.action(1, 'shop_close')
-                self.assertTrue(game._shoot(config.game_ticks(), teammate))
-                base = config.CAMPAIGN_BULLET_DAMAGE['rifle'] if mode == 'campaign' else 1.3
+                with patch('game_core.game.random.random', return_value=.99):
+                    self.assertTrue(game._shoot(config.game_ticks(), teammate))
+                base = config.CAMPAIGN_BULLET_DAMAGE['rifle']
                 self.assertAlmostEqual(game.bullets[-1].damage, base * 1.1)
 
     def test_infinite_departure_releases_radiation_equipment_for_teammate(self):
@@ -111,7 +112,7 @@ class CoOpRulesTests(unittest.TestCase):
         enemy = self.enemy(); enemy.y = 150; enemy.speed = 1
         self.g.enemies = [enemy]
         self.g.step()
-        self.assertEqual(enemy.y, 151.25)
+        self.assertAlmostEqual(enemy.y, 150 + config.CAMPAIGN_MOVE_MULT[1])
 
     def test_opener_closes_both_shops_and_resumes_battle(self):
         for opener in (1, 2):

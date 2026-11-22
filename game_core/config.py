@@ -21,6 +21,8 @@ MOBILE_LANDSCAPE_VIEW = False
 MOBILE_LANDSCAPE_ENTITY_SCALE = 0.64
 MOBILE_LANDSCAPE_BOSS_SCALE = 0.48
 MOBILE_PORTRAIT_ENTITY_SCALE = 0.8
+ACTOR_BASE_SCALE = 1.25
+PLAYER_BOTTOM_MARGIN = 10
 
 # 游戏入口以固定步长推进战斗时钟；单独运行游戏对象时使用实时时钟。
 campaign_time_ms = None
@@ -128,10 +130,10 @@ class WeaponDef:
         self.speed = speed
 
 WEAPON_DEFS = {
-    'pistol':  WeaponDef('手枪',  0,  3, 10, '手枪', (255, 220, 80),  300, 10),
+    'pistol':  WeaponDef('手枪',  0,  3, 10, '手枪', (255, 220, 80),  280, 10),
     'rifle':   WeaponDef('步枪', 10,  2,  5, '步枪', (100, 180, 255), 200, 14),
-    'shotgun': WeaponDef('散弹枪', 15, 2, 5, '散弹', (110, 235, 180), round(360 / 1.10), 12),
-    'sniper':  WeaponDef('狙击枪', 20,  1,  3, '狙击枪', (255, 100, 100), round(480 / 1.30), 20),
+    'shotgun': WeaponDef('散弹枪', 15, 2, 5, '散弹', (110, 235, 180), 294, 12),
+    'sniper':  WeaponDef('狙击枪', 20,  1,  3, '狙击枪', (255, 100, 100), 392, 20),
 }
 _WEAPON_KEYS_ORDERED = ['pistol', 'rifle', 'shotgun', 'sniper']
 
@@ -175,12 +177,14 @@ _CHAR_KEYS_ORDERED = ['ice', 'water', 'fire', 'radiation']
 
 CHARACTER_FIELD_CHANCE = 0.25
 CHARACTER_FIELDS = {
-    'ice': {'name': '冰冻结界', 'duration_ms': (1000, 1500, 2000), 'detail': '冻结全场敌人（含首领）'},
-    'water': {'name': '迅猛结界', 'duration_ms': (2000, 2500, 3000), 'detail': '全队射速 +50%，移速 +30%',
+    'ice': {'name': '冰冻结界', 'duration_ms': (1000, 2000, 3000),
+            'detail': '冻结全场敌人（含首领），期间受到的伤害 +50%', 'damage': 1.5},
+    'water': {'name': '迅猛结界', 'duration_ms': (4000, 6000, 8000), 'detail': '全队射速 +50%，移速 +30%',
               'fire_rate': 1.5, 'move_speed': 1.3},
-    'fire': {'name': '火甲结界', 'duration_ms': (3000, 4000, 5000), 'detail': '每人抵挡 1/2/3 次伤害'},
-    'radiation': {'name': '强化结界', 'duration_ms': (3000, 4000, 5000),
-                  'detail': '全队伤害 +100%，满级结束清除飞行敌弹', 'damage': 2, 'wave_ms': 500},
+    'fire': {'name': '火甲结界', 'duration_ms': (10000, 10000, 10000),
+             'detail': '每人抵挡 2/3/4 次伤害', 'hits': (2, 3, 4)},
+    'radiation': {'name': '强化结界', 'duration_ms': (5000, 7000, 9000),
+                  'detail': '全队伤害 +100%，结束清除飞行敌弹', 'damage': 2, 'wave_ms': 500},
 }
 
 TRENCH_ENEMIES = (
@@ -416,6 +420,14 @@ LEVEL_CONFIGS = [
 ]
 
 
+def wave_enemy_hp(definition):
+    if 'campaign_hp' in definition:
+        return definition['campaign_hp']
+    if definition.get('zongzong'):
+        return WAVE_ENEMY_HP['zongzong']
+    return WAVE_ENEMY_HP['large' if definition['is_large'] else 'normal']
+
+
 def get_level_enemy_defs(level_config):
     pool = level_config['enemy_pool']
     return [e for e in ENEMY_DEFS if e['key'] in pool]
@@ -452,17 +464,34 @@ def make_font(size, bold=False):
 # PC、Web 与联机共用的权威战役数值。三元组按简单、中等、困难排列。
 CAMPAIGN_KILLS = ((12, 14, 15), (15, 17, 18), (17, 20, 21), (19, 22, 24),
                   (21, 24, 26), (0, 0, 0), (23, 27, 29), (22, 26, 29), (22, 27, 30), (23, 28, 31), (24, 29, 32), (0, 0, 0))
-CAMPAIGN_SPAWN_MS = ((2600, 2400, 2200), (2500, 2300, 2125), (2400, 2200, 2050),
-                     (2320, 2100, 1975), (2250, 2000, 1900), (0, 0, 0),
-                     (2150, 1900, 1825), (2050, 1800, 1750), (2000, 1780, 1725), (1950, 1750, 1700), (1850, 1700, 1550), (0, 0, 0))
-CAMPAIGN_ENEMY_CAP = ((4, 5, 6), (5, 6, 7), (5, 6, 7), (6, 7, 8),
-                      (6, 7, 8), (0, 0, 0), (6, 8, 9), (7, 8, 9), (5, 6, 7), (5, 6, 7), (5, 6, 7), (0, 0, 0))
-CAMPAIGN_BOSS_HP = ((18, 24, 28), (30, 40, 46), (45, 60, 69), (62, 82, 94),
-                    (80, 106, 122), (99, 132, 152), (118, 156, 180), (128, 168, 198), (132, 175, 211), (136, 182, 222), (142, 190, 230), (148, 200, 240))
+CAMPAIGN_SPAWN_MS = ((2700, 2300, 2050), (2550, 2150, 1925), (2450, 2050, 1825),
+                     (2400, 1950, 1725), (2300, 1850, 1650), (0, 0, 0),
+                     (2200, 1750, 1550), (2100, 1650, 1450), (2150, 1750, 1550),
+                     (2100, 1700, 1500), (2050, 1650, 1450), (0, 0, 0))
+CAMPAIGN_ENEMY_CAP = ((4, 5, 6), (4, 6, 7), (5, 6, 7), (5, 7, 8),
+                      (5, 7, 8), (0, 0, 0), (6, 7, 9), (6, 8, 10),
+                      (5, 6, 7), (5, 6, 7), (5, 6, 8), (0, 0, 0))
+WAVE_ENEMY_HP = {'normal': 3, 'large': 9, 'zongzong': 8}
+CAMPAIGN_ENEMY_HP_BONUS = ((-1, 0, 0), (-1, 0, 0), (-1, 0, 1), (0, 0, 1),
+                           (0, 1, 1), (0, 1, 2), (0, 1, 2), (0, 1, 2),
+                           (0, 1, 2), (0, 1, 2), (0, 1, 2), (0, 0, 0))
+CAMPAIGN_MOVE_MULT = (1.05, 1.20, 1.38)
+CAMPAIGN_ENEMY_ATTACK_MS = ((10500, 14500), (7500, 10500), (5500, 8200))
+INFINITE_ENEMY_ATTACK_MS = (5200, 8200)
+CAMPAIGN_TEMPLE_FAN_ENEMIES = ('ancient_ray', 'ancient_seahorse')
+CAMPAIGN_TEMPLE_FAN_ANGLES = ((0,), (-9, 9), (-16, 0, 16))
+TRENCH_FAN_ANGLES = ((-24, 0, 24), (-24, -8, 8, 24), (-28, -14, 0, 14, 28))
+CAMPAIGN_BOSS_SKILL_DAMAGE = {'abyss_rush': (2, 3, 3), 'niu_slam': (1, 1, 2),
+                              'orochi_hazard': (1, 2, 2)}
+CAMPAIGN_OROCHI_SIDE_INTERVAL_MS = (22000, 15000, 9500)
+CAMPAIGN_BOSS_HP = ((16, 24, 32), (26, 38, 50), (38, 54, 72), (52, 72, 96),
+                    (66, 92, 124), (82, 116, 154), (96, 138, 182), (108, 156, 208),
+                    (120, 174, 232), (132, 190, 252), (144, 206, 274), (156, 224, 300))
 CAMPAIGN_WHALE_INTERRUPT_CAP = (8, 10, 12)
-CAMPAIGN_BOSS_ATTACK_MS = ((5000, 4400, 3800), (4800, 4100, 3600), (4600, 3900, 3400),
-                           (4400, 3700, 3200), (4200, 3500, 3000), (4000, 3400, 2900),
-                           (6800, 5800, 5000), (4700, 3900, 3100), (5600, 4600, 3600), (5800, 4800, 3800), (5200, 4400, 3600), (4600, 3600, 2900))
+CAMPAIGN_BOSS_ATTACK_MS = ((5400, 4500, 3900), (5200, 4300, 3700), (5000, 4100, 3500),
+                           (4800, 3900, 3300), (4600, 3700, 3100), (4400, 3500, 2950),
+                           (6800, 5500, 4500), (4950, 3900, 3050), (5900, 4700, 3600),
+                           (6100, 4900, 3850), (5600, 4450, 3450), (4950, 3800, 2850))
 CAMPAIGN_REINFORCEMENT_MS = ((0, 0, 0), (5500, 5000, 4600), (5100, 4600, 4100),
                              (4800, 4300, 3900), (4500, 4000, 3600), (4800, 4200, 3700),
                              (4800, 4300, 3800), (5200, 4600, 4000), (6800, 5800, 4800), (7200, 6200, 5100), (0, 0, 0), (0, 0, 0))
@@ -475,26 +504,41 @@ CAMPAIGN_WEAPON_PRICES = {'pistol': (0, 0, 0), 'rifle': (8, 10, 12),
                           'shotgun': (12, 14, 16), 'sniper': (16, 18, 20)}
 CAMPAIGN_CHARACTER_PRICES = {'ice': (22, 26, 30), 'fire': (26, 30, 34),
                              'water': (28, 32, 36), 'radiation': (30, 34, 38)}
-CAMPAIGN_BULLET_DAMAGE = {'pistol': 1.0, 'rifle': 1.5, 'shotgun': 0.85, 'sniper': 2.0}
+# 所有模式共用裸装武器伤害，散弹为每颗伤害。射击间隔为 ceil(WEAPON_DEFS.fire_rate / 0.70)。
+CAMPAIGN_BULLET_DAMAGE = {'pistol': 1.0, 'rifle': 1.5, 'shotgun': 1.0, 'sniper': 3.25}
+SKILL_DAMAGE = {'grenade': 3.5, 'grenade_boss': 3.0, 'fireball': 1.75, 'fire_rocket': 1.5,
+                'ice_ball': 1.25, 'lightning': 2.5, 'magnetic_storm': 3.5, 'infinite_storm': 2.5}
+CAMPAIGN_CAST_DAMAGE_CAP = {'fireball': 4.5, 'ice_ball': 2.5}
 WEAPON_UPGRADE_LIMIT = 3
-CAMPAIGN_WEAPON_FIRE_RATES = {'pistol': 280, 'shotgun': 280, 'sniper': 466}
+RIFLE_SPEED_PER_LEVEL = 0.15
+RIFLE_RED_CHANCES = (0.08, 0.11, 0.14)
+RIFLE_BLAST_RADIUS = 100
+SHOTGUN_EXTRA_CHANCES = (0.18, 0.24, 0.30)
+SNIPER_HASTE_CHANCES = (0.22, 0.28, 0.34)
+SNIPER_MISSILE_DAMAGE = (3.25, 4.25, 5.25)
 SNIPER_MISSILE_RADIUS = 64
 
 # 无限模式 Boss 首轮参数，按 BOSS_DEFS 顺序排列。
-INFINITE_BOSS_HP = (30, 46, 66, 90, 116, 144, 170, 184, 192, 202, 211, 220)
-INFINITE_BOSS_ATTACK_MS = (4400, 4100, 3900, 3700, 3500, 3400, 5800, 3900, 4600, 4800, 4400, 3600)
+INFINITE_BOSS_HP = (30, 44, 62, 84, 108, 134, 158, 180, 204, 224, 244, 264)
+INFINITE_BOSS_ATTACK_MS = (4600, 4300, 4050, 3800, 3600, 3450, 5400, 3900, 4450, 4650, 4150, 3500)
 INFINITE_REINFORCEMENT_MS = (5500, 5000, 4600, 4300, 4000, 4200, 4300, 4600, 5800, 6200, 0, 0)
 INFINITE_REINFORCEMENT_CAP = (1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 0, 0)
 INFINITE_PROGRESSION = {
-    'boss_hp_per_chapter': 5,
-    'boss_attack_reduction_per_round': 5,
-    'boss_attack_min_percent': 70,
+    'boss_hp_per_chapter': 7,
+    'boss_attack_reduction_per_round': 4,
+    'boss_attack_min_percent': 72,
     'reinforcement_reduction_per_round': 5,
     'reinforcement_min_percent': 75,
     'reinforcement_extra_cap': 2,
-    'enemy_health_start_percent': 150,
-    'enemy_health_per_chapter': 2,
-    'wave_spawn_start_ms': 1300,
-    'wave_spawn_step_ms': 50,
-    'wave_spawn_min_ms': 800,
+    'enemy_health_first_round_step': 2,
+    'enemy_health_per_chapter': 3,
+    'enemy_move_start': 1.20,
+    'enemy_move_per_round': 0.04,
+    'enemy_move_max': 1.36,
+    'zong_spawn_chance': 0.05,
+    'large_spawn_chance': 0.16,
+    'fast_spawn_chance': 0.12,
+    'wave_spawn_start_ms': 1550,
+    'wave_spawn_step_ms': 60,
+    'wave_spawn_min_ms': 850,
 }

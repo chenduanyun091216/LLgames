@@ -84,13 +84,14 @@ class MatchRoom(Room):
 class Host:
     version = UNIFIED_VERSION
 
-    def __init__(self, static_root, clock=time.monotonic, reservation=60, reconnect=120):
+    def __init__(self, static_root, clock=time.monotonic, reservation=60, reconnect=120, lan_warning=''):
         self.static_root = static_root.resolve()
         self.clock = clock
         self.reservation = reservation
         self.reconnect = reconnect
         self.room = None
         self.public_url = ''
+        self.lan_warning = lan_warning
         self.attempts = {}
         self.receipts = {}
 
@@ -181,7 +182,7 @@ def create_host(static_root, **options):
         index = host.static_root / 'index.html'
         return web.json_response({'version': UNIFIED_VERSION, 'ready': index.is_file(),
                                   'build': hashlib.sha256(index.read_bytes()).hexdigest()[:16] if index.is_file() else None,
-                                  'url': host.public_url})
+                                  'url': host.public_url, 'lan_warning': host.lan_warning})
 
     async def create(request):
         if host.limited(request.remote):

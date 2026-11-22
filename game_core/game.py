@@ -79,11 +79,6 @@ CONTACT_DAMAGE_COOLDOWN = 1000
 REVIVE_INVINCIBILITY_MS = 1500
 FISHER_GRENADE_COOLDOWN = 3000
 FISHER_GRENADE_RADIUS = 90
-FISHER_GRENADE_DAMAGE = 3.0
-FAST_ENEMY_CHANCE = 0.12
-ENEMY_ATTACK_INTERVAL_MULT = 0.75
-ZONGZONG_SPAWN_CHANCE = 0.05
-INFINITE_LARGE_ENEMY_CHANCE = 0.16
 GIFT_DROP_MIN_MS = 15000
 GIFT_DROP_MAX_MS = 15000
 GIFT_BUFF_MS = 10000
@@ -124,7 +119,6 @@ SHOP_KEYPAD_KEYS = (pygame.K_KP1, pygame.K_KP2, pygame.K_KP3, pygame.K_KP4,
                     pygame.K_KP5, pygame.K_KP6, pygame.K_KP7, pygame.K_KP8)
 DESKTOP_HUD_KEYS = (pygame.K_LEFTBRACKET, pygame.K_p, pygame.K_RIGHTBRACKET)
 ACTOR_SCALE_MIN, ACTOR_SCALE_MAX, ACTOR_SCALE_STEP = 50, 150, 5
-ACTOR_BASE_SCALE = 1.25
 
 
 class Game:
@@ -298,6 +292,10 @@ class Game:
                 level, size, self.background_scroll_ticks / BACKGROUND_SCROLL_TICKS)
         return None
 
+    def _player_visual_scale(self, player):
+        mobile_scale = 1.18 if self.mobile_web and player.character in CHARACTER_DEFS else 1
+        return config.ACTOR_BASE_SCALE * self.actor_scale_percent / 100 * mobile_scale
+
     def resize_view(self, previous_area=None):
         self._desktop_fonts.clear()
         if previous_area and not self.infinite_mode:
@@ -327,7 +325,7 @@ class Game:
             max_x = min(config.SCREEN_WIDTH - 40,
                         config.GAME_AREA_RIGHT - (player_width + 1) // 2)
             player.x = max(min_x, min(max_x, player.x))
-            player.y = max(80, min(player.bottom_limit(), player.y))
+            player.y = max(80, min(player.bottom_limit(self._player_visual_scale(player)), player.y))
         for enemy in self.enemies:
             if enemy.temple_kind == 'rift':
                 self._size_temple_rift(enemy)
@@ -909,6 +907,7 @@ class Game:
         self.player.water_haste_until = 0
         self.player.gift_speed_until = 0
         self.player.rage_until = 0
+        self.player.sniper_haste_until = 0
         self.player.fire_speed_layers.clear()
         self.player.weapon_ammo = {}
         self.infinite_mode = False
@@ -942,6 +941,7 @@ class Game:
         self.player.water_haste_until = 0
         self.player.gift_speed_until = 0
         self.player.rage_until = 0
+        self.player.sniper_haste_until = 0
         self.player.fire_speed_layers.clear()
         self.player.weapon_ammo = {}
         self.player.gold = 0
@@ -949,11 +949,12 @@ class Game:
         self.chapter = start_chapter
         self.lives = 3
         self.revive_count = 0
-        self.infinite_background_level = start_chapter
+        self.infinite_boss_index = start_chapter - 1
+        self.infinite_background_level = self.infinite_boss_index % len(config.INFINITE_BOSS_HP) + 1
         self.infinite_deaths = 0
         self.background_scroll_ticks = 0
         self.max_player_hp = 5; self.player_hp = self.max_player_hp
-        self.spawn_interval = config.INFINITE_PROGRESSION['wave_spawn_start_ms']
+        self.spawn_interval = self._infinite_spawn_interval()
         self.min_spawn_interval = config.INFINITE_PROGRESSION['wave_spawn_min_ms']
         self.spawn_decrease = 0
         self.boss = None; self.boss_projectiles.clear(); self.enemy_projectiles.clear()
@@ -969,13 +970,12 @@ class Game:
         self.rage_banner_until = 0
         self.bg = self._load_bg()
         now = config.game_ticks()
-        self.last_spawn_time = now - 100
+        self.last_spawn_time = now + 1200 - self.spawn_interval
         self._schedule_next_gift(now)
         self.infinite_start_time = now
         self.infinite_music_variant = 0
         self.player_invincible_until = 0
-        self.infinite_boss_index = start_chapter - 1
-        # 第 9、10 轮使用各自的小怪池，其余轮次沿用原刷怪组成。
+        # 常规海域共用第 8 关怪池，工厂、神庙和海沟由 spawn_enemy 选用本关物种。
         self.level_enemy_defs = get_level_enemy_defs(LEVEL_CONFIGS[7])
         self.bg_transition_until = 0
         self.bg_transition_prev = None
@@ -1010,11 +1010,11 @@ class Game:
     def _difficulty_to_values(self, diff):
         values = {name: getattr(diff, name) for name, _, _, _, _ in self.custom_fields}
         if diff is DIFFICULTY_PRESETS['medium']:
-            values.update(spawn_interval_start=2400, spawn_interval_min=1800, spawn_decrease=0,
+            values.update(spawn_interval_start=config.CAMPAIGN_SPAWN_MS[0][1], spawn_interval_min=1800, spawn_decrease=0,
                           enemy_speed_mult=1.0, weapon_cost_mult=1.0, skill_cd_mult=1.0,
                           bullet_cost_sniper=0, boss_hp_mult=1.0, boss_attack_mult=1.0,
-                          boss_homing_mult=1.0, enemy_attack_interval_min=8000,
-                          enemy_attack_interval_max=12000)
+                          boss_homing_mult=1.0, enemy_attack_interval_min=config.CAMPAIGN_ENEMY_ATTACK_MS[1][0],
+                          enemy_attack_interval_max=config.CAMPAIGN_ENEMY_ATTACK_MS[1][1])
         return values
 
     def _change_custom_value(self, key, delta):
@@ -1078,7 +1078,16 @@ class Game:
         return {'简单': 0, '困难': 2}.get(name, 1)
 
     def _enemy_speed_multiplier(self):
-        return 1.30 if self.infinite_mode else (1.20, 1.25, 1.30)[self._campaign_tier()]
+        if not self.infinite_mode:
+            return config.CAMPAIGN_MOVE_MULT[self._campaign_tier()]
+        progression = config.INFINITE_PROGRESSION
+        cycle = self.infinite_boss_index // len(config.INFINITE_BOSS_HP)
+        return min(progression['enemy_move_max'],
+                   progression['enemy_move_start'] + cycle * progression['enemy_move_per_round'])
+
+    def _boss_skill_damage(self, skill):
+        tier = 1 if self.infinite_mode else self._campaign_tier()
+        return config.CAMPAIGN_BOSS_SKILL_DAMAGE[skill][tier]
 
     def _campaign_value(self, table):
         return table[self.current_level - 1][self._campaign_tier()]
@@ -1108,7 +1117,7 @@ class Game:
         self.spawn_interval = self._campaign_value(config.CAMPAIGN_SPAWN_MS)
         self.spawn_decrease = 0
         if self.difficulty and self.difficulty.name == '自定义':
-            self.spawn_interval = round(self.spawn_interval * self.difficulty.spawn_interval_start / 2400)
+            self.spawn_interval = round(self.spawn_interval * self.difficulty.spawn_interval_start / config.CAMPAIGN_SPAWN_MS[0][1])
             self.min_spawn_interval = min(self.spawn_interval, self.difficulty.spawn_interval_min)
             self.spawn_decrease = self.difficulty.spawn_decrease
         self.last_spawn_time = now + 1200 - self.spawn_interval
@@ -1128,7 +1137,7 @@ class Game:
     def _save_level_checkpoint(self, now):
         player = {}
         for key, value in vars(self.player).items():
-            if key in ('surface', 'breath_base', '_breath_src'):
+            if key in ('surface', 'breath_base', '_breath_src', '_sprite_bottom_ratio'):
                 continue
             if key in ('last_shot_time', 'animation_move_at', 'animation_skill_at', 'animation_hit_at') and value is not None:
                 value -= now
@@ -1207,10 +1216,8 @@ class Game:
         elif bdef['key'] == 'boss_zongzong':
             bdef['easy_campaign'] = tier < 2
         self.boss = self._make_boss(bdef)
-        if isinstance(self.boss, ShieldfishBoss):
-            self._burst_remaining_enemies()
         self.warned_boss_shots.clear()
-        self.boss_projectiles.clear(); self.enemy_projectiles.clear(); self.bullets.clear()
+        self.boss_projectiles.clear()
         self.last_spawn_time = config.game_ticks()
         start_music(self.current_level, boss=True)
         play_sound('boss_appear'); self.state = GameState.BOSS_FIGHT
@@ -1243,8 +1250,7 @@ class Game:
         elif bdef['key'] == 'boss_zongzong':
             bdef['easy_campaign'] = False
         self.boss = self._make_boss(bdef)
-        self.enemies.clear()
-        self.boss_projectiles.clear(); self.enemy_projectiles.clear(); self.bullets.clear()
+        self.boss_projectiles.clear()
         self.last_spawn_time = config.game_ticks()
         start_music(self.infinite_background_level, boss=True, infinite=True)
         play_sound('boss_appear'); self.state = GameState.BOSS_FIGHT
@@ -1573,13 +1579,12 @@ class Game:
         elif key == 'fire':
             for target in self.players:
                 target.fire_shield_until = until
-                target.fire_shield_hits = level
+                target.fire_shield_hits = config.CHARACTER_FIELDS['fire']['hits'][level - 1]
         elif key == 'radiation':
             for target in self.players:
                 target.radiation_field_until = until
-            if level == len(durations):
-                self._radiation_wave_source = player
-                self._radiation_wave_at = until
+            self._radiation_wave_source = player
+            self._radiation_wave_at = until
 
     def _update_character_fields(self, now):
         # Shift deadlines by the frozen portion of this step. A cast in progress
@@ -1839,9 +1844,11 @@ class Game:
             return 1.0
         return 2.0 if self.infinite_mode else 1.25
 
-    @staticmethod
-    def _field_damage_mult(player, now):
-        return player.damage_multiplier(now) if player else 1
+    def _field_damage_mult(self, player, now):
+        multiplier = player.damage_multiplier(now) if player else 1
+        if now < self.enemy_freeze_until:
+            multiplier *= config.CHARACTER_FIELDS['ice']['damage']
+        return multiplier
 
     def _attack_damage_mult(self, player, now):
         return self._field_damage_mult(player, now) * self._gift_damage_mult(now)
@@ -1899,7 +1906,8 @@ class Game:
 
     def _explode_magnetic_storm(self, ms, include_boss=False):
         now = config.game_ticks()
-        damage = (1.0 if self.infinite_mode else 3.0) * self._attack_damage_mult(getattr(ms, 'owner', None), now)
+        damage = config.SKILL_DAMAGE['infinite_storm' if self.infinite_mode else 'magnetic_storm']
+        damage *= self._attack_damage_mult(getattr(ms, 'owner', None), now)
         color = (165, 255, 90)
         explosion = Explosion(ms.x, ms.y, color, 34)
         explosion.shockwave_radius = ms.radius
@@ -2031,7 +2039,7 @@ class Game:
         elif st == 'lightning':
             targets = self._nearby_lightning_targets(px, py)[:5 if self.infinite_mode else 4]
             if targets:
-                bolt = Lightning(px, py, targets, 2.0 * self._gift_damage_mult(now))
+                bolt = Lightning(px, py, targets, config.SKILL_DAMAGE['lightning'] * self._gift_damage_mult(now))
                 bolt.owner = player
                 self._start_skill_effect(player, st, cd_ms, bolt.lifetime, now)
                 self.lightnings.append(bolt)
@@ -2132,7 +2140,7 @@ class Game:
             self._update_character_fields(now)
         if self.state in (GameState.PLAYING, GameState.BOSS_FIGHT) and not self._whale_is_swallowing():
             for player in self.players:
-                player.update_geyser_lift(now)
+                player.update_geyser_lift(now, visual_scale=self._player_visual_scale(player))
         if self.infinite_mode or self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
             self._expire_active_skills(now)
             self._maybe_fire_gift_lightning(now)
@@ -2238,7 +2246,8 @@ class Game:
         contact = next((box for box in self._boss_contact_boxes(now) if self._hit_player(box)), None)
         if contact and not self._player_is_invincible(now):
             self._play_contact_impact(self.player, contact, heavy=True)
-            self.player.move(0, contact.bottom - self.player.rect().top + 2)
+            self.player.move(0, contact.bottom - self.player.rect().top + 2,
+                             visual_scale=self._player_visual_scale(self.player))
             return self._damage_player(now, 2, f'被{self.boss.name}撞击击败！')
         return False
 
@@ -2246,7 +2255,7 @@ class Game:
         damage = projectile.damage * self._gift_damage_mult(now)
         ledger = getattr(projectile, 'cast_damage', None)
         if ledger is not None:
-            cap = 4 if projectile.ptype == 'fireball' else 2
+            cap = config.CAMPAIGN_CAST_DAMAGE_CAP[projectile.ptype]
             dealt = ledger.get(target, 0)
             damage = min(damage, cap - dealt)
             ledger[target] = dealt + damage
@@ -2309,14 +2318,14 @@ class Game:
             if math.hypot(e.x - sp.x, e.y + e.h // 2 - sp.y) <= FISHER_GRENADE_RADIUS:
                 if self._show_immune(e):
                     continue
-                e.hit_by('pistol', FISHER_GRENADE_DAMAGE * multiplier)
+                e.hit_by('pistol', config.SKILL_DAMAGE['grenade'] * multiplier)
                 self._spawn_hit_effect(e.x, e.y + e.h // 2, (225, 210, 130), e.is_large)
                 if e.is_killed('pistol'):
                     self._kill_enemy(e)
         if include_boss and self.boss:
             boss_hitbox = self._boss_hitbox_in_radius(sp.x, sp.y, FISHER_GRENADE_RADIUS)
             if boss_hitbox:
-                self.boss.hit_by('pistol', (FISHER_GRENADE_DAMAGE if self.infinite_mode else 2) * multiplier,
+                self.boss.hit_by('pistol', config.SKILL_DAMAGE['grenade' if self.infinite_mode else 'grenade_boss'] * multiplier,
                                  hit_rect=boss_hitbox)
                 self._settle_boss_if_killed()
         play_sound('hit')
@@ -2331,7 +2340,7 @@ class Game:
             if key_dx or key_dy:
                 dx, dy = key_dx, key_dy
         speed = self._player_speed(player, now)
-        player.move(dx * speed, dy * speed)
+        player.move(dx * speed, dy * speed, visual_scale=self._player_visual_scale(player))
 
     def _mobile_fire_active(self):
         return self.mobile_controls.auto_fire or self.mobile_controls.is_pressed('attack')
@@ -2348,12 +2357,11 @@ class Game:
                    - progression['wave_spawn_step_ms'] * (self.infinite_boss_index // 2))
 
     def _infinite_health_mult(self):
-        chapters_in_later_rounds = self.infinite_boss_index - len(config.INFINITE_BOSS_HP)
-        if chapters_in_later_rounds < 0:
-            return 1.0
         progression = config.INFINITE_PROGRESSION
-        return (progression['enemy_health_start_percent']
-                + progression['enemy_health_per_chapter'] * chapters_in_later_rounds) / 100
+        chapters = self.infinite_boss_index
+        first_round_steps = min(chapters, len(config.INFINITE_BOSS_HP))
+        return (100 + first_round_steps * progression['enemy_health_first_round_step']
+                + (chapters - first_round_steps) * progression['enemy_health_per_chapter']) / 100
 
     def _infinite_damage_mult(self):
         return 1.0
@@ -2456,12 +2464,11 @@ class Game:
         if wkey == 'sniper' and level:
             player.sniper_shots = (player.sniper_shots + 1) % 4
             missile = player.sniper_shots == 0
+            if missile and random.random() < config.SNIPER_HASTE_CHANCES[level - 1]:
+                player.sniper_haste_until = now + 3000
         for b in shots:
             b.source_player = player
-            if not self.infinite_mode:
-                b.damage = config.CAMPAIGN_BULLET_DAMAGE[wkey]
-            elif wkey == 'rifle':
-                b.damage = 1.3
+            b.damage = config.CAMPAIGN_BULLET_DAMAGE[wkey]
             if now < self.gift_fire_until:
                 b.gift_kind = 'fire'
                 b.radius = 6
@@ -2469,9 +2476,14 @@ class Game:
                 b.gift_kind = 'ice'
                 b.radius = 6
                 if self.infinite_mode:
-                    b.damage = 2.2
+                    b.damage = max(b.damage, 1.1 if wkey == 'shotgun' else 2.2)
             if wkey == 'rifle':
                 b.damage *= 1 + 0.1 * level
+                if level and random.random() < config.RIFLE_RED_CHANCES[level - 1]:
+                    b.rifle_explosive = True
+                    b.color = (255, 55, 45)
+                    b.radius = 30
+                    b.damage *= 1.5
             elif wkey == 'shotgun':
                 b.damage *= 1 + 0.2 * level
             elif missile:
@@ -2481,7 +2493,7 @@ class Game:
                 b.radius = 12
                 b.angle = 28 if b.x < config.SCREEN_WIDTH / 2 else -28
                 b.max_lifetime = 4500
-                b.damage = 0.5 * (1 + level)
+                b.damage = config.SNIPER_MISSILE_DAMAGE[level - 1]
         self.bullets.extend(shots)
         self.muzzle_flashes.append((player, now, wkey))
         play_sound(f'shoot_{wkey}')
@@ -2542,13 +2554,44 @@ class Game:
         self._explode_fire_rocket(bullet, now, self.state == GameState.BOSS_FIGHT,
                                   radius=config.SNIPER_MISSILE_RADIUS)
 
-    def _apply_bullet_passive(self, e, b, now):
+    def _bullet_damage(self, b, now):
         damage = b.damage
         shooter = getattr(b, 'source_player', self.player)
-        if self.infinite_mode and b.weapon_name == 'shotgun':
-            damage *= 0.5
         if b.character == 'fire':
             damage *= 1.5 if self.infinite_mode else 1.2
+        if self.infinite_mode and now < shooter.water_boost_until:
+            damage *= 1.5
+        return damage * self._attack_damage_mult(shooter, now)
+
+    def _detonate_rifle_bullet(self, b, now, target):
+        self.bullets.remove(b)
+        damage = self._bullet_damage(b, now)
+        if target is self.boss:
+            self.boss.hit_by('rifle', damage, source='bullet', hit_rect=b.rect())
+        else:
+            self._apply_bullet_passive(target, b, now)
+        explosion = Explosion(b.x, b.y, (255, 80, 35), 26, element='fire')
+        explosion.shockwave_radius = config.RIFLE_BLAST_RADIUS
+        self.explosions.append(explosion)
+        for enemy in self.enemies[:]:
+            rect = enemy.rect()
+            x = max(rect.left, min(b.x, rect.right))
+            y = max(rect.top, min(b.y, rect.bottom))
+            if math.hypot(x - b.x, y - b.y) <= config.RIFLE_BLAST_RADIUS and not self._show_immune(enemy, now):
+                enemy.hit_by('rifle', damage / 1.5 * 2)
+                self._spawn_hit_effect(x, y, (255, 80, 35), enemy.is_large, element='fire')
+                if enemy.is_killed('rifle'):
+                    self._kill_enemy(enemy)
+        if self.boss:
+            hitbox = self._boss_hitbox_in_radius(b.x, b.y, config.RIFLE_BLAST_RADIUS)
+            if hitbox:
+                self.boss.hit_by('rifle', damage / 1.5 * 2, hit_rect=hitbox)
+                self._settle_boss_if_killed()
+        play_sound('grenade')
+
+    def _apply_bullet_passive(self, e, b, now):
+        shooter = getattr(b, 'source_player', self.player)
+        if b.character == 'fire':
             if not e.burning:
                 e.burning = True; e.burn_start = now; e.last_burn_tick = now
                 e.burn_damage = False
@@ -2565,10 +2608,7 @@ class Game:
         if getattr(b, 'gift_kind', None) == 'ice' and self.infinite_mode:
             e.frozen = True
             e.frozen_until = now + 2000
-        if self.infinite_mode and now < shooter.water_boost_until:
-            damage *= 1.5
-        damage *= self._attack_damage_mult(shooter, now)
-        e.hit_by(b.weapon_name, damage)
+        e.hit_by(b.weapon_name, self._bullet_damage(b, now))
         if not self.infinite_mode and getattr(b, 'gift_kind', None) == 'ice':
             e.apply_slow(now, 2500, 0.75)
             if not e.is_large and not e.is_zongzong and not e.frozen:
@@ -2677,6 +2717,9 @@ class Game:
                 if id(e) not in b.hit_targets and br.colliderect(e.rect()):
                     if getattr(b, 'sniper_missile', False):
                         self._detonate_sniper_missile(b, now, e)
+                        break
+                    if getattr(b, 'rifle_explosive', False):
+                        self._detonate_rifle_bullet(b, now, e)
                         break
                     self._apply_bullet_passive(e, b, now); b.hit_targets.add(id(e)); play_sound('hit')
                     self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), e.is_large, element=b.gift_kind or b.character)
@@ -2830,7 +2873,8 @@ class Game:
                 if (boss.hazard_hit != hit and not self._player_is_invincible(now)
                         and any(boss.hazard_hits(player.rect(), age) for player in self.players)):
                     boss.hazard_hit = hit
-                    return self._damage_player(now, 2, f'被{boss.name}击败！', hit_feedback=True)
+                    return self._damage_player(now, self._boss_skill_damage('orochi_hazard'),
+                                               f'被{boss.name}击败！', hit_feedback=True)
             return False
         if not isinstance(boss, NiuBoss):
             return False
@@ -2847,7 +2891,7 @@ class Game:
         if (slam is not None and strike != boss.axe_slam_hit and not self._player_is_invincible(now)
                 and self._hit_player(slam)):
             boss.axe_slam_hit = strike
-            if self._damage_player(now, 1, '被牛魔王的巨斧击败！', hit_feedback=True):
+            if self._damage_player(now, self._boss_skill_damage('niu_slam'), '被牛魔王的巨斧击败！', hit_feedback=True):
                 return True
         if now >= boss.lightning_warning_until and now >= boss.lightning_next_tick and boss.lightning_rects(now):
             boss.lightning_next_tick = now + 650
@@ -2868,7 +2912,7 @@ class Game:
             return minimum
         left = max(40, config.GAME_AREA_LEFT + body.w // 2)
         right = min(config.SCREEN_WIDTH - 40, config.GAME_AREA_RIGHT - (body.w + 1) // 2)
-        bottom = max(80, player.bottom_limit())
+        bottom = max(80, player.bottom_limit(self._player_visual_scale(player)))
         distances = []
         for position, low, high, half_size, blocked in (
             (player.x, left, right, body.w / 2,
@@ -2987,7 +3031,7 @@ class Game:
             ])
         signature.move(boss, now, self.player)
         if not self._player_is_invincible(now) and signature.hit(boss, self.player.rect(), now):
-            damage = (self.player_hp if signature.key == 'boss' else
+            damage = (self._boss_skill_damage('abyss_rush') if signature.key == 'boss' else
                       min(signature.damage, boss.bdef.get('damage_cap', 2)))
             return self._damage_player(now, damage, f'被{signature.name}击败！', hit_feedback=True)
         return False
@@ -3088,7 +3132,7 @@ class Game:
             # Keep the player outside the mouth until the final gulp.
             if distance > boss.h * .4:
                 strength = min(pull, 1 - boss.h * .4 / distance)
-                player.move(dx * strength, dy * strength)
+                player.move(dx * strength, dy * strength, visual_scale=self._player_visual_scale(player))
         for enemy in self.enemies:
             if enemy.temple_kind == 'rift':
                 continue
@@ -3332,6 +3376,11 @@ class Game:
                             if self.state != GameState.BOSS_FIGHT:
                                 return
                             break
+                        if getattr(b, 'rifle_explosive', False):
+                            self._detonate_rifle_bullet(b, now, e)
+                            if self.state != GameState.BOSS_FIGHT:
+                                return
+                            break
                         self._apply_bullet_passive(e, b, now); b.hit_targets.add(id(e)); play_sound('hit')
                         self._spawn_hit_effect(b.x, b.y, self._bullet_hit_color(b), e.is_large, element=b.gift_kind or b.character)
                         if e.is_killed(b.weapon_name):
@@ -3349,15 +3398,12 @@ class Game:
                         if self.state != GameState.BOSS_FIGHT:
                             return
                         continue
-                    damage = b.damage
-                    if b.character == 'fire':
-                        damage *= 1.5 if self.infinite_mode else 1.2
-                    if self.infinite_mode and b.weapon_name == 'shotgun':
-                        damage *= 0.5
-                    shooter = getattr(b, 'source_player', self.player)
-                    if self.infinite_mode and now < shooter.water_boost_until:
-                        damage *= 1.5
-                    damage *= self._attack_damage_mult(shooter, now)
+                    if getattr(b, 'rifle_explosive', False):
+                        self._detonate_rifle_bullet(b, now, self.boss)
+                        if self.state != GameState.BOSS_FIGHT:
+                            return
+                        continue
+                    damage = self._bullet_damage(b, now)
                     reflected = not frozen and isinstance(self.boss, ZongBoss) and self.boss.reflects_bullet()
                     if reflected:
                         self._add_boss_projectiles([ZongReflectBullet(b.x, b.y)])
@@ -3675,7 +3721,7 @@ class Game:
             enemy.factory_kind = 'original'
         self.last_spawn_was_elite = enemy.is_large or enemy.is_zongzong
         self.level_spawn_count += 1
-        enemy.max_hp = definition.get('campaign_hp', 9 if enemy.is_large else 8 if enemy.is_zongzong else 3)
+        enemy.max_hp = config.wave_enemy_hp(definition) + self._campaign_value(config.CAMPAIGN_ENEMY_HP_BONUS)
         enemy.speed = definition['base_speed'] * random.uniform(0.88, 1.12)
         enemy.speed *= config.CAMPAIGN_SPEED[level - 1]
         enemy.speed *= (0.88, 1, 1.08)[tier]
@@ -3689,7 +3735,7 @@ class Game:
         reference_height = round(enemy.unscaled_base_h * config.MOBILE_LANDSCAPE_ENTITY_SCALE)
         enemy.speed *= distance / (384 + reference_height)
         enemy.speed = min(enemy.speed, (config.GAME_AREA_BOTTOM + 20) / (60 * (5, 4.5, 4)[tier]))
-        minimum, maximum = ((10000, 14000), (8000, 12000), (6500, 10000))[tier]
+        minimum, maximum = config.CAMPAIGN_ENEMY_ATTACK_MS[tier]
         if self.difficulty and self.difficulty.name == '自定义':
             minimum, maximum = sorted((self.difficulty.enemy_attack_interval_min,
                                        self.difficulty.enemy_attack_interval_max))
@@ -3880,10 +3926,15 @@ class Game:
             self.enemies.append(child)
 
     def _enemy_shots(self, enemy, now):
-        if enemy.edef['key'] in config.TRENCH_ATTACKS:
-            return trench_enemy_shots(enemy, self._nearest_player(enemy.x, enemy.y), now)
         if not enemy.factory_kind:
             target = self._nearest_player(enemy.x, enemy.y)
+            tier = (min(2, 1 + self.infinite_boss_index // len(config.INFINITE_BOSS_HP))
+                    if self.infinite_mode else self._campaign_tier())
+            key = enemy.edef['key']
+            if key in config.TRENCH_ATTACKS:
+                return trench_enemy_shots(enemy, target, now, tier)
+            if key in config.CAMPAIGN_TEMPLE_FAN_ENEMIES:
+                return enemy.attack(now, target.x, config.CAMPAIGN_TEMPLE_FAN_ANGLES[tier])
             return enemy.attack(now, target.x)
         mini = enemy.factory_kind == 'mini_boss'
         enemy.last_attack_time = now
@@ -3921,36 +3972,29 @@ class Game:
         large_pool = [e for e in pool if e['is_large']]
         zong_pool = [e for e in pool if e['key'] == 'zongzong']
         normal_pool = [e for e in pool if not e['is_large'] and e['key'] != 'zongzong']
-        zong_chance = ZONGZONG_SPAWN_CHANCE * (2 if self.infinite_background_level == 8 else 1)
+        progression = config.INFINITE_PROGRESSION
+        zong_chance = progression['zong_spawn_chance'] * (2 if level == 8 else 1)
         if level == 11:
             key = trench_wave_key(self.level_spawn_count)
             edef = next(e for e in normal_pool if e['key'] == key)
             self.level_spawn_count += 1
         elif zong_pool and random.random() < zong_chance:
             edef = random.choice(zong_pool)
-        elif large_pool and random.random() < INFINITE_LARGE_ENEMY_CHANCE:
+        elif large_pool and random.random() < progression['large_spawn_chance']:
             edef = random.choice(large_pool)
         else: edef = random.choice(normal_pool or pool)
         e = Enemy(edef)
         if self.difficulty:
             e.speed *= self.difficulty.enemy_speed_mult
-            amin = int(self.difficulty.enemy_attack_interval_min)
-            amax = int(self.difficulty.enemy_attack_interval_max)
-            e.attack_interval_min = min(amin, amax)
-            e.attack_interval_max = max(amin, amax)
-            e.attack_interval = random.randint(e.attack_interval_min, e.attack_interval_max)
-        e.health_mult *= self._infinite_health_mult()
-        if level in (9, 10, 11):
-            e.max_hp = edef['campaign_hp'] * e.health_mult
-            if level == 9:
-                e.factory_kind = 'original'
+        e.max_hp = config.wave_enemy_hp(edef) * self._infinite_health_mult()
+        if level == 9:
+            e.factory_kind = 'original'
         e.speed *= 0.82
         e.damage_mult = self._infinite_damage_mult()
-        if not e.is_large and random.random() < FAST_ENEMY_CHANCE:
+        if not e.is_large and random.random() < progression['fast_spawn_chance']:
             e.speed *= 2
             e.fast_variant = True
-        e.attack_interval_min = max(500, int(e.attack_interval_min * ENEMY_ATTACK_INTERVAL_MULT))
-        e.attack_interval_max = max(e.attack_interval_min, int(e.attack_interval_max * ENEMY_ATTACK_INTERVAL_MULT))
+        e.attack_interval_min, e.attack_interval_max = config.INFINITE_ENEMY_ATTACK_MS
         e.attack_interval = random.randint(e.attack_interval_min, e.attack_interval_max)
         self.enemies.append(e)
 
@@ -4317,7 +4361,7 @@ class Game:
 
     def _draw_game(self):
         ui_labels = self._ui_labels
-        actor_scale = ACTOR_BASE_SCALE * self.actor_scale_percent / 100
+        actor_scale = config.ACTOR_BASE_SCALE * self.actor_scale_percent / 100
         now = config.game_ticks()
         freeze_until = self.enemy_freeze_until
         active = self.state in (GameState.PLAYING, GameState.BOSS_FIGHT)
@@ -4422,8 +4466,7 @@ class Game:
         if badge_obstacles is None:
             badge_obstacles = self._field_badge_obstacles() if active else ()
         for i, player in enumerate(self._players_to_draw(), 1):
-            visual_scale = 1.18 if self.mobile_web and player.character in CHARACTER_DEFS else 1
-            visual_scale *= actor_scale
+            visual_scale = self._player_visual_scale(player)
             downed_age = self._player_downed_age(player, now)
             if downed_age is not None and player.character in CHARACTER_DEFS:
                 player.draw(config.SCR, visual_scale=visual_scale, downed_age=downed_age)

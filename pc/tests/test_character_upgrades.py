@@ -10,7 +10,7 @@ import pygame
 from game_core import config
 from game_core.abyss_bosses import AbyssProjectile
 from game_core.character_fields import draw_air_wave, draw_player_fields
-from game_core.entities import BossProjectile, Enemy
+from game_core.entities import BossProjectile, Enemy, SkillProjectile
 from game_core.game import Game
 from game_core.render import RenderSurface
 from game_core.trench import TrenchSpire
@@ -93,10 +93,10 @@ class CharacterUpgradeTests(unittest.TestCase):
 
     def test_successful_cast_rolls_once_with_exact_boundary_and_durations(self):
         cases = (
-            ('ice', 'enemy_freeze_until', (1000, 1500, 2000)),
-            ('water', 'swift_field_until', (2000, 2500, 3000)),
-            ('fire', 'fire_shield_until', (3000, 4000, 5000)),
-            ('radiation', 'radiation_field_until', (3000, 4000, 5000)),
+            ('ice', 'enemy_freeze_until', (1000, 2000, 3000)),
+            ('water', 'swift_field_until', (4000, 6000, 8000)),
+            ('fire', 'fire_shield_until', (10000, 10000, 10000)),
+            ('radiation', 'radiation_field_until', (5000, 7000, 9000)),
         )
         for key, attr, durations in cases:
             for level, duration in enumerate(durations, 1):
@@ -131,18 +131,18 @@ class CharacterUpgradeTests(unittest.TestCase):
         game.boss_projectiles = [shot]
         self.cast(game, .0)
         original_x = boss.x
-        for now in (self.now + 17, self.now + 1999):
+        for now in (self.now + 17, self.now + 2999):
             config.campaign_time_ms = now
             game.update()
             self.assertEqual((boss.x, enemy.y), (original_x, 210))
             self.assertEqual(game.boss_projectiles, [shot])
         self.assertGreater(shot.y, 240)
-        config.campaign_time_ms = self.now + 2000
+        config.campaign_time_ms = self.now + 3000
         game.update()
         self.assertNotEqual(boss.x, original_x)
         self.assertGreater(enemy.y, 210)
         self.assertEqual(game.boss_projectiles, [shot])
-        config.campaign_time_ms = self.now + 2400
+        config.campaign_time_ms = self.now + 3400
         game.update()
         self.assertEqual(len(game.boss_projectiles), 7)
 
@@ -153,27 +153,77 @@ class CharacterUpgradeTests(unittest.TestCase):
         game.player.last_shot_time = self.now
         self.assertFalse(game.player.can_shoot(self.now + 266))
         self.assertTrue(game.player.can_shoot(self.now + 267))
-        self.assertAlmostEqual(game._player_speed(game.player, self.now + 1999), 5.2 * 1.3)
-        self.assertAlmostEqual(game._player_speed(game.player, self.now + 2000), 5.2)
+        self.assertAlmostEqual(game._player_speed(game.player, self.now + 3999), 5.2 * 1.3)
+        self.assertAlmostEqual(game._player_speed(game.player, self.now + 4000), 5.2)
+        game.player.last_shot_time = self.now + 4000
+        self.assertFalse(game.player.can_shoot(self.now + 4267))
 
+        for level, hits in ((1, 2), (2, 3), (3, 4)):
+            with self.subTest(level=level):
+                game = self.game()
+                self.equip(game, 'fire', level)
+                self.cast(game, .0)
+                hp = game.player_hp
+                game.player_invincible_until = self.now + 1
+                game._damage_player(self.now, 2, 'test')
+                self.assertEqual(game.player.fire_shield_hits, hits)
+                for i in range(1, hits + 1):
+                    game._damage_player(self.now + i, 100, 'test')
+                    self.assertEqual(game.player_hp, hp)
+                    self.assertEqual(game.player.fire_shield_hits, hits - i)
+                game._damage_player(self.now + hits + 1, 1, 'test')
+                self.assertEqual(game.player_hp, hp - 1)
+                game = self.game()
+                self.equip(game, 'fire', level)
+                self.cast(game, .0)
+                game._damage_player(self.now + 9999, 1, 'test')
+                self.assertEqual(game.player_hp, hp)
+                game._damage_player(self.now + 10000, 1, 'test')
+                self.assertEqual(game.player_hp, hp - 1)
+
+    def test_ice_field_boosts_enemy_and_boss_damage_until_deadline(self):
+        for radiation in (False, True):
+            with self.subTest(radiation=radiation):
+                game = self.game()
+                game._trigger_boss()
+                game.boss.entered, game.boss.y = True, 100
+                self.equip(game, 'ice', 1)
+                self.cast(game, .0)
+                if radiation:
+                    game.player.radiation_field_until = self.now + 2000
+                game._shoot(self.now)
+                bullet = game.bullets[0]
+                enemy = Enemy(config.ENEMY_DEFS[0])
+                enemy.y, enemy.max_hp = 210, 100
+                boost = 2 if radiation else 1
+                for offset, multiplier in ((999, 1.5 * boost), (1000, boost)):
+                    config.campaign_time_ms = self.now + offset
+                    damage_before = enemy.damage_taken
+                    game._apply_bullet_passive(enemy, bullet, config.game_ticks())
+                    self.assertAlmostEqual(enemy.damage_taken - damage_before, multiplier * bullet.damage)
+                    shot = SkillProjectile(game.boss.x, 100, 0, 6, 'fireball', owner=game.player)
+                    shot.damage = 1
+                    hp = game.boss.hp
+                    game._hit_boss_with_fireball(shot)
+                    self.assertAlmostEqual(hp - game.boss.hp, multiplier)
+                config.campaign_time_ms = self.now
+
+    def test_ice_field_boosts_burn_damage(self):
         game = self.game()
-        self.equip(game, 'fire', 3)
+        game._begin_infinite_run()
+        self.equip(game, 'ice', 1)
         self.cast(game, .0)
-        hp = game.player_hp
-        game.player_invincible_until = self.now + 1
-        game._damage_player(self.now, 2, 'test')
-        self.assertEqual(game.player.fire_shield_hits, 3)
-        for i, damage in enumerate((100, 2, 1), 1):
-            game._damage_player(self.now + i, damage, 'test')
-            self.assertEqual(game.player_hp, hp)
-            self.assertEqual(game.player.fire_shield_hits, 3 - i)
-        game._damage_player(self.now + 4, 1, 'test')
-        self.assertEqual(game.player_hp, hp - 1)
-        game = self.game()
-        self.equip(game, 'fire', 1)
-        self.cast(game, .0)
-        game._damage_player(self.now + 3000, 1, 'test')
-        self.assertEqual(game.player_hp, hp - 1)
+        enemy = Enemy(config.ENEMY_DEFS[0])
+        enemy.y, enemy.max_hp = 210, 100
+        enemy.burning = enemy.burn_damage = True
+        enemy.burn_start = enemy.last_burn_tick = self.now
+        game.enemies = [enemy]
+        config.campaign_time_ms = self.now + 500
+        game._update_enemies(config.game_ticks(), [])
+        self.assertEqual(enemy.burn_hits, 1.5)
+        config.campaign_time_ms = self.now + 1000
+        game._update_enemies(config.game_ticks(), [])
+        self.assertEqual(enemy.burn_hits, 2.5)
 
     def test_field_timer_stays_near_the_character_when_it_can_clear_a_button_to_the_side(self):
         game = self.game()
@@ -199,8 +249,8 @@ class CharacterUpgradeTests(unittest.TestCase):
         draw_air_wave(target, wave, self.now + 300)
         self.assertTrue(surface.get_bounding_rect())
 
-    def test_radiation_boosts_hits_and_max_level_wave_clears_only_flying_shots_once(self):
-        for level in (2, 3):
+    def test_radiation_boosts_hits_and_all_levels_clear_only_flying_shots_once(self):
+        for level in (1, 2, 3):
             with self.subTest(level=level):
                 config.campaign_time_ms = self.now
                 game = self.game()
@@ -219,8 +269,8 @@ class CharacterUpgradeTests(unittest.TestCase):
                 game._apply_bullet_passive(enemy, bullet, end)
                 self.assertEqual(enemy.damage_taken, 3 * bullet.damage)
 
-                aimed = AbyssProjectile('guided_missile', 150, 180, speed=3, warning_ms=0, active_ms=10000)
-                queued = AbyssProjectile('guided_missile', 150, 180, speed=3, warning_ms=6000)
+                aimed = AbyssProjectile('guided_missile', 150, 180, speed=3, warning_ms=0, active_ms=20000)
+                queued = AbyssProjectile('guided_missile', 150, 180, speed=3, warning_ms=12000)
                 ground = TrenchSpire(150, 400, 25, 40, 6000)
                 game.boss_projectiles = [aimed, queued, ground]
                 game.enemy_projectiles = [BossProjectile(50, 180, 0, 3)]
@@ -228,14 +278,10 @@ class CharacterUpgradeTests(unittest.TestCase):
                 self.assertEqual(len(game.boss_projectiles), 3)
                 game._update_character_fields(end)
                 self.assertEqual(game.bullets, [bullet])
-                if level == 2:
-                    self.assertEqual(len(game.boss_projectiles), 3)
-                    self.assertIsNone(game.radiation_wave)
-                else:
-                    self.assertEqual(game.boss_projectiles, [queued, ground])
-                    self.assertFalse(game.enemy_projectiles)
-                    self.assertEqual(game.radiation_wave, (game.player.x, game.player.y, end))
-                    game.enemy_projectiles.append(BossProjectile(80, 180, 0, 3))
-                    game._update_character_fields(end + 500)
-                    self.assertEqual(len(game.enemy_projectiles), 1)
-                    self.assertIsNone(game.radiation_wave)
+                self.assertEqual(game.boss_projectiles, [queued, ground])
+                self.assertFalse(game.enemy_projectiles)
+                self.assertEqual(game.radiation_wave, (game.player.x, game.player.y, end))
+                game.enemy_projectiles.append(BossProjectile(80, 180, 0, 3))
+                game._update_character_fields(end + 500)
+                self.assertEqual(len(game.enemy_projectiles), 1)
+                self.assertIsNone(game.radiation_wave)

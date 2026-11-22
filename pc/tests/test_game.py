@@ -112,7 +112,8 @@ class DesktopGameTests(unittest.TestCase):
         for _ in range(3):
             game._upgrade_weapon('rifle')
         self.assertTrue(game.player.can_shoot(10225))
-        game._shoot(10225)
+        with patch('game_core.game.random.random', return_value=.99):
+            game._shoot(10225)
         self.assertAlmostEqual(game.bullets[-1].damage, 1.3 * config.CAMPAIGN_BULLET_DAMAGE['rifle'])
 
         game.player.current_weapon = 'sniper'
@@ -123,7 +124,7 @@ class DesktopGameTests(unittest.TestCase):
                 game._shoot(12000 + i * 1000)
             self.assertEqual([getattr(b, 'sniper_missile', False) for b in game.bullets],
                              [False, False, False, True])
-            self.assertEqual(game.bullets[-1].damage, (1, 1.5, 2)[level - 1])
+            self.assertEqual(game.bullets[-1].damage, config.SNIPER_MISSILE_DAMAGE[level - 1])
         self.assertIsNone(game._weapon_upgrade_cost('sniper'))
         missile = game.bullets[-1]
         targets = []
@@ -151,7 +152,8 @@ class DesktopGameTests(unittest.TestCase):
         game = Game(desktop_controls=True)
         game.player.current_weapon = 'sniper'
         game.player.gold = 200
-        for level, blast_damage, child_damage in ((1, 1, .5), (2, 1.5, .75), (3, 2, 1)):
+        for level, blast_damage in enumerate(config.SNIPER_MISSILE_DAMAGE, 1):
+            child_damage = blast_damage / 2
             with self.subTest(level=level):
                 game.player.weapon_upgrades['sniper'] = level
                 game.player.sniper_shots = 3

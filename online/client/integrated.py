@@ -8,7 +8,7 @@ import pygame
 from game_core import config, menu_ui
 from game_core.render import RenderSurface
 from game_core.game import BACKGROUND_SCROLL_TICKS, BG_FADE_MS, GameState
-from game_core.sounds import advance_music
+from game_core.sounds import advance_music, start_music
 from .interpolation import PositionBuffer, LocalPrediction
 
 
@@ -240,6 +240,9 @@ class LAN:
         rows.append(('返回首页' if not self.transport.slot else '离开房间', reset))
         if state:
             labels = ['P' + str(p['slot']) + (' 已准备' if p['ready'] else ' 等待准备') for p in state['players']]
+            address = str(getattr(self.transport, 'address', ''))
+            if not detail and self.transport.slot == 1 and address.startswith('联机证书'):
+                detail = address
             detail = (' · '.join(labels) + '　' + detail).strip()
         self.draw_room(game, rows, events, detail or '正在连接房间…', str(self.transport.invite))
 
@@ -297,6 +300,9 @@ class LAN:
             self.leave_task = None
             self.home()
             state = None
+        if self.page in ('home', 'join') or not (state and state.get('world')):
+            start_music()
+            advance_music()
         if self.page == 'home':
             self.draw_home(game, events, window)
         elif self.page == 'join':

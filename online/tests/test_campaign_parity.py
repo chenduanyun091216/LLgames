@@ -29,7 +29,7 @@ class CampaignParityTests(unittest.TestCase):
             player.invincible_until = 0
         hp = [player.hp for player in game.players]
         game._update_special_boss_hazards(now)
-        self.assertEqual([inside.hp, outside.hp], [hp[0] - 1, hp[1]])
+        self.assertEqual([inside.hp, outside.hp], [hp[0] - 2, hp[1]])
 
     def test_all_levels_and_difficulties_share_spawn_and_boss_numbers(self):
         for orientation, size in WORLD_SIZES.items():

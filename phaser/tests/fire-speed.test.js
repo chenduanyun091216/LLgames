@@ -30,7 +30,7 @@ test('campaign stacks tide, swift field and both haste gifts until each expires'
     battle.time = 11000;
     battle.openGift({});
     assertShotGap(battle, 11000, 52);
-    assertShotGap(battle, 12000, 77);
+    assertShotGap(battle, 12000, 52);
     assertShotGap(battle, 16000, 100);
     assertShotGap(battle, 20000, 200);
     assertShotGap(battle, 21000, 400);
@@ -43,12 +43,12 @@ test('endless water heal grants fire speed and swift field instances expire sepa
     battle.characterUpgrades.water = 1;
     battle.time = 10000;
     battle.cast(0);
-    assertShotGap(battle, 10000, 191);
+    assertShotGap(battle, 10000, 178);
     battle.time = 11000;
     battle.cast(1);
-    assertShotGap(battle, 11000, 64);
-    assertShotGap(battle, 12000, 96);
-    assertShotGap(battle, 13000, 143);
-    assertShotGap(battle, 15000, 215);
-    assertShotGap(battle, 21000, 429);
+    assertShotGap(battle, 11000, 60);
+    assertShotGap(battle, 12000, 60);
+    assertShotGap(battle, 13000, 60);
+    assertShotGap(battle, 15000, 200);
+    assertShotGap(battle, 21000, 400);
 });

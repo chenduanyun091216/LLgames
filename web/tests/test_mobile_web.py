@@ -407,7 +407,7 @@ class MobileWebTests(unittest.TestCase):
     def test_campaign_boss_health_and_final_victory_timeout(self):
         game = self.game
         game._start_game('easy')
-        for level, hp in ((7, 118), (8, 128), (9, 132), (10, 136), (11, 142), (12, 148)):
+        for level, hp in ((7, 96), (8, 108), (9, 120), (10, 132), (11, 144), (12, 156)):
             game.boss = None
             game._start_level(level)
             game._trigger_boss()
@@ -426,7 +426,7 @@ class MobileWebTests(unittest.TestCase):
         game._start_infinite_game()
         game.infinite_boss_index = 7
         game._trigger_infinite_boss()
-        self.assertEqual(game.boss.max_hp, 184)
+        self.assertEqual(game.boss.max_hp, 180)
         game._kill_boss()
         self.assertEqual(game.state, GameState.PLAYING)
 
@@ -491,12 +491,12 @@ class MobileWebTests(unittest.TestCase):
         left, right = zong.hitboxes()
         zong.hit_by('pistol', 1, source='bullet', hit_rect=left)
         zong.hit_by('pistol', 1, source='skill', hit_rect=right)
-        self.assertEqual(zong.body_hp, [63, 63])
+        self.assertEqual(zong.body_hp, [53, 53])
         game._start_infinite_game()
         game.infinite_boss_index = 6
         game._trigger_infinite_boss()
         self.assertFalse(game.boss.can_laser())
-        self.assertEqual(game.boss.max_hp, 170)
+        self.assertEqual(game.boss.max_hp, 158)
 
     def test_player_can_reach_bottom_and_fire_without_clipping_the_shot(self):
         game = self.game
@@ -504,11 +504,25 @@ class MobileWebTests(unittest.TestCase):
             config.update_mobile_view(size)
             game._start_game('medium')
             hud = game._hud_controls()
-            game.player.move(0, 1000)
-            self.assertEqual(game.player.rect().bottom, config.SCREEN_HEIGHT - 8)
+            game.player.owned_characters.append('water')
+            for zoom in (100, 150):
+                game.actor_scale_percent = zoom
+                for character in (None, 'water') if zoom == 100 else ('water',):
+                    with self.subTest(size=size, zoom=zoom, character=character):
+                        if character:
+                            self.assertTrue(game.try_switch_character(character))
+                        scale = game._player_visual_scale(game.player)
+                        game.player.move(0, 1000, visual_scale=scale)
+                        game.player.breath_start_time = 0
+                        sprite = pygame.Surface((config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA)
+                        with patch.object(config, 'game_ticks', return_value=1000), \
+                                patch('game_core.entities._circle'), patch('game_core.entities._ellipse'):
+                            game.player.draw(sprite, scale)
+                        feet = sprite.get_bounding_rect(min_alpha=33).bottom
+                        self.assertGreaterEqual(config.SCREEN_HEIGHT - feet, 10)
+                        self.assertLessEqual(config.SCREEN_HEIGHT - feet, 15)
             self.assertEqual(game._hud_controls(), hud)
             self.assertEqual((hud[1].height, hud[1].bottom), (28, config.SCREEN_HEIGHT - 15))
-            self.assertTrue(game.player.rect().colliderect(hud[1]))
             bullet = game.player.shoot(1000)[0]
             bullet.update()
             self.assertFalse(bullet.is_offscreen())
@@ -751,14 +765,15 @@ class MobileWebTests(unittest.TestCase):
             game._update_special_boss_hazards(now + 1101)
             self.assertEqual(sum(call.args == ('niu_axe_impact',) for call in sound.call_args_list), 1)
         self.assertEqual(boss.axe_slam_impact, (later.centerx, later.bottom, now + 1100))
-        self.assertEqual(game.player_hp, hp - 1)
+        self.assertEqual(game.player_hp, hp - 2)
         game.player_invincible_until = 0
         game._update_special_boss_hazards(now + 1200)
-        self.assertEqual(game.player_hp, hp - 1)
+        self.assertEqual(game.player_hp, hp - 2)
         for strike in (2600, 4100):
+            game.player_hp = hp
             game.player_invincible_until = 0
             game._update_special_boss_hazards(now + strike)
-        self.assertEqual(game.player_hp, hp - 3)
+            self.assertEqual(game.player_hp, hp - 2)
 
     def test_niu_flying_axes_can_hit_at_the_bottom_in_both_orientations(self):
         game = self.game
@@ -838,9 +853,10 @@ class MobileWebTests(unittest.TestCase):
         game = self.game
         game._start_infinite_game()
         cycle = len(config.BOSS_DEFS)
-        for defeated, hp, interval in ((0, 30, 4400), (cycle - 1, 220, 3600),
-                                       (cycle, 225, 3420), (2 * cycle, 285, 3240),
-                                       (6 * cycle, 525, 2520), (7 * cycle, 585, 2520)):
+        for defeated, hp, interval in ((0, 30, 4600), (cycle - 1, 264, 3500),
+                                       (cycle, 271, 3360), (2 * cycle, 355, 3220),
+                                       (6 * cycle, 691, 2660), (7 * cycle, 775, 2520),
+                                       (8 * cycle, 859, 2520)):
             with self.subTest(defeated=defeated):
                 game.chapter = defeated + 1
                 game.infinite_background_level = defeated % cycle + 1
@@ -905,17 +921,17 @@ class MobileWebTests(unittest.TestCase):
         game = self.game
         game._start_custom_game()
         game._start_level(1)
-        self.assertEqual(game.spawn_interval, 2400)
+        self.assertEqual(game.spawn_interval, config.CAMPAIGN_SPAWN_MS[0][1])
         self.assertEqual(game._bullet_cost('sniper'), 0)
         game._start_level(7)
         game._trigger_boss()
-        self.assertEqual(game.boss.max_hp, 156)
+        self.assertEqual(game.boss.max_hp, 138)
         game.reset()
         game.custom_values['boss_hp_mult'] *= 1.2
         game._start_custom_game()
         game._start_level(8)
         game._trigger_boss()
-        self.assertEqual(game.boss.max_hp, 202)
+        self.assertEqual(game.boss.max_hp, 188)
 
     def test_three_lives_then_paid_revive(self):
         game = self.game
@@ -2381,7 +2397,7 @@ class MobileWebTests(unittest.TestCase):
             for now in range(2000, 3400, 17):
                 if game._update_boss_signature(now):
                     break
-            damage.assert_called_once_with(now, game.player_hp, '被深渊封潮击败！', hit_feedback=True)
+            damage.assert_called_once_with(now, game._boss_skill_damage('abyss_rush'), '被深渊封潮击败！', hit_feedback=True)
         self.assertGreater(boss.y, original[1])
         game._update_boss_signature(attack.end_at)
         self.assertEqual((boss.x, boss.y), original)

@@ -28,6 +28,11 @@ def campaign_data():
     tables = {key: value for key, value in vars(config).items()
               if key.startswith(('CAMPAIGN_', 'INFINITE_', 'TRENCH_')) and isinstance(value, (dict, tuple))}
     return dict(tables, levels=config.LEVEL_CONFIGS, bosses=config.BOSS_DEFS,
+                waveEnemyHp=config.WAVE_ENEMY_HP, skillDamage=config.SKILL_DAMAGE,
+                rifleSpeedPerLevel=config.RIFLE_SPEED_PER_LEVEL, rifleRedChances=config.RIFLE_RED_CHANCES,
+                rifleBlastRadius=config.RIFLE_BLAST_RADIUS, shotgunExtraChances=config.SHOTGUN_EXTRA_CHANCES,
+                sniperHasteChances=config.SNIPER_HASTE_CHANCES, sniperMissileDamage=config.SNIPER_MISSILE_DAMAGE,
+                sniperMissileRadius=config.SNIPER_MISSILE_RADIUS,
                 characterFields=config.CHARACTER_FIELDS, characterFieldChance=config.CHARACTER_FIELD_CHANCE,
                 enemies={value['key']: value for value in config.ENEMY_DEFS},
                 weapons={key: fields(value) for key, value in config.WEAPON_DEFS.items()},

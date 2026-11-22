@@ -57,9 +57,16 @@ class TrenchTests(unittest.TestCase):
                 frames = [animation.frame('enemy_' + name, i) for i in range(6)]
                 self.assertTrue(all(max(frame.get_bounding_rect(min_alpha=100).size) >= 384 for frame in frames))
                 self.assertEqual(len({pygame.image.tobytes(frame, 'RGBA') for frame in frames}), 6)
+        remaining = game.enemies[:]
+        first_y = remaining[0].y
+        game.enemy_projectiles.extend(enemy_shots(remaining[0], game.player, config.game_ticks()))
+        shots = game.enemy_projectiles[:]
         game._trigger_boss()
-        self.assertFalse(game.enemies)
+        self.assertEqual(game.enemies, remaining)
+        self.assertEqual(game.enemy_projectiles, shots)
         self.assertIsInstance(game.boss, ShieldfishBoss)
+        game._update_boss_fight(config.game_ticks())
+        self.assertGreater(remaining[0].y, first_y)
 
     def test_enemy_frame_is_scaled_directly_to_high_resolution_output(self):
         game = Game(desktop_controls=False)
