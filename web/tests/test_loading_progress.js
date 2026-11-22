@@ -30,17 +30,19 @@ const context2d = {
     fillText() {},
 };
 const canvas = {clientWidth: 480, clientHeight: 850, style: {}, getContext: () => context2d};
+const gameCanvas = {width: 971, height: 448, setAttribute(name, value) { this[name] = value; }};
 const offlineStatus = {};
-const version = {hidden: true};
+const version = {hidden: true, textContent: 'Web test-build'};
 const workerEvents = {};
 const worker = {state: 'installing', addEventListener: (event, callback) => { workerEvents[event] = callback; }};
-const elements = {infobox: box, 'ttgames-loading': loading, progress: nativeProgress,
+const elements = {infobox: box, 'ttgames-loading': loading, progress: nativeProgress, canvas: gameCanvas,
     'ttgames-fullscreen': button, 'ttgames-ui': canvas, 'ttgames-quality': quality,
     'ttgames-offline': offlineStatus, 'ttgames-version': version};
 const observers = [];
 const windowEvents = {};
 const documentEvents = {};
-let callback;
+const refreshCallbacks = [];
+let cacheRegistrations = 0;
 const viewportEvents = {};
 const viewport = {offsetLeft: 0, offsetTop: 0, width: 390, height: 780,
     addEventListener: (event, handler) => { viewportEvents[event] = handler; }};
@@ -49,11 +51,14 @@ const viewportStyle = {setProperty(name, value) { this[name] = value; }};
 const context = {window: {visualViewport: viewport, isSecureContext: true, localStorage: {getItem: key => storage.get(key),
     setItem: (key, value) => storage.set(key, value)},
     addEventListener: (event, handler) => { windowEvents[event] = handler; }},
-    navigator: {serviceWorker: {register: async () => ({installing: worker})}}, console,
+    navigator: {serviceWorker: {register: async () => {
+        cacheRegistrations++;
+        return {installing: worker};
+    }}}, console,
     getComputedStyle: () => ({getPropertyValue: name => ({
         '--quality-menu-width': '216px', '--quality-safe-right': '0px',
     })[name]}),
-    requestAnimationFrame: fn => { callback = fn; },
+    requestAnimationFrame: fn => refreshCallbacks.push(fn),
     document: {getElementById: id => elements[id], documentElement: {style: viewportStyle},
         addEventListener: (event, handler) => { documentEvents[event] = handler; }},
     MutationObserver: class { constructor(fn) { this.callback = fn; observers.push(this); } observe() {} }};
@@ -92,7 +97,9 @@ qualityHandlers.change({target: choices[1]});
 assert.strictEqual(context.window.ttgamesRenderDensity, 2);
 assert.strictEqual(storage.get('ttgames-render-density'), '2');
 assert.strictEqual(quality.open, false);
-function tick(time) { const fn = callback; fn(time); }
+function tick(time) {
+    for (const fn of refreshCallbacks.splice(0)) fn(time);
+}
 nativeProgress.value = 50;
 observers[0].callback();
 tick(0); tick(100);
@@ -108,13 +115,16 @@ assert(progress.value < 100);
 box.textContent = 'Ready to start ! Please click/touch page';
 observers[1].callback();
 tick(60100);
+assert.strictEqual(refreshCallbacks.length, 0);
 assert.strictEqual(progress.value, 100);
 assert.strictEqual(percent.textContent, '100%');
 assert.strictEqual(box.dataset.ready, '');
 assert.notStrictEqual(loading.hidden, true);
+assert.strictEqual(gameCanvas['data-game-ready'], undefined);
 const label = JSON.stringify([['FPS 30', 10, false, [255, 255, 255], 17, 97, 65, 13, 'left']]);
 assert.strictEqual(version.hidden, true);
 context.window.ttgamesDrawUI('[]', 480, 850, false, false, '', true);
+assert.strictEqual(gameCanvas['data-game-ready'], '');
 assert.strictEqual(version.hidden, false);
 context.window.ttgamesDrawUI(label, 480, 850, true, false);
 assert.strictEqual(version.hidden, true);
@@ -151,7 +161,7 @@ setImmediate(() => {
     assert.match(offlineStatus.textContent, /保存失败/);
 });
 
-// The opt-in meter measures both branches, including time between Python frames.
+// The meter samples submitted frames using their timestamps.
 let frameTime = 0;
 const frameStats = {style: {}};
 context.window.location = {search: '?perf=1'};
@@ -160,28 +170,76 @@ context.document.createElement = () => frameStats;
 context.document.body = {append() {}};
 context.document.hidden = false;
 vm.runInNewContext(fs.readFileSync('web/shell.js', 'utf8'), context);
-for (let i = 0; i <= 60; i++) {
-    frameTime = i * 1000 / 60;
-    context.window.ttgamesRecordFrame('single');
+context.window.ttgamesDrawUI('[]', 480, 850, true, false);
+assert.strictEqual(cacheRegistrations, 1);
+function record(time, mode, resized = false) {
+    frameTime = time;
+    context.window.ttgamesRecordFrame(mode, resized);
 }
-assert.match(frameStats.textContent, /单人 · 60 FPS/);
+for (let i = 0; i <= 60; i++) {
+    tick(i * 1000 / 60);
+    record(i * 1000 / 60, 'single');
+}
+assert.match(frameStats.textContent, /单人 · 60 FPS · 浏览器 rAF 60 Hz/);
+assert.strictEqual(refreshCallbacks.length, 1);
+assert.match(frameStats.textContent, /Web test-build/);
 assert.match(frameStats.textContent, /P95 16.7 \/ 最大 16.7 ms · >50ms 0/);
-frameTime = 1100;
-context.window.ttgamesRecordFrame('single');
+record(1100, 'single');
 for (let i = 1; i <= 54; i++) {
-    frameTime = 1100 + i * 1000 / 60;
-    context.window.ttgamesRecordFrame('single');
+    record(1100 + i * 1000 / 60, 'single');
 }
 assert.match(frameStats.textContent, /最大 100.0 ms · >50ms 1/);
 context.document.hidden = true;
 documentEvents.visibilitychange();
-frameTime = 10000;
-context.window.ttgamesRecordFrame('lan');
+record(10000, 'lan');
 context.document.hidden = false;
 documentEvents.visibilitychange();
 for (let i = 0; i <= 60; i++) {
-    frameTime = 10000 + i * 1000 / 60;
-    context.window.ttgamesRecordFrame('lan');
+    tick(10000 + i * 1000 / 60);
+    record(10000 + i * 1000 / 60, 'lan');
 }
-assert.match(frameStats.textContent, /联机 · 60 FPS/);
+assert.match(frameStats.textContent, /联机 · 60 FPS · 浏览器 rAF 60 Hz/);
 assert.match(frameStats.textContent, />50ms 0/);
+record(14000, 'lan', true);
+assert.strictEqual(frameStats.textContent, '');
+for (let i = 1; i <= 60; i++) {
+    const time = 14000 + i * 1000 / 60;
+    tick(time);
+    if (i % 2 === 0) record(time, 'lan');
+}
+assert.match(frameStats.textContent, /联机 · 30 FPS · 浏览器 rAF 60 Hz/);
+assert.match(frameStats.textContent, />50ms 0/);
+assert.strictEqual(refreshCallbacks.length, 1);
+
+// The game can fill inset edges immediately after presenting.
+let insetCallback;
+context.ResizeObserver = class { constructor(fn) { insetCallback = fn; } observe() {} };
+const paint = [];
+let gameBounds = {left: 20, right: 824, top: 0, bottom: 370, width: 804, height: 370};
+Object.assign(canvas, {clientWidth: 804, clientHeight: 370});
+canvas.getBoundingClientRect = () => gameBounds;
+context.navigator.platform = 'MacIntel';
+context.navigator.maxTouchPoints = 5;
+gameCanvas.style = {setProperty(key, value) { this[key] = value; }};
+gameCanvas.toggleAttribute = (key, enabled) => gameCanvas[key] = enabled;
+elements['ttgames-safe-area-fill'] = {
+    clientWidth: 844, clientHeight: 390,
+    getBoundingClientRect: () => ({left: 0, top: 0, width: 844, height: 390}),
+    getContext: () => ({drawImage(...args) { paint.push(args); }}),
+};
+vm.runInNewContext(fs.readFileSync('web/shell.js', 'utf8'), context);
+context.window.ttgamesSetSceneSize(640, 320, 960, 480);
+assert.strictEqual(gameCanvas['data-scene-crop'], true);
+assert.strictEqual(gameCanvas.style['--scene-scale-x'], 1.5);
+assert.strictEqual(context.window.ttgamesViewportWidth, 804);
+insetCallback();
+context.window.ttgamesFillSafeArea();
+assert.strictEqual(paint.length, 5);
+assert(paint.some(call => call[1] === 639));
+context.window.ttgamesSetSceneSize(960, 480, 960, 480);
+assert.strictEqual(gameCanvas['data-scene-crop'], false);
+gameBounds = {left: 0, right: 844, top: 0, bottom: 390, width: 844, height: 390};
+Object.assign(canvas, {clientWidth: 844, clientHeight: 390});
+insetCallback();
+context.window.ttgamesFillSafeArea();
+assert.strictEqual(paint.length, 5);

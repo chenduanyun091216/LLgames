@@ -10,6 +10,38 @@ import {homeContent} from '../src/campaign-menu.js';
 const data = JSON.parse(readFileSync(new URL('../dist/campaign.json', import.meta.url)));
 const manifest = JSON.parse(readFileSync(new URL('../dist/assets.json', import.meta.url)));
 
+test('gift boat rows in from either corner, releases once, and exits by the closest edge', () => {
+    for (const [view, seed, entrySide] of [
+        [mobileView(844, 390), .1, -1], [mobileView(390, 844), .9, 1],
+    ]) {
+        const battle = new Battle(data, {view}, () => seed);
+        const rolls = [seed, .9, .5];
+        battle.random = () => rolls.shift() ?? seed;
+        battle.time = battle.giftAt;
+        battle.updateGiftDelivery();
+        const boat = battle.giftBoat;
+        assert.equal(boat.side, entrySide);
+        assert.ok(boat.y < 0);
+        assert.equal(battle.drops.length, 0);
+        battle.time += 1999;
+        battle.updateGiftDelivery();
+        assert.equal(battle.drops.length, 0);
+        battle.time += 1;
+        battle.updateGiftDelivery();
+        const gift = battle.drops[0];
+        assert.equal(gift.toss, entrySide);
+        assert.ok(gift.y > boat.y);
+        battle.time += 1599;
+        battle.updateGiftDelivery();
+        assert.equal(boat.facing, -entrySide);
+        assert.ok(entrySide < 0 ? boat.x > view.width + view.offset : boat.x < -view.offset);
+        battle.time += 1;
+        battle.updateGiftDelivery();
+        assert.equal(battle.giftBoat, null);
+        assert.deepEqual(battle.drops, [gift]);
+    }
+});
+
 test('home poster includes every campaign boss once', () => {
     const html = homeContent(data, () => '', '', false);
     const images = [...html.matchAll(/src="\.\/art\/bosses\/([^"]+)\.webp"/g)].map(match => match[1]);
@@ -19,12 +51,63 @@ test('home poster includes every campaign boss once', () => {
     assert.ok(images.includes('boss_orochi'));
 });
 
+test('Phaser deduplicates music and skips effects from other stages', async () => {
+    globalThis.Phaser = {Scene: class {}};
+    const {OceanScene} = await import('../src/scene.js');
+    delete globalThis.Phaser;
+    const scene = new OceanScene();
+    const requestedAudio = [];
+    scene.textures = {exists: () => false};
+    scene.cache = {audio: {exists: () => false}};
+    scene.load = {list: {size: 0}, image() {}, spritesheet() {}, audio: name => requestedAudio.push(name)};
+    const stage = data.levels[8];
+    const musicFiles = {'music-9': 'music-0'};
+    await scene.loadLevel({data: {...data, musicFiles}, stage, level: stage.level}, manifest);
+
+    assert.deepEqual(requestedAudio.filter(name => name.startsWith('music-')), ['music-0', 'music-9-boss']);
+    scene.cache.audio.exists = name => requestedAudio.includes(name);
+    let playing;
+    scene.sound = {add: name => ({play: () => { playing = name; }})};
+    scene.playMusic('music-9');
+    assert.equal(playing, 'music-0');
+    assert.ok(scene.nextAssets.has('effects/mecha_guided_missile'));
+    assert.ok(scene.nextAssets.has('effects/fisher_grenade'));
+    assert.ok(scene.nextAssets.has('effects/gift_boat_2'));
+    assert.ok(!scene.nextAssets.has('effects/orochi_fireball'));
+});
+
 function stepFor(battle, ms, input = {}) {
     for (let i = 0; i < Math.ceil(ms / STEP); i++) {
         battle.step(typeof input === 'function' ? input(battle) : input);
         battle.events.length = 0;
     }
 }
+
+test('enemy haste doubles movement once and special attacks have a warning', () => {
+    const battle = new Battle(data, {level: 4, tier: 1}, () => 0);
+    const speedy = battle.spawnEnemy('lobster', {y: battle.bottom / 3, speed: 1});
+    const y = speedy.y;
+    battle.updateEnemies();
+    assert.equal(speedy.y - y, 2);
+    battle.time = speedy.hasteUntil;
+    battle.updateEnemies();
+    assert.equal(speedy.y - y, 3);
+
+    for (const [kind, delay, count] of [['puffer', 650, 5], ['anglerfish', 800, 1], ['shark', 0, 3]]) {
+        battle.enemies = [];
+        battle.shots = [];
+        const enemy = battle.spawnEnemy(kind, {y: 100, born: 0, attackAt: battle.time});
+        battle.updateEnemies();
+        if (delay) {
+            assert.equal(enemy.specialAttackAt, battle.time + delay);
+            assert.equal(battle.shots.length, 0);
+            battle.time += delay;
+            battle.updateEnemies();
+        }
+        assert.equal(battle.shots.length, count);
+        battle.time = battle.enemyShotAt;
+    }
+});
 
 test('active enemies and shots carry over to the boss fight', () => {
     for (const mode of ['campaign', 'endless']) {
@@ -249,6 +332,28 @@ test('a split missile flies away before returning to its original target', () =>
         battle.updateProjectiles();
     }
     assert.equal(original.hp, 18.5);
+});
+
+test('a tossed gift becomes a target only after its arc ends', () => {
+    const battle = new Battle(data, {}, () => .7);
+    const gift = {kind: 'gift', x: 300, y: 130, w: 44, h: 44, life: 22000, toss: 1, tossSteps: 0};
+    battle.drops = [gift];
+    const shot = {x: 240, y: 240, dx: 0, dy: 0, angle: 0, w: 12, h: 12, guided: true, hit: new Set()};
+    battle.bullets = [shot];
+    battle.updateProjectiles();
+    assert.equal(shot.angle, 0);
+
+    shot.guided = false;
+    for (let i = 0; i < 24; i++) {
+        shot.x = gift.x;
+        shot.y = gift.y;
+        battle.step();
+        assert.ok(gift.life > battle.time);
+    }
+    shot.x = gift.x;
+    shot.y = gift.y;
+    battle.step();
+    assert.equal(gift.life, 0);
 });
 
 test('guided sniper rounds prioritize and open the nearest live gift', () => {

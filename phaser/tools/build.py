@@ -29,9 +29,13 @@ def campaign_data():
               if key.startswith(('CAMPAIGN_', 'INFINITE_', 'TRENCH_')) and isinstance(value, (dict, tuple))}
     return dict(tables, levels=config.LEVEL_CONFIGS, bosses=config.BOSS_DEFS,
                 waveEnemyHp=config.WAVE_ENEMY_HP, skillDamage=config.SKILL_DAMAGE,
+                weaponUpgradeDescriptions=config.WEAPON_UPGRADE_DESCRIPTIONS,
+                rifleDamagePerLevel=config.RIFLE_DAMAGE_PER_LEVEL,
                 rifleSpeedPerLevel=config.RIFLE_SPEED_PER_LEVEL, rifleRedChances=config.RIFLE_RED_CHANCES,
                 rifleBlastRadius=config.RIFLE_BLAST_RADIUS, shotgunExtraChances=config.SHOTGUN_EXTRA_CHANCES,
+                shotgunDamagePerLevel=config.SHOTGUN_DAMAGE_PER_LEVEL, sniperMissileInterval=config.SNIPER_MISSILE_INTERVAL,
                 sniperHasteChances=config.SNIPER_HASTE_CHANCES, sniperMissileDamage=config.SNIPER_MISSILE_DAMAGE,
+                sniperHasteMs=config.SNIPER_HASTE_MS, sniperHasteSpeed=config.SNIPER_HASTE_SPEED,
                 sniperMissileRadius=config.SNIPER_MISSILE_RADIUS,
                 characterFields=config.CHARACTER_FIELDS, characterFieldChance=config.CHARACTER_FIELD_CHANCE,
                 enemies={value['key']: value for value in config.ENEMY_DEFS},
@@ -87,6 +91,21 @@ def music(level, boss=False):
         return result.value
 
 
+def build_music(level_count):
+    tracks = {}
+    by_digest = {}
+    for level in range(level_count + 1):
+        for boss in ((False, True) if level else (False,)):
+            name = f'music-{level}' + ('-boss' if boss else '')
+            pcm = music(level, boss)
+            digest = hashlib.sha256(pcm).digest()
+            canonical = by_digest.setdefault(digest, name)
+            tracks[name] = canonical
+            if canonical == name:
+                save_wav(name, pcm)
+    return tracks
+
+
 def build():
     DIST.mkdir(exist_ok=True)
     for name in ('index.html', 'style.css', 'sw.js'):
@@ -102,7 +121,6 @@ def build():
         if path not in current_art:
             path.unlink()
     (DIST / 'assets.json').write_text(json.dumps(manifest), encoding='utf-8')
-    (DIST / 'campaign.json').write_text(json.dumps(campaign_data(), ensure_ascii=False), encoding='utf-8')
     (DIST / 'audio').mkdir(exist_ok=True)
     random.seed(0)
     for name, fn in {'pistol': sounds._snd_shoot_pistol, 'rifle': sounds._snd_shoot_rifle,
@@ -111,10 +129,13 @@ def build():
                      'skill': sounds._snd_grenade, 'boss': sounds._snd_boss_appear,
                      'clear': sounds._snd_level_up}.items():
         save_wav(name, sounds._pack(fn()))
-    for level in range(len(config.LEVEL_CONFIGS) + 1):
-        save_wav(f'music-{level}', music(level))
-        if level:
-            save_wav(f'music-{level}-boss', music(level, boss=True))
+    campaign = campaign_data()
+    campaign['musicFiles'] = build_music(len(campaign['levels']))
+    (DIST / 'campaign.json').write_text(json.dumps(campaign, ensure_ascii=False), encoding='utf-8')
+    music_files = set(campaign['musicFiles'].values())
+    for path in (DIST / 'audio').glob('music-*.wav'):
+        if path.stem not in music_files:
+            path.unlink()
     digest = hashlib.sha256()
     files = sorted(path for path in DIST.rglob('*') if path.is_file() and path.name != 'offline.json')
     for path in files:

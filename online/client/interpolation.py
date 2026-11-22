@@ -1,4 +1,5 @@
 """Bounded interpolation for positions and background scrolling."""
+import math
 from collections import deque
 
 
@@ -69,6 +70,7 @@ class LocalPrediction:
         self.history = deque(maxlen=180)
         self.sent = deque(maxlen=120)
         self.correction = (0, 0)
+        self.history_offset = (0, 0)
         self.last_frame = None
         self.received = None
 
@@ -81,33 +83,33 @@ class LocalPrediction:
         if self.position is None:
             self.position = position
             return
-        sent_at = next((at for seq, at in self.sent if seq == sequence), None)
+        sent_at = next((at for seq, at in reversed(self.sent) if seq == sequence), None)
         if sent_at is None or not self.history:
             return
         acknowledged_at = sent_at + age_ms / 1000
-        before = after = self.history[0]
-        for row in self.history:
-            after = row
-            if row[0] >= acknowledged_at:
-                break
+        before = after = self.history[-1]
+        for row in reversed(self.history):
             before = row
+            if row[0] <= acknowledged_at:
+                break
+            after = row
         span = after[0] - before[0]
         alpha = max(0, min(1, (acknowledged_at - before[0]) / span)) if span else 1
-        expected = tuple(a + (b - a) * alpha for a, b in zip(before[1], after[1]))
+        expected = tuple(a + (b - a) * alpha + offset
+                         for a, b, offset in zip(before[1], after[1], self.history_offset))
         error = tuple(a - b for a, b in zip(position, expected))
         if max(map(abs, error)) > 160:
             self.position = position
             self.history.clear()
+            self.history_offset = (0, 0)
             self.correction = (0, 0)
             return
         self.position = tuple(a + b for a, b in zip(self.position, error))
-        self.history = deque(
-            ((at, tuple(a + b for a, b in zip(point, error))) for at, point in self.history),
-            maxlen=180)
+        # Rebase the recorded path without rewriting it on every snapshot.
+        self.history_offset = tuple(a + b for a, b in zip(self.history_offset, error))
         self.correction = tuple(a - b for a, b in zip(self.correction, error))
 
     def advance(self, now, axis, speed, clamp):
-        import math
         elapsed = 0 if self.last_frame is None else min(.05, max(0, now - self.last_frame))
         self.last_frame = now
         if self.position is None:
@@ -117,7 +119,7 @@ class LocalPrediction:
         length = max(1, math.hypot(*axis))
         self.position = clamp(tuple(p + v / length * speed * elapsed
                                     for p, v in zip(self.position, axis)))
-        self.history.append((now, self.position))
+        self.history.append((now, tuple(p - offset for p, offset in zip(self.position, self.history_offset))))
         decay = max(0, 1 - elapsed / .08)
         self.correction = tuple(value * decay for value in self.correction)
         return clamp(tuple(a + b for a, b in zip(self.position, self.correction)))

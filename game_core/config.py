@@ -33,8 +33,6 @@ def game_ticks():
 
 
 # ── 游戏参数 ─────────────────────────────────────────────────────────────────
-GOLD_PER_NORMAL = 1
-GOLD_PER_LARGE = 3
 WEAPON_SWITCH_COOLDOWN = 200
 
 # ── 颜色 ─────────────────────────────────────────────────────────────────────
@@ -43,7 +41,6 @@ BLACK = (0, 0, 0)
 OCEAN_BLUE = (15, 65, 145)
 SAND_COLOR = (220, 200, 150)
 SAND_DARK = (180, 160, 110)
-UI_BG = (0, 0, 0, 160)
 GOLD_COLOR = (255, 215, 0)
 HEALTH_GREEN = (50, 220, 50)
 HEALTH_RED = (220, 50, 50)
@@ -53,7 +50,6 @@ OCEAN_SURFACE = (25, 130, 200)
 OCEAN_MID = (15, 85, 155)
 OCEAN_DEEP = (8, 45, 100)
 WAVE_COLOR = (40, 150, 220, 60)
-LIGHT_RAY = (255, 255, 255, 18)
 BUBBLE = (200, 230, 255, 80)
 SEAWEED_GREEN = (30, 120, 60)
 SEAWEED_LIGHT = (50, 150, 80)
@@ -67,7 +63,7 @@ VIEW_OFFSET = (0, 0)
 VIEW_SIZE = (SCREEN_WIDTH, SCREEN_HEIGHT)
 
 
-def update_mobile_view(window_size, layout_size=None):
+def update_mobile_view(window_size, layout_size=None, *, render_size=None):
     global SCREEN_WIDTH, SCREEN_HEIGHT, GAME_AREA_BOTTOM, GAME_AREA_LEFT, GAME_AREA_RIGHT, SCR
     global VIEW_SCALE, VIEW_OFFSET, VIEW_SIZE, MOBILE_LANDSCAPE_VIEW
     ww, wh = max(1, window_size[0]), max(1, window_size[1])
@@ -76,8 +72,11 @@ def update_mobile_view(window_size, layout_size=None):
     SCREEN_WIDTH = BASE_SCREEN_WIDTH if MOBILE_LANDSCAPE_VIEW else 480
     SCREEN_HEIGHT = max(1, int(round(SCREEN_WIDTH * lh / lw)))
     VIEW_SCALE = ww / SCREEN_WIDTH
-    VIEW_SIZE = (ww, min(wh, max(1, int(round(SCREEN_HEIGHT * VIEW_SCALE)))))
-    VIEW_OFFSET = ((ww - VIEW_SIZE[0]) // 2, (wh - VIEW_SIZE[1]) // 2)
+    # The browser canvas already fits its CSS viewport. Rounding the logical
+    # height back to pixels can invent a margin and force a full-screen clear.
+    view_height = wh if layout_size is not None else min(wh, max(1, round(SCREEN_HEIGHT * VIEW_SCALE)))
+    VIEW_SIZE = render_size or (ww, view_height)
+    VIEW_OFFSET = (0, (wh - view_height) // 2)
     control_space = min(150, max(80, int(SCREEN_HEIGHT * 0.18)))
     GAME_AREA_BOTTOM = SCREEN_HEIGHT - control_space
     if MOBILE_LANDSCAPE_VIEW:
@@ -472,10 +471,21 @@ CAMPAIGN_ENEMY_CAP = ((4, 5, 6), (4, 6, 7), (5, 6, 7), (5, 7, 8),
                       (5, 7, 8), (0, 0, 0), (6, 7, 9), (6, 8, 10),
                       (5, 6, 7), (5, 6, 7), (5, 6, 8), (0, 0, 0))
 WAVE_ENEMY_HP = {'normal': 3, 'large': 9, 'zongzong': 8}
-CAMPAIGN_ENEMY_HP_BONUS = ((-1, 0, 0), (-1, 0, 0), (-1, 0, 1), (0, 0, 1),
-                           (0, 1, 1), (0, 1, 2), (0, 1, 2), (0, 1, 2),
-                           (0, 1, 2), (0, 1, 2), (0, 1, 2), (0, 0, 0))
+# Total bonuses over species HP, including the previous balance pass.
+CAMPAIGN_ENEMY_HP_BONUS = ((-1, 0, 1), (-1, 0, 1), (-1, 0, 2), (0, 0, 2),
+                           (0, 1, 2), (0, 2, 4), (1, 3, 5), (1, 3, 5),
+                           (1, 3, 5), (1, 3, 5), (1, 3, 5), (0, 0, 0))
 CAMPAIGN_MOVE_MULT = (1.05, 1.20, 1.38)
+CAMPAIGN_ENEMY_MOVE_BOOST = {'lobster': 1.12, 'seahorse': 1.15, 'mantis_shrimp': 1.18,
+                             'mecha_eel': 1.15, 'ancient_trilobite': 1.16, 'trench_dragon': 1.15}
+CAMPAIGN_ENEMY_HASTE = {'chance': (.05, .08, .12), 'progress': .25, 'duration_ms': 1400, 'speed': 2}
+CAMPAIGN_ELITE_FANS = {'octopus': (-14, 0, 14), 'shark': (-22, 0, 22)}
+CAMPAIGN_SPECIAL_ENEMY_ATTACKS = {
+    'puffer': {'level': 3, 'opening_ms': 2600, 'warning_ms': 650, 'angles': (-42, -21, 0, 21, 42),
+               'speed': 2.8, 'aimed': False, 'color': (255, 167, 75)},
+    'anglerfish': {'level': 4, 'opening_ms': 2500, 'warning_ms': 800, 'angles': (0,),
+                   'speed': 5.2, 'aimed': True, 'color': (123, 241, 194)},
+}
 CAMPAIGN_ENEMY_ATTACK_MS = ((10500, 14500), (7500, 10500), (5500, 8200))
 INFINITE_ENEMY_ATTACK_MS = (5200, 8200)
 CAMPAIGN_TEMPLE_FAN_ENEMIES = ('ancient_ray', 'ancient_seahorse')
@@ -510,13 +520,35 @@ SKILL_DAMAGE = {'grenade': 3.5, 'grenade_boss': 3.0, 'fireball': 1.75, 'fire_roc
                 'ice_ball': 1.25, 'lightning': 2.5, 'magnetic_storm': 3.5, 'infinite_storm': 2.5}
 CAMPAIGN_CAST_DAMAGE_CAP = {'fireball': 4.5, 'ice_ball': 2.5}
 WEAPON_UPGRADE_LIMIT = 3
+RIFLE_DAMAGE_PER_LEVEL = 0.10
 RIFLE_SPEED_PER_LEVEL = 0.15
 RIFLE_RED_CHANCES = (0.08, 0.11, 0.14)
 RIFLE_BLAST_RADIUS = 100
+SHOTGUN_DAMAGE_PER_LEVEL = 0.20
 SHOTGUN_EXTRA_CHANCES = (0.18, 0.24, 0.30)
+SNIPER_MISSILE_INTERVAL = 4
 SNIPER_HASTE_CHANCES = (0.22, 0.28, 0.34)
+SNIPER_HASTE_MS = 3000
+SNIPER_HASTE_SPEED = 1.5
 SNIPER_MISSILE_DAMAGE = (3.25, 4.25, 5.25)
 SNIPER_MISSILE_RADIUS = 64
+WEAPON_UPGRADE_DESCRIPTIONS = {
+    'pistol': ('手枪不可强化',),
+    'rifle': (
+        f'每级伤害 +{RIFLE_DAMAGE_PER_LEVEL:.0%}、射速 +{RIFLE_SPEED_PER_LEVEL:.0%}',
+        '各级爆炸红弹概率 ' + '/'.join(f'{chance:.0%}' for chance in RIFLE_RED_CHANCES),
+    ),
+    'shotgun': (
+        f'每级弹丸伤害 +{SHOTGUN_DAMAGE_PER_LEVEL:.0%}',
+        '各级四发散射概率 ' + '/'.join(f'{chance:.0%}' for chance in SHOTGUN_EXTRA_CHANCES),
+    ),
+    'sniper': (
+        f'每 {SNIPER_MISSILE_INTERVAL} 发一枚追踪导弹，爆炸分裂 1/2/3 枚',
+        '导弹基础伤害 ' + '/'.join(f'{damage:g}' for damage in SNIPER_MISSILE_DAMAGE),
+        f'发射导弹时可使射速 +{SNIPER_HASTE_SPEED - 1:.0%}，持续 {SNIPER_HASTE_MS / 1000:g} 秒',
+        '射速加成概率 ' + '/'.join(f'{chance:.0%}' for chance in SNIPER_HASTE_CHANCES),
+    ),
+}
 
 # 无限模式 Boss 首轮参数，按 BOSS_DEFS 顺序排列。
 INFINITE_BOSS_HP = (30, 44, 62, 84, 108, 134, 158, 180, 204, 224, 244, 264)

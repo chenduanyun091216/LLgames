@@ -9,7 +9,7 @@ from . import config
 from .abyss_bosses import AbyssBoss, AbyssProjectile, _blit
 from .asset_loader import image_asset, scale_surface_cached
 from .entities import BossProjectile
-from .render import Draw, RenderSurface, blit_effect, effect_layer
+from .render import Draw, RenderSurface, blit_effect, effect_layer, scaled_surface
 from .visuals import draw_glow
 
 
@@ -52,21 +52,22 @@ def cannon_shots(side):
             for angle in config.TRENCH_CANNON['angles'][layout]]
 
 
-def draw_cannon_charge(surf, now, fire_at, side):
+def draw_cannon_charge(surf, now, fire_at, side, *, visual_scale=1):
     width, height = config.TRENCH_CANNON['mouth_size'][_cannon_layout()]
     size = (round(width * config.SCREEN_WIDTH), round(height * config.SCREEN_HEIGHT))
     radius = max(size) / 2
     for index, kind in enumerate(('fire', 'ice')):
         color = config.TRENCH_CANNON['colors'][kind]
         muzzle = cannon_muzzle(index)
-        layer = effect_layer(surf, size)
+        target = scaled_surface(surf, muzzle, visual_scale)
+        layer = effect_layer(target, size)
         mouth = pygame.Rect((0, 0), size)
         Draw.ellipse(layer, (*color, 160), mouth)
         mouth.center = muzzle
-        blit_effect(surf, layer, mouth.topleft)
+        blit_effect(target, layer, mouth.topleft)
         if index == side and 0 <= fire_at - now <= config.TRENCH_CANNON['warning']:
             pulse = .5 + .5 * math.sin(now / 42)
-            draw_glow(surf, muzzle, round(radius * (1 + .55 * pulse)), color, 195)
+            draw_glow(target, muzzle, round(radius * (1 + .55 * pulse)), color, 195)
 
 
 class TrenchBolt(AbyssProjectile):

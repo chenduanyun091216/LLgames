@@ -260,7 +260,6 @@ class OnlineGame(Game):
         self.muzzle_flashes[:] = [v for v in self.muzzle_flashes if now - v[1] < 90]
         self.water_heal_effects[:] = [v for v in self.water_heal_effects if now - v[1] < 800]
         self.laser_impacts[:] = [v for v in self.laser_impacts if now - v[2] <= 300]
-        self.gift_messages[:] = [v for v in self.gift_messages if now < v[2]]
         if self.skill_flash and now - self.skill_flash[2] >= 340:
             self.skill_flash = None
 

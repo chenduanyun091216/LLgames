@@ -5,6 +5,10 @@ import {fixedView} from './layout.js';
 
 export const STEP = 1000 / 60;
 const PLAYER_BOTTOM_MARGIN = 10;
+const BOAT_APPROACH_MS = 2000, BOAT_TURN_MS = 100, BOAT_EXIT_MS = 1500;
+const GIFT_TOSS_STEPS = 24;
+const isGiftTossing = drop => (drop.tossSteps ?? GIFT_TOSS_STEPS) < GIFT_TOSS_STEPS;
+export const GIFT_BOAT_WIDTH = 136, GIFT_BOAT_HEIGHT = 108;
 export const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const angleDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 const intersects = (a, b) => Math.abs(a.x - b.x) < (a.w + b.w) / 2 && Math.abs(a.y - b.y) < (a.h + b.h) / 2;
@@ -82,6 +86,7 @@ export class Battle {
         this.enemyShotAt = this.time;
         this.lastElite = false;
         this.giftAt = this.time + 18000;
+        this.giftBoat = null;
         this.riftAt = this.time + 8500;
         this.riftsDestroyed = 0;
         this.waterKills = 0;
@@ -215,6 +220,8 @@ export class Battle {
         let hp = def.campaign_hp ?? baseHp;
         const progression = this.data.INFINITE_PROGRESSION;
         const endless = this.mode === 'endless';
+        const moveBoost = this.data.CAMPAIGN_ENEMY_MOVE_BOOST[kind] ?? 1;
+        const haste = this.data.CAMPAIGN_ENEMY_HASTE;
         if (endless) {
             const steps = Math.min(this.endlessChapterIndex, this.data.INFINITE_BOSS_HP.length);
             hp *= (100 + steps * progression.enemy_health_first_round_step
@@ -224,19 +231,25 @@ export class Battle {
         if (endless && kind in this.data.enemies) {
             const move = Math.min(progression.enemy_move_max,
                 progression.enemy_move_start + this.round * progression.enemy_move_per_round);
-            speed = (def.base_speed + (this.random() - .5) * .30) * this.data.difficulty[2].enemy_speed_mult * .82 * move;
-            if (!def.is_large && this.random() < progression.fast_spawn_chance) speed *= 2;
+            speed = (def.base_speed + (this.random() - .5) * .30) * this.data.difficulty[2].enemy_speed_mult * .82 * move * moveBoost;
         } else {
             speed = def.base_speed * ((this.bottom + 20 + h) / (384 + baseH * .64)) * this.data.CAMPAIGN_SPEED[this.level - 1]
-                * [.88, 1, 1.08][this.tier] * this.custom.speed * (.88 + this.random() * .24);
-            speed *= this.data.CAMPAIGN_MOVE_MULT[this.tier];
+                * [.88, 1, 1.08][this.tier] * this.custom.speed * (.88 + this.random() * .24) * moveBoost;
+            speed = Math.min(speed, (this.bottom + 20) / (60 * [5, 4.5, 4][this.tier]))
+                * this.data.CAMPAIGN_MOVE_MULT[this.tier];
         }
+        const original = extra.counts !== false && kind in this.data.enemies;
+        const canHaste = original && !def.is_large && !def.zongzong && (endless
+            || (this.level >= [2, 1, 1][this.tier] && (this.level !== 1 || this.waveSpawns >= 6)));
+        const hastePending = canHaste && this.random() < (endless ? progression.fast_spawn_chance : haste.chance[this.tier]);
+        const skill = this.data.CAMPAIGN_SPECIAL_ENEMY_ATTACKS[kind];
+        const special = original && skill && (endless || this.level >= skill.level) ? skill : null;
         const [minAttack, maxAttack] = this.data.INFINITE_ENEMY_ATTACK_MS;
         const opening = endless ? 800 + this.random() * 1400 + minAttack + this.random() * (maxAttack - minAttack)
             : [4500, 3800, 3200][this.tier] + Math.ceil(h * this.data.CAMPAIGN_MOVE_MULT[this.tier]
                 / Math.max(.01, speed) * STEP);
         const entity = {id: this.key(), kind, def, w, h, x, anchor: extra.x ?? x, y: -h / 2, hp, speed,
-            counts: true, born: this.time, attackAt: this.time + opening, ...extra};
+            counts: true, born: this.time, hastePending, special, attackAt: this.time + (special?.opening_ms ?? opening), ...extra};
         entity.maxHp = entity.hp;
         this.enemies.push(entity);
         return entity;
@@ -265,10 +278,10 @@ export class Battle {
         if (!pool.length) return;
         const kind = this.level === 11 ? this.data.TRENCH_WAVES[Math.floor(this.waveSpawns / 4) % 3][this.waveSpawns % 4]
             : pool[Math.floor(this.random() * pool.length)];
-        this.waveSpawns++;
         this.lastElite = kind === 'zongzong' || this.data.enemies[kind].is_large;
         this.spawnEnemy(kind, {factory: this.level === 9 ? 'original' : null,
             summons: this.level === 10 && this.random() < [.18, .24, .28][this.tier]});
+        this.waveSpawns++;
     }
 
     updateSpawns() {
@@ -304,13 +317,48 @@ export class Battle {
             }
             this.riftAt = this.time + [10000, 8500, 7000][this.tier];
         }
-        if (this.time >= this.giftAt) {
-            if (!this.drops.some(drop => drop.kind === 'gift')) {
-                this.drops.push({id: this.key(), kind: 'gift', x: 60 + this.random() * (this.width - 120),
-                    y: -25, w: 44, h: 44, life: this.time + 22000});
+        this.updateGiftDelivery();
+    }
+
+    updateGiftDelivery() {
+        if (this.time + .001 >= this.giftAt) {
+            if (!this.drops.some(drop => drop.kind === 'gift' && drop.life > this.time + .001)) {
+                const side = this.random() < .5 ? -1 : 1;
+                const deliverySide = this.random() < .75 ? side : -side;
+                this.giftBoat = {id: this.key(), started: this.time, side,
+                    fraction: .5 + (.06 + this.random() * .22) * deliverySide, released: false};
             }
             this.giftAt = this.time + (this.mode === 'endless' ? 15000 : 22000);
         }
+        const boat = this.giftBoat;
+        if (!boat) return;
+        const age = this.time - boat.started;
+        const x = this.width * boat.fraction;
+        const y = Math.min(104, this.bottom * .16);
+        const exitSide = x <= this.width / 2 ? -1 : 1;
+        if (!boat.released && age + .001 >= BOAT_APPROACH_MS) {
+            boat.released = true;
+            this.drops.push({id: this.key(), kind: 'gift', x: x - exitSide * 18, y: y + 28,
+                w: 44, h: 44, life: boat.started + 22000, toss: -exitSide, tossSteps: 0});
+        }
+        const departure = age - BOAT_APPROACH_MS - BOAT_TURN_MS;
+        if (departure + .001 >= BOAT_EXIT_MS) {
+            this.giftBoat = null;
+        } else if (departure >= 0) {
+            const edge = exitSide < 0 ? -this.view.offset : this.width + this.view.offset;
+            const t = departure / BOAT_EXIT_MS;
+            boat.facing = exitSide;
+            boat.x = x + (edge + exitSide * GIFT_BOAT_WIDTH / 2 - x) * t * (.65 + .35 * t);
+            boat.y = y + 22 * t;
+        } else {
+            const start = this.view.canvasWidth * (boat.side < 0 ? .07 : .93) - this.view.offset;
+            const t = Math.min(1, age / BOAT_APPROACH_MS);
+            boat.facing = -boat.side;
+            boat.x = start + (x - start) * t * (2 - t);
+            boat.y = -60 + (y + 60) * t * (2 - t);
+        }
+        const stroke = departure >= 0 ? departure / 54 : age / 82;
+        boat.frame = [0, 1, 2, 1][Math.floor(stroke) % 4];
     }
 
     worm(enemy) {
@@ -352,19 +400,40 @@ export class Battle {
             } else if (e.kind !== 'orochi_bubble') {
                 e.x = clamp(e.anchor + Math.sin(this.time / 700 + e.id) * 20, e.w / 2, this.width - e.w / 2);
                 const entry = e.counts && this.time - e.born < 500 ? Math.max(0, (56 - e.y) / 11) : 0;
-                e.y += Math.max(e.speed, entry) * slow;
+                const haste = this.data.CAMPAIGN_ENEMY_HASTE;
+                if (e.hastePending && slow > 0 && e.y >= this.bottom * haste.progress) {
+                    e.hastePending = false;
+                    e.hasteUntil = this.time + haste.duration_ms;
+                }
+                const speed = e.hasteUntil > this.time ? e.speed * haste.speed : e.speed;
+                e.y += Math.max(speed, entry) * slow;
                 if (this.link?.group.includes(e)) e.y = Math.min(e.y, this.bottom - e.h);
             }
             if (e.summons && e.y > 65) {
                 e.summons = false;
                 for (let i = 0, n = 1 + Math.floor(this.random() * (this.tier === 2 ? 3 : 2)); i < n; i++) this.worm(e);
             }
-            if ((e.counts || e.factory === 'child') && !e.chases && e.y > 28 && e.y < this.bottom - 100 && this.time >= Math.max(e.attackAt, this.enemyShotAt)) {
+            const muzzleY = e.y + e.h / 2 - 8;
+            if (e.special && !e.specialAttackAt && slow > 0 && this.time >= e.attackAt
+                    && e.y - e.h / 2 >= 10 && muzzleY + 8 < this.bottom - 55) {
+                e.specialAttackAt = this.time + e.special.warning_ms;
+                e.specialAim = e.special.aimed ? Math.atan2(Math.max(1, this.player.y - muzzleY), this.player.x - e.x) : Math.PI / 2;
+            }
+            const ready = e.special ? slow > 0 && e.specialAttackAt > 0 && this.time >= e.specialAttackAt
+                : e.y > 28 && e.y < this.bottom - 100 && this.time >= e.attackAt;
+            if ((e.counts || e.factory === 'child') && !e.chases && ready && this.time >= this.enemyShotAt) {
                 this.enemyShotAt = this.time + (this.phase === 'boss' || (this.mode !== 'endless' && this.tier === 0) ? 1000 : 500);
                 const fanTier = this.mode === 'endless' ? Math.min(2, 1 + this.round) : this.tier;
                 const factory = this.level === 9;
                 const trench = this.data.TRENCH_ATTACKS?.[e.kind];
-                if (trench) {
+                const eliteFan = this.data.CAMPAIGN_ELITE_FANS[e.kind];
+                if (e.special) {
+                    for (const offset of e.special.angles) {
+                        this.shot(e.x, muzzleY, e.specialAim + offset * Math.PI / 180, e.special.speed,
+                            null, {r: 8, skillColor: e.special.color});
+                    }
+                    e.specialAttackAt = 0;
+                } else if (trench) {
                     const [delay, speed, aimed] = trench;
                     const x = e.x, y = e.y + e.h * .22;
                     const angle = aimed ? Math.atan2(this.player.y - y, this.player.x - x) : Math.PI / 2;
@@ -374,9 +443,9 @@ export class Battle {
                             angle + offset * Math.PI / 180, speed, null,
                             {r: 8, fossil: true, expires: this.time + 3600});
                     });
-                } else if (this.data.CAMPAIGN_TEMPLE_FAN_ENEMIES.includes(e.kind)) {
+                } else if (eliteFan || this.data.CAMPAIGN_TEMPLE_FAN_ENEMIES.includes(e.kind)) {
                     const aim = Math.atan2(this.bottom - e.y, this.player.x - e.x);
-                    for (const offset of this.data.CAMPAIGN_TEMPLE_FAN_ANGLES[fanTier]) {
+                    for (const offset of eliteFan ?? this.data.CAMPAIGN_TEMPLE_FAN_ANGLES[fanTier]) {
                         this.shot(e.x, e.y + 12, aim + offset * Math.PI / 180, 3.2, 'bubble_crab', {r: 8});
                     }
                 } else {
@@ -510,6 +579,7 @@ export class Battle {
         this.gold += this.clearReward;
         this.heal(this.mode === 'endless' ? 1 : [2, 2, 1][this.tier]);
         this.enemies = this.bullets = this.shots = this.zones = this.tasks = this.drops = [];
+        this.giftBoat = null;
         this.event('clear', {x: this.boss.x, y: this.boss.y});
         this.boss = null;
     }
@@ -655,6 +725,8 @@ export class Battle {
                 enemy.attackAt += elapsed;
                 enemy.born += elapsed;
                 if (enemy.castingUntil) enemy.castingUntil += elapsed;
+                if (enemy.specialAttackAt) enemy.specialAttackAt += elapsed;
+                if (enemy.hasteUntil > previous) enemy.hasteUntil += elapsed;
             }
             if (this.link) this.link.until += elapsed;
             if (this.cannonAt) this.cannonAt += elapsed;
@@ -795,7 +867,7 @@ export class Battle {
             ['waterHasteUntil', 1.5],
             ['hasteUntil', 2],
             ['swiftFieldUntil', this.data.characterFields.water.fire_rate],
-            ['sniperHasteUntil', 1.5],
+            ['sniperHasteUntil', this.data.sniperHasteSpeed],
         ]) {
             if (this[timer] > this.time) {
                 const layers = this.fireSpeedLayers[timer] ?? [];
@@ -812,10 +884,13 @@ export class Battle {
         }
         this.gold -= cost;
         this.lastFire = this.time;
-        if (this.weapon === 'sniper' && level) this.sniperShots = (this.sniperShots + 1) % 4;
+        if (this.weapon === 'sniper' && level) this.sniperShots = (this.sniperShots + 1) % this.data.sniperMissileInterval;
         const missile = this.weapon === 'sniper' && level > 0 && this.sniperShots === 0;
-        const multiplier = this.weapon === 'rifle' ? 1 + .1 * level : this.weapon === 'shotgun' ? 1 + .2 * level : 1;
-        if (missile && this.random() < this.data.sniperHasteChances[level - 1]) this.sniperHasteUntil = this.time + 3000;
+        const multiplier = this.weapon === 'rifle' ? 1 + this.data.rifleDamagePerLevel * level
+            : this.weapon === 'shotgun' ? 1 + this.data.shotgunDamagePerLevel * level : 1;
+        if (missile && this.random() < this.data.sniperHasteChances[level - 1]) {
+            this.sniperHasteUntil = this.time + this.data.sniperHasteMs;
+        }
         const red = this.weapon === 'rifle' && level > 0 && this.random() < this.data.rifleRedChances[level - 1];
         const extra = this.weapon === 'shotgun' && level > 0 && this.random() < this.data.shotgunExtraChances[level - 1];
         const element = this.gift?.until > this.time ? this.gift.type : null;
@@ -1002,7 +1077,7 @@ export class Battle {
 
     updateProjectiles() {
         const targets = [...this.enemies, ...(this.boss ? [this.boss] : [])];
-        const gifts = this.drops.filter(drop => drop.kind === 'gift');
+        const gifts = this.drops.filter(drop => drop.kind === 'gift' && !isGiftTossing(drop));
         for (const b of this.bullets.slice()) {
             if (b.guided && this.time >= (b.guideAt ?? 0)) {
                 let nearest = null, distance = Infinity;
@@ -1246,7 +1321,15 @@ export class Battle {
         if (this.phase === 'defeat') return;
         this.updateProjectiles();
         for (const drop of this.drops) {
-            drop.y = Math.min(this.bottom - 15, drop.y + (drop.kind === 'coin' ? 3.6 : 1.9));
+            let fall = drop.kind === 'coin' ? 3.6 : 1.9;
+            if (isGiftTossing(drop)) {
+                const previous = drop.tossSteps / GIFT_TOSS_STEPS;
+                const progress = ++drop.tossSteps / GIFT_TOSS_STEPS;
+                drop.x += drop.toss * 3.2 * (1 - progress);
+                fall += 120 * (previous * (1 - previous) ** 2 - progress * (1 - progress) ** 2);
+            }
+            drop.y = Math.min(this.bottom - 15, drop.y + fall);
+            if (isGiftTossing(drop)) continue;
             if (Math.hypot(p.x - drop.x, p.y - drop.y) > (drop.kind === 'coin' ? 49 : 37)) continue;
             if (drop.life <= this.time) continue;
             if (drop.kind === 'coin') {

@@ -391,13 +391,11 @@ class CoOpRulesTests(unittest.TestCase):
         self.g.muzzle_flashes = [(self.p1, 0, 'pistol'), (self.p2, 911, 'rifle')]
         self.g.water_heal_effects = [(self.p1, 0), (self.p2, 201)]
         self.g.laser_impacts = [(1, 2, 699), (2, 3, 700)]
-        self.g.gift_messages = [('old', (1,2,3), 1000, 0), ('new', (1,2,3), 1001, 0)]
         self.g.skill_flash = (1, 2, 660, (1,2,3))
         self.g._expire_visuals(1000)
         self.assertEqual(len(self.g.muzzle_flashes), 1)
         self.assertEqual(len(self.g.water_heal_effects), 1)
         self.assertEqual(len(self.g.laser_impacts), 1)
-        self.assertEqual(len(self.g.gift_messages), 1)
         self.assertIsNone(self.g.skill_flash)
 
     def test_sustained_fire_does_not_accumulate_visual_records(self):

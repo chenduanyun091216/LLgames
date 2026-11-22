@@ -18,6 +18,7 @@ import sys
 import threading
 import urllib.request
 import re
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -293,6 +294,9 @@ def package_runtime():
 
 
 def finalize_webroot(pygbag_output):
+    # The browser loads the tarball, so discard the other Pygbag archive before copying.
+    for unused_archive in pygbag_output.glob('*.apk'):
+        unused_archive.unlink()
     shutil.rmtree(WEBROOT, ignore_errors=True)
     shutil.copytree(pygbag_output, WEBROOT)
     html = (WEBROOT / 'index.html').read_text(encoding='utf-8')
@@ -370,8 +374,6 @@ def finalize_webroot(pygbag_output):
         digest = hashlib.file_digest(package, 'sha256').hexdigest()[:16]
     archive.rename(WEBROOT / f'ttgames-{digest}.tar.gz')
     html = html.replace('ttgames.tar.gz', f'ttgames-{digest}.tar.gz')
-    for unused_archive in WEBROOT.glob('*.apk'):
-        unused_archive.unlink()
     package_runtime()
     for path in (WEBROOT / RUNTIME_PATH).rglob('*'):
         if path.suffix in ('.wasm', '.data', '.js', '.py'):
@@ -385,9 +387,14 @@ def finalize_webroot(pygbag_output):
                                   f'cpython{PYBUILD.replace(".", "")}/main.data')),
     ]
     sw = SHELL_FILES[2].read_text(encoding='utf-8')
-    version = hashlib.sha256(html.encode() + sw.encode()).hexdigest()[:16]
-    (WEBROOT / 'index.html').write_text(html.replace('__BUILD_VERSION__', version), encoding='utf-8')
-    sw = sw.replace('__BUILD_VERSION__', version).replace('__PRECACHE__', json.dumps(precache))
+    built_at = datetime.fromtimestamp(time.time(), timezone(timedelta(hours=8)))
+    html = html.replace('__BUILD_VERSION__', built_at.strftime('%Y%m%d%H%M%S'))
+    cache_version = hashlib.sha256(html.encode() + sw.encode()).hexdigest()[:16]
+    (WEBROOT / 'index.html').write_text(html, encoding='utf-8')
+    if lan_scripts:
+        # Older workers intercept only the root and index.html.
+        (WEBROOT / 'play.html').write_text(html, encoding='utf-8')
+    sw = sw.replace('__BUILD_VERSION__', cache_version).replace('__PRECACHE__', json.dumps(precache))
     (WEBROOT / 'sw.js').write_text(sw, encoding='utf-8')
     manifest = source_manifest()
     MANIFEST.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')

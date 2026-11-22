@@ -10,10 +10,17 @@ from game_core import special_bosses as S, orochi as O
 # Reviewed static allowlist, not runtime introspection or object-dictionary export.
 SCHEMA = {
     'Player': 'animation_hit_at animation_move_at animation_moving animation_skill animation_skill_at breath_start_time campaign character current_weapon gift_speed_until gold last_shot_time niu_freeze_until niu_slow_until owned_characters owned_weapons rage_until skill_active_cd skill_active_until skill_cooldowns skill_display_duration snow_slow_until sprite_asset water_boost_until water_haste_until weapon_ammo weapon_upgrades x y slot hp max_hp alive invincible_until shop_open'.split(),
-    'Enemy': 'hits attack_interval attack_interval_max attack_interval_min base_h base_w breath_start_time burn_damage burn_duration burn_hits burn_start burning chase_color chase_partner chase_side damage_taken frozen frozen_until gold_value h health_mult immune_text_until infected infected_weapon is_large is_zongzong last_attack_time last_burn_tick last_contact_damage_time max_hp size_scale slow_mult slowed_until snowflake_until speed sprite_asset unscaled_base_h unscaled_base_w w water_mark_until x y zong_expression zong_expression_at zong_expression_from zong_hits'.split(),
+    'Enemy': ('hits attack_interval attack_interval_max attack_interval_min base_h base_w breath_start_time '
+              'burn_damage burn_duration burn_hits burn_start burning chase_color chase_partner chase_side '
+              'damage_taken frozen frozen_until gold_value h haste_until health_mult immune_text_until infected '
+              'infected_weapon is_large is_zongzong last_attack_time last_burn_tick last_contact_damage_time '
+              'max_hp size_scale slow_mult slowed_until snowflake_until special_aim special_attack_at speed '
+              'sprite_asset unscaled_base_h unscaled_base_w w water_mark_until x y zong_expression zong_expression_at '
+              'zong_expression_from zong_hits').split(),
     'Bullet': 'angle character color damage gift_kind max_lifetime radius sniper_missile sniper_submissile sniper_trail spawn_time speed weapon_name x y'.split(),
     'Coin': 'radius speed value x y'.split(),
     'GiftBox': 'breath_start_time kind radius speed x y'.split(),
+    'GiftBoat': 'facing frame x y'.split(),
     'Particle': 'particles'.split(),
     'Explosion': 'age color element heavy life shockwave_radius sparks x y'.split(),
     'FireWall': 'h last_damage_time lifetime spawn_time speed w x y'.split(),
@@ -54,7 +61,7 @@ SCHEMA['AbyssProjectile'] = SCHEMA['BossProjectile'] + list(A.ABYSS_PROJECTILE_F
 SCHEMA['TrenchBolt'] = SCHEMA['AbyssProjectile'] + 'kind launched'.split()
 SCHEMA['Enemy'] += ['factory_kind', 'factory_link_until', 'temple_kind']
 CLASSES = {name: getattr(E, name) for name in (
-    'Player Enemy Bullet Coin GiftBox Particle Explosion FireWall IceFloor SkillProjectile '
+    'Player Enemy Bullet Coin GiftBox GiftBoat Particle Explosion FireWall IceFloor SkillProjectile '
     'Lightning MagneticStorm RadiationLaser SpinningDarts BossProjectile DragonFireball Boss').split()}
 CLASSES.update({name: getattr(S, name) for name in (
     'NiuBoss ZongBoss ReturningAxe CrescentWave ZongBomb ZongFireball ZongReflectBullet NiuFanBullet NiuShieldShard').split()})
@@ -62,8 +69,8 @@ CLASSES.update({name: getattr(A, name) for name in ('MechaLizardBoss', 'AncientW
 CLASSES.update(ShieldfishBoss=T.ShieldfishBoss, TrenchSpire=T.TrenchSpire, TrenchBolt=T.TrenchBolt)
 CLASSES.update(BossSignature=BossSignature, OrochiBoss=O.OrochiBoss, OrochiFireball=O.OrochiFireball)
 CLASSES['OrochiSideOrb'] = O.OrochiSideOrb
-COLLECTIONS = 'enemies bullets coins gift_boxes particles explosions fire_walls ice_floors skill_projectiles magnetic_storms radiation_lasers lightnings dart_shields boss_projectiles warned_boss_shots enemy_projectiles'.split()
-GAME_FIELDS = 'trench_cannon_at trench_cannon_side background_scroll_ticks bg_transition_until current_level chapter infinite_mode infinite_background_level player_invincible_until level_title_until level_transition_end level_fade_in_until rage_banner_until gift_lightning_icon_until gift_lightning_remaining gift_fire_until gift_ice_until player_hp max_player_hp score infinite_deaths infinite_start_time infinite_music_variant infinite_boss_index victory_end campaign_elapsed_ms campaign_start_level campaign_bosses_defeated campaign_enemies_defeated campaign_deaths campaign_restarts revive_count kill_count level_kills leak_count lives warned_boss_shots_at laser_impacts water_heal_effects muzzle_flashes skill_flash gift_messages'.split()
+COLLECTIONS = 'enemies bullets coins gift_boxes gift_boats particles explosions fire_walls ice_floors skill_projectiles magnetic_storms radiation_lasers lightnings dart_shields boss_projectiles warned_boss_shots enemy_projectiles'.split()
+GAME_FIELDS = 'trench_cannon_at trench_cannon_side background_scroll_ticks bg_transition_until current_level chapter infinite_mode infinite_background_level player_invincible_until level_title_until level_transition_end level_fade_in_until rage_banner_until gift_lightning_icon_until gift_lightning_remaining gift_fire_until gift_ice_until player_hp max_player_hp score infinite_deaths infinite_start_time infinite_music_variant infinite_boss_index victory_end campaign_elapsed_ms campaign_start_level campaign_bosses_defeated campaign_enemies_defeated campaign_deaths campaign_restarts revive_count kill_count level_kills leak_count lives warned_boss_shots_at laser_impacts water_heal_effects muzzle_flashes skill_flash'.split()
 GAME_FIELDS += ['enemy_freeze_until', 'ice_field_slot', 'radiation_wave']
 DATA_KEYS = set('x y vx vy life max_life color size start text until at kind key name is_large zongzong gold base_speed health_mult sprite_asset sprite_key enemy_key base_hp fixed_hp speed attack_interval projectile_count homing_chance laser_chance campaign_tier campaign_level warning duration h w radius released burst_at target_x target_y'.split()) | set(config.WEAPON_DEFS) | set(config.CHARACTER_DEFS) | set('fisher_grenade ice_balls water_heal lightning skill1 skill2 radiation_laser dart_shield fireball fire_wall ice_ball ice_floor magnetic_storm lightning_chain water_boost water_haste'.split())
 DEFINITION_KEYS = 'campaign_hp key name is_large zongzong gold base_speed health_mult sprite_asset sprite_key enemy_key base_hp fixed_hp speed attack_interval projectile_count homing_chance laser_chance campaign_tier campaign_level size damage_cap final_boss easy_campaign laser_offsets shield_thresholds laser_interval_mult'.split()

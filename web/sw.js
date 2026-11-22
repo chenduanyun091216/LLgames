@@ -4,9 +4,14 @@ const version = prefix + '__BUILD_VERSION__';
 const assets = __PRECACHE__.map(path => new URL(path, self.registration.scope).href);
 const shell = assets[0];
 const known = new Set(assets);
+const navigationPaths = new Set(['./', 'index.html', 'play.html'].map(path => new URL(path, shell).pathname));
 
 self.addEventListener('install', event => {
-    event.waitUntil(caches.open(version).then(cache => cache.addAll(assets)));
+    event.waitUntil((async () => {
+        const cache = await caches.open(version);
+        await cache.addAll(assets);
+        await self.skipWaiting();
+    })());
 });
 
 self.addEventListener('activate', event => {
@@ -18,15 +23,26 @@ self.addEventListener('activate', event => {
     })());
 });
 
+async function loadShell(request) {
+    let response, failure;
+    try {
+        response = await fetch(request, {cache: 'no-cache'});
+        if (response.status < 500) return response;
+    } catch (error) {
+        failure = error;
+    }
+    const cache = await caches.open(version);
+    const cached = await cache.match(shell);
+    if (cached || response) return cached || response;
+    throw failure;
+}
+
 self.addEventListener('fetch', event => {
     const {request} = event;
     const url = new URL(request.url);
     if (request.method !== 'GET' || url.origin !== self.location.origin) return;
     if (request.mode === 'navigate') {
-        if (url.pathname !== new URL(shell).pathname &&
-            url.pathname !== new URL('index.html', shell).pathname) return;
-        // Use the HTML paired with this worker's assets until the next worker activates.
-        event.respondWith(caches.open(version).then(async cache => (await cache.match(shell)) || fetch(request)));
+        if (navigationPaths.has(url.pathname)) event.respondWith(loadShell(request));
         return;
     }
     url.hash = '';

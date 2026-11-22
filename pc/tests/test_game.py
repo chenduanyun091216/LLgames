@@ -259,8 +259,13 @@ class DesktopGameTests(unittest.TestCase):
         game.player.gold = 100
         game._open_shop()
 
-        def press(key):
-            game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=key, mod=0)])
+        def press(key, mod=0, repeat=False):
+            game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=key, mod=mod, repeat=repeat)])
+
+        press(pygame.K_2, pygame.KMOD_LSHIFT)
+        self.assertEqual(game.state, GameState.SHOP)
+        self.assertNotIn('rifle', game.player.owned_weapons)
+        self.assertEqual(game.player.gold, 100)
 
         press(pygame.K_2)
         self.assertEqual(game.player.current_weapon, 'rifle')
@@ -272,6 +277,17 @@ class DesktopGameTests(unittest.TestCase):
         press(pygame.K_KP6)
         self.assertEqual(game.player.character, 'water')
         self.assertEqual(game.player.gold, gold)
+
+        press(pygame.K_5)
+        game.player.gold = 1000
+        cost = game._weapon_upgrade_cost('rifle') + game._character_upgrade_cost('water')
+        press(pygame.K_2, pygame.KMOD_LSHIFT)
+        press(pygame.K_KP6, pygame.KMOD_RSHIFT)
+        press(pygame.K_2, pygame.KMOD_LSHIFT, repeat=True)
+        self.assertEqual(game.player.weapon_upgrades['rifle'], 1)
+        self.assertEqual(game.player.character_upgrades['water'], 1)
+        self.assertEqual(game.player.character, 'ice')
+        self.assertEqual(game.player.gold, 1000 - cost)
 
     def test_escape_exits_home_and_confirms_battle_exit(self):
         pygame.init()

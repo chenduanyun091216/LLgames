@@ -41,12 +41,32 @@ def _browser_size(viewport, quality):
     # Keep the default pixel budget stable; higher resolution is opt-in via HD.
     default_hd = min(1080 / short, HD_MAX_VIEW[0] / long)
     density = {1.5: standard, 1.75: (standard + default_hd) / 2, 2: hd}[quality]
-    return tuple(round(value * density) for value in viewport)
+    size = tuple(max(1, round(value * density)) for value in viewport)
+    long_pixels = max(size)
+    if size[0] * size[1] % 8 and long_pixels >= 8:
+        # The bundled SDL canvas backend writes alpha eight pixels at a time
+        # only when the complete frame fits that loop.
+        density = (long_pixels - long_pixels % 8) / long
+        size = tuple(max(1, round(value * density)) for value in viewport)
+    return size
 
 
 def _browser_viewport(window):
     return (int(getattr(window, 'ttgamesViewportWidth', None) or window.innerWidth),
             int(getattr(window, 'ttgamesViewportHeight', None) or window.innerHeight))
+
+
+def _browser_surfaces(viewport, quality, set_scene_size, display=None):
+    render_size = _browser_size(viewport, quality)
+    output_size = _browser_size(viewport, 2) if set_scene_size else render_size
+    if display is None or display.get_size() != output_size:
+        display = pygame.display.set_mode(output_size, pygame.RESIZABLE)
+    if set_scene_size:
+        set_scene_size(*render_size, *output_size)
+    # The visible part of the SDL canvas spans the scene's pixels for input as well.
+    config.update_mobile_view(render_size, viewport)
+    frame = display if render_size == display.get_size() else display.subsurface(((0, 0), render_size))
+    return display, frame
 
 
 async def main(transport=None):
@@ -57,17 +77,19 @@ async def main(transport=None):
         pass
     browser_window = getattr(platform, 'window', None)
     viewport = None
+    hide_startup = browser_window is None and pygame.display.get_driver() == 'windows'
     if browser_window is not None:
         quality = getattr(browser_window, 'ttgamesRenderDensity', 1.75)
+        set_scene_size = getattr(browser_window, 'ttgamesSetSceneSize', None)
         asset_loader.web_hd_assets = quality != 1.5
         viewport = tuple(max(1, value) for value in _browser_viewport(browser_window))
-        window_size = _browser_size(viewport, quality)
+        display, window = _browser_surfaces(viewport, quality, set_scene_size)
         show_resolutions = getattr(browser_window, 'ttgamesShowResolutions', None)
         if show_resolutions:
             show_resolutions(*(value for q in BROWSER_QUALITIES for value in _browser_size(viewport, q)))
     else:
-        window_size = (960, 720)
-    window = pygame.display.set_mode(window_size, pygame.RESIZABLE)
+        flags = pygame.RESIZABLE | (pygame.HIDDEN if hide_startup else 0)
+        display = window = pygame.display.set_mode((960, 720), flags)
     pygame.display.set_caption('海洋生物入侵 - Ocean Invaders')
     native_window = None
     fullscreen = False
@@ -76,10 +98,14 @@ async def main(transport=None):
         # Let the window manager fit the frame to the usable desktop area.
         native_window = Window.from_display_module()
         native_window.title = '海洋生物入侵 - Ocean Invaders · F11 全屏/窗口'
+        if hide_startup:
+            # On Windows, maximizing a hidden SDL window can show it before it has pixels.
+            native_window.opacity = 0
+            native_window.show()
         native_window.maximize()
         pygame.event.pump()
         pygame.key.stop_text_input()
-    config.update_mobile_view(window.get_size(), viewport)
+        config.update_mobile_view(window.get_size())
 
     from .game import Game, GameState
     from .asset_loader import image_asset
@@ -131,15 +157,28 @@ async def main(transport=None):
                         GameState.LEVEL_TRANSITION, GameState.VICTORY)
     cutscene_states = (GameState.OPENING, GameState.ENDING)
 
+    def present_frame():
+        nonlocal hide_startup
+        if window is not display:
+            # Browser filtering can sample one texel beyond the visible scene.
+            width, height = window.get_size()
+            display.blit(display, (width, 0), (width - 1, 0, 1, height))
+            display.blit(display, (0, height), (0, height - 1, width + 1, 1))
+        pygame.display.flip()
+        if hide_startup:
+            native_window.opacity = 1
+            hide_startup = False
+
+    def advance_frame_music(frame_started):
+        if browser_window is None:
+            advance_music()
+            return
+        # Reserve time for the browser to present the submitted frame.
+        remaining = step - (perf_counter() - frame_started) - 0.001
+        advance_music(max(0.00025, min(0.004, remaining)))
+
     while running:
-        quality_changed = False
-        if browser_window is not None:
-            new_quality = getattr(browser_window, 'ttgamesRenderDensity', 1.75)
-            quality_changed = new_quality != quality
-            if quality_changed:
-                quality = new_quality
-            # Pygbag already resumes this coroutine once per requestAnimationFrame.
-            # A second wall-clock gate can discard every other jittered callback.
+        # Pygbag already resumes this coroutine once per requestAnimationFrame.
         frame_time = perf_counter()
         elapsed = min(frame_time - previous_frame, 4 * step)
         previous_frame = frame_time
@@ -162,44 +201,51 @@ async def main(transport=None):
                     resized = True
             events = [event for event in events if not (event.type == pygame.KEYDOWN and event.key == pygame.K_F11)]
         if browser_window is not None:
-            hd_assets = quality != 1.5
-            if hd_assets != asset_loader.web_hd_assets:
-                asset_loader.web_hd_assets = hd_assets
-                clear_background_cache()
-                game.bg = game._load_bg()
-                warmed_background = warmed_panorama = warmed_boss = None
+            new_quality = getattr(browser_window, 'ttgamesRenderDensity', 1.75)
             new_viewport = _browser_viewport(browser_window)
-            size = _browser_size(new_viewport, quality)
-            if min(size) > 0 and (size != window_size or new_viewport != viewport or quality_changed):
+            if min(new_viewport) > 0 and (new_viewport != viewport or new_quality != quality):
+                quality = new_quality
+                hd_assets = quality != 1.5
+                if hd_assets != asset_loader.web_hd_assets:
+                    asset_loader.web_hd_assets = hd_assets
+                    clear_background_cache()
+                    game.bg = game._load_bg()
+                    warmed_background = warmed_panorama = warmed_boss = None
                 layout_changed = new_viewport != viewport
                 viewport = new_viewport
-                window_size = size
-                window = pygame.display.set_mode(size, pygame.RESIZABLE)
-                config.update_mobile_view(window.get_size(), viewport)
+                display, window = _browser_surfaces(viewport, quality, set_scene_size, display)
                 if layout_changed:
                     if show_resolutions:
                         show_resolutions(*(value for q in BROWSER_QUALITIES for value in _browser_size(viewport, q)))
                     game.resize_view(previous_area)
                 resized = True
         elif resized or any(event.type in resize_events for event in events):
-            window_size = window.get_size()
             config.update_mobile_view(window.get_size())
             game.resize_view(previous_area)
             resized = True
         if lan is not None and lan.page != 'single':
+            if browser_window is not None:
+                lan.browser_viewport = viewport if draw_ui else None
+                lan.render_density = quality
             running = lan.frame(game, events, window, hidden, touch_active)
             if not lan.drawn_to_window:
                 scaled = _draw_scaled(window, scaled)
             previous_background = None
-            pygame.display.flip()
+            present_frame()
+            if browser_window is not None:
+                lan.record_rendered_frame(perf_counter(), reset=hidden or resized)
             if fill_safe_area:
                 fill_safe_area()
-            lan_ui = ('[]', config.SCREEN_WIDTH, config.SCREEN_HEIGHT, *lan.ui_state, '', lan.page == 'home')
-            if draw_ui and previous_ui != lan_ui:
-                draw_ui(*lan_ui)
-                previous_ui = lan_ui
+            if draw_ui:
+                lan_ui = (lan.ui_labels, config.SCREEN_WIDTH, config.SCREEN_HEIGHT,
+                          *lan.ui_state, '', lan.page == 'home')
+                if previous_ui != lan_ui:
+                    draw_ui(json.dumps(lan.ui_labels, separators=(",", ":")), *lan_ui[1:])
+                    previous_ui = lan_ui
             if record_frame:
-                record_frame('lan' if lan.ui_state[0] else 'idle')
+                record_frame('lan' if lan.ui_state[0] else 'idle', resized)
+            if not hidden:
+                advance_frame_music(frame_time)
             game.clock.tick(0 if browser_window is not None else FPS)
             await asyncio.sleep(0)
             continue
@@ -256,7 +302,7 @@ async def main(transport=None):
                 game.draw_ending(window)
             if game.state in cutscene_states:
                 previous_background = None
-                pygame.display.flip()
+                present_frame()
                 if fill_safe_area:
                     fill_safe_area()
                 cutscene = 'opening' if game.state == GameState.OPENING else 'ending'
@@ -312,7 +358,7 @@ async def main(transport=None):
             config.SCR = scene
         if show_timings:
             submit_started = perf_counter()
-        pygame.display.flip()
+        present_frame()
         if fill_safe_area:
             fill_safe_area()
         if draw_ui:
@@ -348,8 +394,8 @@ async def main(transport=None):
                 labels.append((fps_label, 10, False, (180, 220, 232), *game.hud_fps_rect, 'right'))
                 if timing_label:
                     labels.append((timing_label, 10, False, (180, 220, 232), 17, diagnostics_y + 14, 285, 13, 'left'))
-                    labels.append((f'{window_size[0]} × {window_size[1]}', 10, False,
-                                   (180, 220, 232), 17, diagnostics_y + 28, 115, 13, 'left'))
+                    sizes = f'场景 {window.get_width()}×{window.get_height()} · 输出 {display.get_width()}×{display.get_height()}'
+                    labels.append((sizes, 10, False, (180, 220, 232), 17, diagnostics_y + 28, 245, 13, 'left'))
             else:
                 fps_started = None
                 fps_frames = 0
@@ -383,14 +429,9 @@ async def main(transport=None):
             image_asset(f'bosses/{boss.get("sprite_key", boss["key"])}.png')
             warmed_boss = next_level
         else:
-            if browser_window is not None:
-                # Keep track generation from consuming the next display slot.
-                remaining = step - (perf_counter() - frame_time) - 0.001
-                advance_music(max(0.00025, min(0.004, remaining)))
-            else:
-                advance_music()
+            advance_frame_music(frame_time)
         game.clock.tick(0 if browser_window is not None else FPS)
         if record_frame:
-            record_frame('single' if game.state in advancing_states else 'idle')
+            record_frame('single' if game.state in advancing_states else 'idle', resized)
         await asyncio.sleep(0)
 

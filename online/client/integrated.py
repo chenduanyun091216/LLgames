@@ -8,7 +8,7 @@ import pygame
 from game_core import config, menu_ui
 from game_core.render import RenderSurface
 from game_core.game import BACKGROUND_SCROLL_TICKS, BG_FADE_MS, GameState
-from game_core.sounds import advance_music, start_music
+from game_core.sounds import start_music
 from .interpolation import PositionBuffer, LocalPrediction
 
 
@@ -62,6 +62,9 @@ class LAN:
         self.presentation = None
         self.scene = None
         self.scene_layout = None
+        self.scene_labels = ()
+        self.browser_viewport = None
+        self.render_density = 1.75
         self.positions = PositionBuffer()
         self.prediction = LocalPrediction()
         self.prediction_context = None
@@ -77,6 +80,10 @@ class LAN:
         self.exit_confirmation = False
         self.victory_left = None
         self.ui_state = (False, False)
+        self.ui_labels = ()
+        self.displayed_fps = 0
+        self._fps_started = None
+        self._fps_frames = 0
         self.perf_at = self.perf_frame = None
         self.perf_max = [0, 0, 0]
         self.perf_text = ''
@@ -99,6 +106,9 @@ class LAN:
         self.presentation = None
         self.scene = None
         self.scene_layout = None
+        self.scene_labels = ()
+        self.last_input = None
+        self.last_send = 0
         self.positions = PositionBuffer()
         self.prediction = LocalPrediction()
         self.prediction_context = None
@@ -194,6 +204,11 @@ class LAN:
         detail = '' if error == 'orientation_mismatch' else error
         if error == 'wrong_room_code':
             detail = '房间不存在，请核对房主提供的房间号或邀请链接'
+        elif error == 'room_in_use':
+            detail = '已有房间。加入请输入房主的四位房间号，重新创建需等原房间关闭。'
+            rows.append(('重新创建', lambda: self.start_room('create')))
+        if not state and not self.transport.slot and error in ('room_in_use', 'wrong_room_code'):
+            rows.append(('输入房间号', self.join_form))
         if state:
             orientation = state['orientation']
             wrong_direction = [f"P{p['slot']}" for p in state['players']
@@ -273,6 +288,7 @@ class LAN:
         if any(event.type == pygame.QUIT for event in events):
             return False
         self.ui_state = (False, False)
+        self.ui_labels = ()
         self.drawn_to_window = False
         started = monotonic()
         if isinstance(self.transport, BrowserTransport) and self.transport.perf:
@@ -302,7 +318,6 @@ class LAN:
             state = None
         if self.page in ('home', 'join') or not (state and state.get('world')):
             start_music()
-            advance_music()
         if self.page == 'home':
             self.draw_home(game, events, window)
         elif self.page == 'join':
@@ -312,6 +327,20 @@ class LAN:
         else:
             self.draw_illustrated(window, lambda: self.lobby(game, events, state, direction))
         return True
+
+    def record_rendered_frame(self, now, *, reset=False):
+        if reset or not self.ui_state[0]:
+            self._fps_started = None
+            self._fps_frames = self.displayed_fps = 0
+        elif self._fps_started is None:
+            self._fps_started = now
+        else:
+            self._fps_frames += 1
+            elapsed = now - self._fps_started
+            if elapsed >= 1:
+                self.displayed_fps = round(self._fps_frames / elapsed)
+                self._fps_started = now
+                self._fps_frames = 0
 
     def draw_home(self, game, events, window):
         rects = menu_ui.entrance_rects()
@@ -391,53 +420,18 @@ class LAN:
                     setattr(config, name, value)
         presentation = self.presentation
         view = presentation.view
+        new_state = self.applied is not state
+        if new_state:
+            try:
+                presentation.apply(state, slot)
+            finally:
+                for name, value in local.items():
+                    setattr(config, name, value)
         view.desktop_controls, view.web, view.mobile_web = game.desktop_controls, game.web, game.mobile_web
         view.controls = game.controls
         view.clock = game.clock
         view.lan = self
         local_surface = config.SCR
-        layout = None if window is None else (
-            window.get_size(), local_surface.get_size(), config.VIEW_SIZE, config.VIEW_OFFSET)
-        new_state = self.applied is not state
-        now = monotonic() * 1000
-        if new_state:
-            self.positions.push(state, now)
-        positions, scroll = self.positions.sample(now)
-        if not game.web:
-            scroll = None
-        # The controlling player must not inherit the remote interpolation delay.
-        for player in state['world']['players']:
-            if player['slot'] == slot:
-                positions.pop(player['id'], None)
-        moving = positions != self.render_positions or scroll != self.render_scroll
-        self.render_positions = positions
-        self.render_scroll = scroll
-        predict = (not state['paused'] and me['alive'] and state['phase'] == 'playing'
-                   and state['stage'] != 'transition' and not away and not self.exit_confirmation
-                   and me.get('move_speed', 0) > 0 and 'input_seq' in me and 'input_age_ms' in me)
-        context = (state['match_id'], state['orientation'], state.get('current_level'), predict)
-        if context != self.prediction_context:
-            self.prediction = LocalPrediction()
-            self.prediction_context = context
-        if new_state:
-            self.prediction.reconcile((me['x'], me['y']), me.get('input_seq', -1),
-                                      me.get('input_age_ms', 0), now / 1000)
-        self.predicting = predict and me.get('move_speed', 0) > 0
-        self.prediction_speed = me.get('move_speed', 0)
-        if new_state or moving or self.predicting or layout is None or layout != self.scene_layout:
-            if layout is not None and (self.scene is None or self.scene.get_size() != layout[0]):
-                self.scene = pygame.Surface(layout[0]).convert(window)
-            target = self.scene if window is not None else local_surface
-            draw_started = monotonic()
-            self._compose_battle(state, slot, size, local, target, window is not None, new_state)
-            self.perf_max[1] = max(self.perf_max[1], (monotonic() - draw_started) * 1000)
-            self.applied, self.scene_layout = state, layout
-        hud = local_surface
-        if window is not None:
-            # Positions interpolate between snapshots at the browser render cadence.
-            window.blit(self.scene, (0, 0))
-            hud = RenderSurface(window, local_surface.get_size(), config.VIEW_SIZE, config.VIEW_OFFSET, desktop_ui=True)
-            self.drawn_to_window = True
         view.player_hp, view.max_player_hp = me['hp'], max(1, me['max_hp'])
         view.player.gold = state['gold']
         view.shop_notice = str(self.transport.error)
@@ -459,12 +453,20 @@ class LAN:
                           GameState.INFINITE_CONTINUE if mode == 'infinite' else GameState.GAME_OVER)
         view.game_over_reason = me.get('defeat_reason') or ''
         view.exit_confirmation = self.exit_confirmation
-        config.SCR = hud
+        config.campaign_time_ms = presentation.time_ms
         try:
-            config.campaign_time_ms = state['world']['time_ms']
+            active, current_input = self._battle_input(view, state, me, events, away, touch_active)
+            view.exit_confirmation = self.exit_confirmation
+            now = monotonic()
+            self._update_battle_prediction(state, me, now, active, new_state, current_input)
+            self._draw_battle_world(state, me['slot'], size, local, window, new_state, now,
+                                    current_input[:2], active)
             self.ui_state = (view.state in (GameState.PLAYING, GameState.BOSS_FIGHT),
-                             view.state == GameState.PAUSED)
-            view.draw_local_hud()
+                             view.state == GameState.PAUSED and not self.exit_confirmation)
+            if active and self.browser_viewport is not None and window is not None:
+                self.ui_labels = list(self.ui_labels)
+                view._ui_labels = self.ui_labels
+            view.draw_local_hud(self.displayed_fps if isinstance(self.transport, BrowserTransport) else None)
             for notice in state.get('notices', []):
                 if notice['recipient_slot'] != slot:
                     continue
@@ -477,29 +479,6 @@ class LAN:
                         self.transport.markNotice(key)
                 if key in self.seen or browser and self.transport.noticeSeen(key):
                     self.transport.send({'type': 'ack_notice', 'match_id': state['match_id'], 'event_id': notice['event_id']})
-            if state['pause_reason'] == 'shop' and not me['shop_open']:
-                events = [event for event in events if self.exit_confirmation or
-                          event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE]
-            view.handle_local_events(events)
-            if touch_active is not None:
-                view.mobile_controls.release_inactive_touches(touch_active)
-            active = view.state in (GameState.PLAYING, GameState.BOSS_FIGHT) and state['stage'] != 'transition' and not paused and not away and not self.exit_confirmation
-            if not active:
-                view.mobile_controls.reset()
-            x, y = view.mobile_controls.axis if active else (0, 0)
-            keys = pygame.key.get_pressed()
-            if active and not view.mobile_web:
-                x = int(view._key_pressed(keys, 'p1_right')) - int(view._key_pressed(keys, 'p1_left'))
-                y = int(view._key_pressed(keys, 'p1_down')) - int(view._key_pressed(keys, 'p1_up'))
-            current_input = (x, y, bool(active and (
-                view._mobile_fire_active() or not view.mobile_web and view._key_pressed(keys, 'p1_shoot'))))
-            now = monotonic()
-            if not state['paused'] and (current_input != self.last_input and now - self.last_send >= 1 / 60
-                                        or now - self.last_send >= .05):
-                self.last_send = now
-                self.last_input = current_input
-                sequence = self.transport.send({'type': 'input', 'dx': x, 'dy': y, 'shoot': current_input[2]})
-                self.prediction.sent_input(sequence, now)
             view.draw_local_overlay(me)
             if view.state == GameState.VICTORY and view.victory_end <= config.game_ticks() and self.victory_left != state['match_id']:
                 self.victory_left = state['match_id']
@@ -528,17 +507,114 @@ class LAN:
                 rect.centerx = health.centerx
                 view._draw_text_fit(status, view.font_tiny, (224, 244, 253), rect, align='center')
         finally:
+            view._ui_labels = None
             config.SCR = local_surface
             config.campaign_time_ms = local['campaign_time_ms']
-        advance_music()
 
-    def _compose_battle(self, state, slot, size, local, target, projected, new_state):
+    def _battle_input(self, view, state, me, events, away, touch_active):
+        if state['pause_reason'] == 'shop' and not me['shop_open']:
+            events = [event for event in events if self.exit_confirmation or
+                      event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE]
+        view.handle_local_events(events)
+        if touch_active is not None:
+            view.mobile_controls.release_inactive_touches(touch_active)
+        active = (view.state in (GameState.PLAYING, GameState.BOSS_FIGHT) and state['stage'] != 'transition'
+                  and not state['paused'] and not away and not self.exit_confirmation
+                  and (not isinstance(self.transport, BrowserTransport) or self.transport.ready))
+        if not active:
+            view.mobile_controls.reset()
+            return False, (0, 0, False)
+        x, y = view.mobile_controls.axis
+        shoot = view._mobile_fire_active()
+        if not view.mobile_web:
+            keys = pygame.key.get_pressed()
+            dx = int(view._key_pressed(keys, 'p1_right')) - int(view._key_pressed(keys, 'p1_left'))
+            dy = int(view._key_pressed(keys, 'p1_down')) - int(view._key_pressed(keys, 'p1_up'))
+            if dx or dy:
+                x, y = dx, dy
+            shoot = shoot or view._key_pressed(keys, 'p1_shoot')
+        return True, (x, y, bool(shoot))
+
+    def _update_battle_prediction(self, state, me, now, active, new_state, current_input):
+        self.prediction_speed = me.get('move_speed', 0)
+        self.predicting = (active and self.prediction_speed > 0
+                           and 'input_seq' in me and 'input_age_ms' in me)
+        context = (state['match_id'], state['orientation'], state.get('current_level'), self.predicting)
+        context_changed = context != self.prediction_context
+        if context_changed:
+            self.prediction = LocalPrediction()
+            self.prediction_context = context
+        if self.predicting and (new_state or context_changed):
+            self.prediction.reconcile((me['x'], me['y']), me['input_seq'], me['input_age_ms'], now)
+        age = now - self.last_send
+        # Small refresh jitters should still allow one input change per 60 Hz frame.
+        if not state['paused'] and (age >= .05 or (age >= 1 / 60 - .002 and current_input != self.last_input)):
+            self.last_send = now
+            self.last_input = current_input
+            x, y, shoot = current_input
+            sequence = self.transport.send({'type': 'input', 'dx': x, 'dy': y, 'shoot': shoot})
+            self.prediction.sent_input(sequence, now)
+
+    def _draw_battle_world(self, state, slot, size, local, window, new_state, now, axis, active):
+        view = self.presentation.view
+        local_surface = config.SCR
+        stamp = now * 1000
+        if new_state:
+            self.positions.push(state, stamp)
+        positions, scroll = self.positions.sample(stamp)
+        if not view.web:
+            scroll = None
+        # Local movement is predicted immediately, while remote objects use the buffer.
+        for player in state['world']['players']:
+            if player['slot'] == slot:
+                positions.pop(player['id'], None)
+        moving = positions != self.render_positions or scroll != self.render_scroll
+        self.render_positions, self.render_scroll = positions, scroll
+        show_labels = active and self.browser_viewport is not None and window is not None
+        direct = window is not None and view.web and self.predicting
+        layout = None if window is None else (window.get_size(), local_surface.get_size(), config.VIEW_SIZE,
+                                              config.VIEW_OFFSET, show_labels, self.browser_viewport,
+                                              self.render_density, view.actor_scale_percent)
+        if new_state or moving or self.predicting or layout is None or layout != self.scene_layout:
+            if window is None:
+                target = local_surface
+            elif direct:
+                target = window
+            else:
+                if self.scene is None or self.scene.get_size() != layout[0]:
+                    self.scene = pygame.Surface(layout[0]).convert(window)
+                target = self.scene
+            draw_started = monotonic()
+            self._compose_battle(size, local, target, window is not None, axis, now, show_labels)
+            self.perf_max[1] = max(self.perf_max[1], (monotonic() - draw_started) * 1000)
+            self.applied = state
+            self.scene_layout = None if direct else layout
+        self.ui_labels = self.scene_labels if show_labels else ()
+        if window is not None:
+            if not direct:
+                window.blit(self.scene, (0, 0))
+            config.SCR = RenderSurface(window, local_surface.get_size(), config.VIEW_SIZE, config.VIEW_OFFSET,
+                                       desktop_ui=True, blit_flags=pygame.BLEND_ALPHA_SDL2 if view.web else 0)
+            self.drawn_to_window = True
+
+    def _compose_battle(self, size, local, target, projected, axis, now, show_labels):
         presentation = self.presentation
         view = presentation.view
         local_surface = config.SCR
         view_size = config.VIEW_SIZE if projected else local_surface.get_size()
         offset = config.VIEW_OFFSET if projected else (0, 0)
         rect = pygame.Rect(0, 0, *size).fit(pygame.Rect(offset, view_size))
+        # Keep the complete room; compensate object sizes for its letterboxing.
+        view.presentation_scale = (view_size[0] / local_surface.get_width()) / (rect.w / size[0])
+        local_landscape = local['MOBILE_LANDSCAPE_VIEW']
+        room_landscape = presentation.orientation == 'landscape'
+        entity_scale = lambda landscape: (config.MOBILE_LANDSCAPE_ENTITY_SCALE if landscape
+                                           else config.MOBILE_PORTRAIT_ENTITY_SCALE)
+        boss_scale = lambda landscape: (config.MOBILE_LANDSCAPE_BOSS_SCALE if landscape
+                                         else config.MOBILE_PORTRAIT_ENTITY_SCALE)
+        view.presentation_actor_scale = entity_scale(local_landscape) / entity_scale(room_landscape)
+        view.presentation_boss_scale = boss_scale(local_landscape) / boss_scale(room_landscape)
+        labels = [] if show_labels else None
         world_target = None
         if projected:
             world_target = getattr(self, 'world_target', None)
@@ -551,14 +627,18 @@ class LAN:
             # Map the local buttons onto the fitted room canvas used by the actors.
             hud_scale = view_size[0] / local_surface.get_width()
             room_scale = rect.w / size[0]
+            if self.browser_viewport is not None:
+                css_scale = min(pixels / extent for pixels, extent in zip(self.browser_viewport, size))
+                # Keep the base 16 px status font legible when the room is letterboxed on a phone.
+                view._water_status_scale = max(1, min(1.75, 12 / (16 * css_scale)))
             view._projected_field_badge_obstacles = [
                 pygame.Rect(round((button.x * hud_scale + offset[0] - rect.x) / room_scale),
                             round((button.y * hud_scale + offset[1] - rect.y) / room_scale),
                             round(button.w * hud_scale / room_scale), round(button.h * hud_scale / room_scale))
                 for button in view._field_badge_obstacles()]
-            if new_state:
-                presentation.apply(state, slot)
             restored = []
+            restored_previous = []
+            restored_trails = []
             if self.predicting:
                 from online.shared.world import configure_world
                 configure_world(presentation.orientation)
@@ -569,34 +649,62 @@ class LAN:
                 bottom = player.bottom_limit()
                 def clamp(point):
                     return max(left, min(right, point[0])), max(80, min(bottom, point[1]))
-                axis = (self.last_input or (0, 0))[:2]
-                predicted = self.prediction.advance(monotonic(), axis, self.prediction_speed, clamp)
+                predicted = self.prediction.advance(now, axis, self.prediction_speed, clamp)
                 if predicted is not None:
                     restored.append((player, player.x, player.y))
                     player.x, player.y = predicted
             for ident, position in self.render_positions.items():
                 obj = presentation.objects.get(ident)
-                if obj is not None:
+                if obj is not None and position != (obj.x, obj.y):
                     restored.append((obj, obj.x, obj.y))
+                    dx, dy = position[0] - obj.x, position[1] - obj.y
+                    # Keep projectile geometry in the same frame as the interpolated head.
+                    if hasattr(obj, 'prev_x') and hasattr(obj, 'prev_y'):
+                        restored_previous.append((obj, obj.prev_x, obj.prev_y))
+                        obj.prev_x += dx
+                        obj.prev_y += dy
+                    for attr in ('sniper_trail', 'missile_trail'):
+                        trail = getattr(obj, attr, None)
+                        if trail:
+                            restored_trails.append((obj, attr, trail))
+                            setattr(obj, attr, [(x + dx, y + dy) for x, y in trail])
                     obj.x, obj.y = position
             try:
-                presentation.draw(world_target, clear=world_target is None)
+                presentation.draw(world_target, clear=world_target is None, ui_labels=labels)
             finally:
                 for obj, x, y in restored:
                     obj.x, obj.y = x, y
+                for obj, x, y in restored_previous:
+                    obj.prev_x, obj.prev_y = x, y
+                for obj, attr, trail in restored_trails:
+                    setattr(obj, attr, trail)
         finally:
             view._projected_field_badge_obstacles = None
             for name, value in local.items():
                 setattr(config, name, value)
-        from game_core.background import background_art, draw_scrolling_background_art
+            config.campaign_time_ms = presentation.time_ms
+        self.scene_labels = ()
+        if labels:
+            ui_x = local_surface.get_width() / target.get_width()
+            ui_y = local_surface.get_height() / target.get_height()
+            self.scene_labels = tuple(
+                (text, font_size * room_scale * ui_y, bold, color,
+                 (rect.x + x * room_scale) * ui_x, (rect.y + y * room_scale) * ui_y,
+                 w * room_scale * ui_x, h * room_scale * ui_y, align)
+                for text, font_size, bold, color, x, y, w, h, align in labels)
+        from game_core.background import background_art, draw_scrolling_background_art, scrolling_background_art
         level = view.infinite_background_level if view.infinite_mode else view.current_level
         if target.get_size() != view_size:
             target.fill(config.OCEAN_DEEP)
-        boss_background = view.trench_boss_background(view_size)
-        subpixel = boss_background is None and self.render_scroll is not None and view._scrolls_background()
+        background = view.trench_boss_background(view_size)
+        scrolling = background is None and self.render_scroll is not None and view._scrolls_background()
+        progress = self.render_scroll / BACKGROUND_SCROLL_TICKS if scrolling else None
+        subpixel = scrolling and self.render_density == 2
         if not (subpixel and draw_scrolling_background_art(
-                target, offset, level, view_size, self.render_scroll / BACKGROUND_SCROLL_TICKS)):
-            background = None if subpixel else view.scrolling_background(view_size)
+                target, offset, level, view_size, progress)):
+            if background is None:
+                background = (scrolling_background_art(level, view_size, progress) if scrolling
+                              else view.scrolling_background(view_size))
             if background is None:
                 background = background_art(level, view_size)
             if background is not None:
@@ -616,6 +724,7 @@ class LAN:
         finally:
             config.SCR = local_surface
         if world_target is not None:
-            world_target.composite_onto(target, offset=rect.topleft, blit_flags=0)
+            world_target.composite_onto(target, offset=rect.topleft,
+                                        blit_flags=pygame.BLEND_ALPHA_SDL2 if view.web else 0)
         else:
             target.blit(pygame.transform.smoothscale(presentation.surface, rect.size), rect)

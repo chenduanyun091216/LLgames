@@ -98,6 +98,53 @@ class NewCampaignTests(unittest.TestCase):
         for old_level in config.LEVEL_CONFIGS[:8]:
             self.assertFalse(set(old_level['enemy_pool']) & set(config.FACTORY_ENEMY_KEYS + config.TEMPLE_ENEMY_KEYS))
 
+    def test_wave_hp_includes_both_balance_passes(self):
+        for difficulty, expected in (('easy', (2, 2, 2, 3, 3, 3, 4, 5)),
+                                     ('medium', (3, 3, 3, 3, 4, 5, 6, 7)),
+                                     ('hard', (4, 4, 5, 5, 5, 7, 8, 9))):
+            game = self.game(difficulty=difficulty)
+            for level, hp in zip((1, 2, 3, 4, 5, 6, 7, 9), expected):
+                game._start_level(level, checkpoint=False)
+                key = 'mecha_crab' if level == 9 else 'jellyfish'
+                game.level_enemy_defs = [e for e in game.level_enemy_defs if e['key'] == key]
+                game.state = GameState.BOSS_FIGHT  # Skip scripted wave introductions.
+                game.spawn_enemy()
+                self.assertEqual(game.enemies[-1].max_hp, hp, (difficulty, level))
+
+    def test_enemy_haste_and_telegraphed_attacks(self):
+        game = self.game()
+        game._start_level(4)
+        definitions = {e['key']: e for e in config.ENEMY_DEFS}
+        enemy = Enemy(definitions['lobster'])
+        enemy.haste_pending = True
+        enemy.y, enemy.speed = config.GAME_AREA_BOTTOM / 3, 1
+        y = enemy.y
+        enemy.update()
+        self.assertEqual(enemy.y - y, 2)
+        config.campaign_time_ms = enemy.haste_until
+        y = enemy.y
+        enemy.update()
+        self.assertEqual(enemy.y - y, 1)
+
+        for key, offsets in (('octopus', (-14, 0, 14)), ('shark', (-22, 0, 22))):
+            shots = game._enemy_shots(Enemy(definitions[key]), 1000)
+            self.assertEqual(len(shots), 3)
+            for shot, offset in zip(shots, offsets):
+                self.assertAlmostEqual(shot.angle - shots[1].angle, offset)
+
+        for key, delay, count in (('puffer', 650, 5), ('anglerfish', 800, 1)):
+            game.enemy_volley_times.clear()
+            enemy = Enemy(definitions[key])
+            enemy.y, enemy.last_attack_time, enemy.attack_interval = 100, 0, 1000
+            self.assertFalse(game._enemy_can_attack(enemy, 1000))
+            aim = enemy.special_aim
+            self.assertFalse(game._enemy_can_attack(enemy, 999 + delay))
+            self.assertTrue(game._enemy_can_attack(enemy, 1000 + delay))
+            shots = game._enemy_shots(enemy, 1000 + delay)
+            self.assertEqual(len(shots), count)
+            self.assertEqual(shots[count // 2].angle, aim)
+            self.assertEqual(enemy.special_attack_at, 0)
+
     def test_whale_swallow_finishes_before_countdown_or_game_over(self):
         for lives, expected in ((2, GameState.INFINITE_COUNTDOWN), (1, GameState.GAME_OVER)):
             with self.subTest(lives=lives):

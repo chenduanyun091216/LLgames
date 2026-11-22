@@ -215,13 +215,17 @@ function shop(returnTo = 'playing', message = '') {
     const status = key => key === world[shopTab] ? '已装备' : owned.has(key) ? '已购' : world.price(shopTab, key) + ' 金币';
     const image = key => isWeapon ? weaponImage(key, 'ui/weapon_showcase') : 'players/player_' + key;
     const selected = definitions[shopPreview];
+    const level = (isWeapon ? world.weaponUpgrades : world.characterUpgrades)[shopPreview];
+    const title = selected.name + (level ? ' Lv.' + level : '');
     const field = !isWeapon && data.characterFields[shopPreview];
-    const fieldDescription = field ? '<p><strong>' + field.name + '</strong> · '
-        + Math.round(data.characterFieldChance * 100) + '% · '
+    const fieldDescription = field ? '<p><strong>' + field.name + '</strong> · 施放技能 '
+        + Math.round(data.characterFieldChance * 100) + '% 触发 · '
         + field.duration_ms.map(ms => ms / 1000).join('/') + ' 秒 · ' + field.detail + '</p>' : '';
     const skillLabels = isWeapon ? [] : selected.skills.map(skill => skill.name);
     if (shopPreview === 'radiation') skillLabels.push('辐射激光', '飞镖护盾');
-    const description = isWeapon ? '<p>' + weaponDescriptions[shopPreview] + '</p>' : fieldDescription + '<ul>'
+    const description = isWeapon ? '<p>' + weaponDescriptions[shopPreview] + '</p>'
+        + data.weaponUpgradeDescriptions[shopPreview].map(line => '<p>' + escapeText(line) + '</p>').join('')
+        : fieldDescription + '<ul>'
         + skillLabels.map((name, index) => '<li><strong>' + name + '</strong>'
             + skillDescriptions[shopPreview][index] + '</li>').join('') + '</ul>';
     const shelves = ['weapon', 'character'].map(type => {
@@ -240,15 +244,16 @@ function shop(returnTo = 'playing', message = '') {
                 + (equipped ? 'equipped' : purchased ? 'owned' : '') + '">' + label + '</small></button>'
                 + (upgrade === null ? '' : '<button class="shop-upgrade" type="button" data-action="upgrade-' + key
                     + '" aria-label="加强' + item.name + '，' + upgrade + ' 金币" data-return="' + returnTo + '">加强 ' + upgrade + '</button>')
-                + (gear ? '' : '<button type="button" data-action="preview-' + key
-                    + '" data-return="' + returnTo + '">看技能</button>') + '</div>';
+                + '</div>';
         }).join('');
-        return '<section class="shop-shelf"><h3>' + (gear ? '装备' : '角色') + '</h3><div class="shop">' + items + '</div></section>';
+        return '<section class="shop-shelf"><h3>' + (gear ? '装备' : '角色') + '</h3><div class="shop'
+            + (gear ? '' : ' shop-characters') + '">' + items + '</div></section>';
     }).join('');
     const back = returnTo === 'clear' ? 'clear' : returnTo === 'select' ? 'shop-menu-close' : 'resume';
     panel('<div class="bar"><h2>商店</h2><span class="shop-gold"><img src="./art/ui/coin.webp" alt="金币"><span>' + world.gold + '</span></span>'
-        + button(back, '×') + '</div>' + shelves
-        + '<div class="shop-feature"><div><h3>' + selected.name + '</h3>' + description
+        + '<button class="shop-close" type="button" data-action="' + back + '" aria-label="关闭商店">×</button></div>'
+        + shelves
+        + '<div class="shop-feature"><div><h3>' + title + '</h3>' + description
         + '<p class="shop-price" role="status">' + (message || status(shopPreview)) + '</p></div>'
         + '<img alt="" src="./art/' + image(shopPreview) + '.webp"></div>', 'shop');
 }
@@ -340,12 +345,6 @@ $('#app').addEventListener('click', event => {
         tier = Number(action.slice(5));
         selectLevel();
         screen.querySelector('[data-action="' + action + '"]')?.focus();
-        return;
-    }
-    if (action.startsWith('preview-')) {
-        shopTab = 'character';
-        shopPreview = action.slice(8);
-        shop(node.dataset.return);
         return;
     }
     if (action.startsWith('upgrade-')) {

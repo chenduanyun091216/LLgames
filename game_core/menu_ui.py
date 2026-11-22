@@ -411,22 +411,21 @@ def shop_rects(game):
     x, y = (w - width) // 2, (h - height) // 2
     panel = pygame.Rect(x, y, width, height)
     rects = {'panel': panel,
-             'close': pygame.Rect(panel.right - 48, y + 8, 36, 34)}
+             'close': pygame.Rect(panel.right - 40, y + 12, 28, 26)}
     gap = 6
     card_w = (width - 24 - gap * 3) // 4
     card_h = min(78, max(47, (height - 224) // 2))
     cards_y = y + 66
     for category, _, keys, _, _ in SHOP_SHELVES:
+        shelf_height = card_h + 20 if category == 'character' else card_h
         for index, key in enumerate(keys):
-            tile = pygame.Rect(x + 12 + index * (card_w + gap), cards_y, card_w, card_h)
+            tile = pygame.Rect(x + 12 + index * (card_w + gap), cards_y, card_w, shelf_height)
             if category == 'weapon' and game._weapon_upgrade_cost(key) is not None:
                 rects[f'upgrade:{key}'] = pygame.Rect(tile.right - 59, tile.y + 4, 55, 20)
             elif category == 'character' and game._character_upgrade_cost(key) is not None:
                 rects[f'character_upgrade:{key}'] = pygame.Rect(tile.right - 59, tile.y + 4, 55, 20)
             rects[f'{category}:{key}'] = tile
-            if category == 'character':
-                rects[f'skills:{key}'] = pygame.Rect(tile.x, tile.bottom + 2, tile.w, 24)
-        cards_y += card_h + 28
+        cards_y += shelf_height + (8 if category == 'character' else 28)
     rects['feature'] = pygame.Rect(x + 12, cards_y + 4, width - 24, panel.bottom - cards_y - 14)
     return rects
 
@@ -477,6 +476,10 @@ def draw_shop(game):
     _art(image_asset('ui/coin.png'), pygame.Rect(panel.x + 78, panel.y + 15, 19, 19))
     _text(game, str(game.player.gold), pygame.Rect(panel.x + 102, panel.y + 6, 72, 36),
           color=config.GOLD_COLOR)
+    if game.desktop_controls:
+        _text(game, '数字购买/切换 · Shift+数字加强',
+              pygame.Rect(panel.x + 176, panel.y + 6, panel.w - 232, 36),
+              font=game.font_tiny, color=MUTED, align='right')
     _button(game, rects['close'], '×')
 
     for category, heading, keys, assets, definitions in SHOP_SHELVES:
@@ -517,16 +520,16 @@ def draw_shop(game):
                 fill = (22, 80, 72) if equipped else (34, 65, 91)
                 Draw.rect(config.SCR, fill, badge, border_radius=5)
             _text(game, status, badge, font=game.font_tiny, color=color, align='center')
-            if characters:
-                _button(game, rects[f'skills:{key}'], '看技能',
-                        active=game.shop_category == category and game.shop_character == key)
 
     characters = game.shop_category == 'character'
     selected = game.shop_character if characters else game.shop_weapon
     definitions = config.CHARACTER_DEFS if characters else config.WEAPON_DEFS
     _panel(game, feature)
     text_x = feature.x + 10
-    _text(game, definitions[selected].name, pygame.Rect(text_x, feature.y + 4, feature.w // 2 - 10, 24),
+    levels = game.player.character_upgrades if characters else game.player.weapon_upgrades
+    level = levels.get(selected, 0)
+    name = definitions[selected].name + (f' Lv.{level}' if level else '')
+    _text(game, name, pygame.Rect(text_x, feature.y + 4, feature.w // 2 - 10, 24),
           font=game.font_med)
     _text(game, game.shop_notice or _shop_status(game, selected, characters),
           pygame.Rect(feature.centerx, feature.y + 5, feature.w // 2 - 10, 22),
@@ -534,7 +537,7 @@ def draw_shop(game):
     if characters:
         field = config.CHARACTER_FIELDS[selected]
         durations = '/'.join(f'{ms / 1000:g}' for ms in field['duration_ms'])
-        label = f'{field["name"]} · {config.CHARACTER_FIELD_CHANCE:.0%} · {durations} 秒 · {field["detail"]}'
+        label = f'{field["name"]} · 施放技能 {config.CHARACTER_FIELD_CHANCE:.0%} 触发 · {durations} 秒 · {field["detail"]}'
         _text(game, label, pygame.Rect(text_x, feature.y + 29, feature.w - 20, 19),
               font=game.font_tiny, color=ACCENT)
         _draw_skills(game, selected,
@@ -542,7 +545,11 @@ def draw_shop(game):
     else:
         path = _WEAPON_ASSETS[selected]
         filename = path.rsplit('/', 1)[1]
+        art_x = feature.x + feature.w * 7 // 10
         _art(image_asset(f'ui/weapon_showcase/{filename}') or image_asset(path),
-             pygame.Rect(feature.centerx, feature.y + 31, feature.w // 2 - 10, feature.h - 36))
-        _text(game, WEAPON_DESCRIPTIONS[selected], pygame.Rect(text_x, feature.y + 32, feature.w // 2 - 10, 20),
-              font=game.font_tiny, color=MUTED)
+             pygame.Rect(art_x, feature.y + 31, feature.right - art_x - 10, feature.h - 36))
+        lines = (WEAPON_DESCRIPTIONS[selected], *config.WEAPON_UPGRADE_DESCRIPTIONS[selected])
+        row_height = min(17, (feature.h - 33) // len(lines))
+        for index, line in enumerate(lines):
+            _text(game, line, pygame.Rect(text_x, feature.y + 29 + index * row_height, art_x - text_x - 6, row_height),
+                  font=game.font_tiny, color=ACCENT if index else MUTED)

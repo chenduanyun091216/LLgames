@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 import urllib.request
+from datetime import datetime, timezone
 from functools import partial
 from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +18,31 @@ from web.run_web import OfflineHandler, SetupHandler, prepare_image
 
 
 class WebServerTests(unittest.TestCase):
+    def test_entry_points_show_beijing_build_time_and_cache_tracks_content(self):
+        from PIL import Image
+
+        instant = datetime(2026, 11, 22, 9, 37, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            source.mkdir()
+            (source / 'index.html').write_text('<html><head></head><body>ttgames.tar.gz</body></html>')
+            Image.new('RGB', (1, 1)).save(source / 'favicon.png')
+            output = root / 'web'
+            with patch.multiple(run_web, WEBROOT=output, MANIFEST=root / 'manifest.json'), \
+                    patch.object(run_web, 'package_runtime'), patch.object(run_web, 'source_manifest', return_value={}), \
+                    patch.object(run_web.time, 'time', return_value=instant.timestamp()):
+                cache_names = []
+                for payload in (b'first', b'second'):
+                    (source / 'ttgames.tar.gz').write_bytes(payload)
+                    run_web.finalize_webroot(source)
+                    html = (output / 'index.html').read_text(encoding='utf-8')
+                    self.assertIn('id="ttgames-version" hidden>Web 20261122173700</small>', html)
+                    self.assertEqual((output / 'play.html').read_text(encoding='utf-8'), html)
+                    worker = (output / 'sw.js').read_text(encoding='utf-8')
+                    cache_names.append(next(line for line in worker.splitlines() if line.startswith('const version =')))
+                self.assertNotEqual(*cache_names)
+
     def test_tls_key_cannot_be_loaded_from_public_build(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

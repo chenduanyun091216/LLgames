@@ -152,13 +152,13 @@ def draw_water_drift(surface, now):
                 surface.blit(_bubble(radius, opacity), position)
 
 
-def draw_electric_arc(surface, start, end, color, alpha, now, seed=0, thickness=2):
+def draw_electric_arc(surface, start, end, color, alpha, now, seed=0, thickness=2, *, visual_scale=1):
     x, y = start
     dx, dy = end[0] - x, end[1] - y
     distance = math.hypot(dx, dy)
     if distance < 3:
         return
-    jitter = min(14, distance * 0.22)
+    jitter = min(14, distance * 0.22) * visual_scale
     nx, ny = -dy / distance, dx / distance
     rng = random.Random((now // 55) * 7919 + seed)
     points = [start]
@@ -167,6 +167,6 @@ def draw_electric_arc(surface, start, end, color, alpha, now, seed=0, thickness=
         offset = rng.uniform(-jitter, jitter)
         points.append((x + dx * t + nx * offset, y + dy * t + ny * offset))
     points.append(end)
-    Draw.lines(surface, (*color, alpha // 4), False, points, thickness + 5)
-    Draw.lines(surface, (*color, alpha), False, points, thickness + 1)
-    Draw.lines(surface, (242, 255, 255, alpha), False, points, 1)
+    Draw.lines(surface, (*color, alpha // 4), False, points, max(1, round((thickness + 5) * visual_scale)))
+    Draw.lines(surface, (*color, alpha), False, points, max(1, round((thickness + 1) * visual_scale)))
+    Draw.lines(surface, (242, 255, 255, alpha), False, points, max(1, round(visual_scale)))

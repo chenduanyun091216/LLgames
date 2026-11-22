@@ -1,3 +1,4 @@
+import asyncio
 import errno
 import unittest
 from types import SimpleNamespace
@@ -10,6 +11,37 @@ from online.shared.protocol import UNIFIED_VERSION
 
 
 class NativeTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_click_waits_for_local_host_even_after_cancel_and_retry(self):
+        for mode, value in [('create', ''), ('join', '1234')]:
+            transport = NativeTransport()
+            ready = asyncio.Event()
+            async def start():
+                await ready.wait()
+                transport.origin = 'https://127.0.0.1:8001'
+            transport.host_task = asyncio.create_task(start())
+            with patch.object(transport, 'request', new_callable=AsyncMock, return_value={
+                    'code': '1234', 'host_token': 'owner', 'invite_url': 'invite'}) as request, \
+                    patch.object(transport, 'receive', new_callable=AsyncMock) as receive:
+                transport.begin(mode, value)
+                await asyncio.sleep(0)
+                self.assertFalse(transport.connection.done())
+                transport.begin(mode, value)
+                ready.set()
+                await asyncio.wait_for(transport.connection, 2)
+                receive.assert_awaited_once()
+                self.assertEqual(request.await_count, int(mode == 'create'))
+
+    async def test_pc_reuses_host_bound_to_its_wifi_address(self):
+        transport = NativeTransport()
+        with patch('web.run_web.lan_addresses', return_value=['172.20.10.4']), \
+                patch.object(transport, 'use_local_host', new_callable=AsyncMock,
+                             side_effect=[False, True]) as probe, \
+                patch('online.client.native.asyncio.create_subprocess_exec', new_callable=AsyncMock) as spawn:
+            await transport.start_host()
+        self.assertEqual([call.args[0] for call in probe.await_args_list],
+                         ['https://127.0.0.1:8001', 'https://172.20.10.4:8001'])
+        spawn.assert_not_awaited()
+
     def connector_error(self, error):
         key = SimpleNamespace(host='127.0.0.1', port=8001, ssl=True)
         return aiohttp.ClientConnectorError(key, error)
@@ -30,7 +62,8 @@ class NativeTransportTests(unittest.IsolatedAsyncioTestCase):
         process = Mock()
         process.stdout.readline = AsyncMock(return_value=b'{"port": 8001}\n')
         transport = NativeTransport()
-        with patch.object(transport, 'http', return_value=session), \
+        with patch('web.run_web.lan_addresses', return_value=[]), \
+                patch.object(transport, 'http', return_value=session), \
                 patch('online.client.native.asyncio.create_subprocess_exec',
                       new_callable=AsyncMock, return_value=process) as spawn:
             await transport.start_host()

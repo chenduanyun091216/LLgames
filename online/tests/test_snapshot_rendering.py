@@ -65,6 +65,78 @@ class SnapshotTests(unittest.TestCase):
         self.assertNotIn('surface',raw)
         # View never changes the authoritative world or advances entity physics.
         x=g.bullets[0].x;p.draw();self.assertEqual(g.bullets[0].x,x)
+
+    def test_accepts_retired_gift_messages_from_older_hosts(self):
+        snapshot = encode_world(self.world())
+        self.assertNotIn('gift_messages', snapshot['game'])
+        snapshot['game']['gift_messages'] = [['礼包', [255, 215, 90], 3000, 0]]
+        presentation = Presentation(pygame.Surface((960, 720)))
+        presentation.apply({'world': snapshot}, 1)
+        self.assertFalse(hasattr(presentation.view, 'gift_messages'))
+
+    def test_visual_zoom_draws_all_projectile_and_skill_types_without_changing_geometry(self):
+        game = self.world()
+        presentation = Presentation(pygame.Surface((960, 720)))
+        presentation.apply({'world': encode_world(game)}, 1)
+        view = presentation.view
+        geometry = [(entity, entity.rect().copy()) for collection in
+                    (view.enemies, view.bullets, view.enemy_projectiles, view.boss_projectiles,
+                     view.skill_projectiles, view.fire_walls, view.ice_floors)
+                    for entity in collection if hasattr(entity, 'rect')]
+        for percent in (50, 100, 150):
+            view.actor_scale_percent = percent
+            view.presentation_scale = 4 / 3
+            presentation.draw()
+            for entity, bounds in geometry:
+                self.assertEqual(entity.rect(), bounds)
+
+    def test_gift_boat_delivers_once_and_leaves_through_nearest_edge(self):
+        self.addCleanup(configure_world, 'landscape')
+        for orientation in ('landscape', 'portrait'):
+            for entry_side in (-1, 1):
+                with self.subTest(orientation=orientation, entry_side=entry_side):
+                    size = configure_world(orientation)
+                    game = Game()
+                    game.difficulty = config.DIFFICULTY_PRESETS['medium']
+                    game.next_gift_time = 100
+                    # Send the boat across the screen so the exit differs from the entrance.
+                    with patch('game_core.entities.random.choice', return_value=entry_side), \
+                            patch('game_core.entities.random.random', return_value=.9):
+                        game._maybe_spawn_gift(100)
+                    boat = game.gift_boats[0]
+                    self.assertLess(boat.y, 0)
+                    self.assertEqual(boat.facing, -entry_side)
+                    game._maybe_spawn_gift(650)
+                    self.assertGreater(boat.y, 0)
+                    self.assertEqual(game.gift_boxes, [])
+                    presentation = Presentation(pygame.Surface(size))
+                    presentation.apply({'world': encode_world(game), 'orientation': orientation})
+                    rendered = presentation.view.gift_boats[0]
+                    self.assertEqual((rendered.x, rendered.y, rendered.frame, rendered.facing),
+                                     (boat.x, boat.y, boat.frame, boat.facing))
+                    layer = pygame.Surface(size, pygame.SRCALPHA)
+                    rendered.draw(layer)
+                    self.assertTrue(layer.get_bounding_rect())
+                    release_at = 100 + boat.APPROACH_MS
+                    game._maybe_spawn_gift(release_at)
+                    box = game.gift_boxes[0]
+                    start_x, start_y = box.x, box.y
+                    box.update()
+                    self.assertLess(box.y, start_y)
+                    self.assertGreater((box.x - start_x) * entry_side, 0)
+                    for _ in range(24):
+                        box.update()
+                    x = box.x
+                    box.update()
+                    self.assertEqual(box.x, x)
+                    game._maybe_spawn_gift(release_at + boat.TURN_MS + boat.EXIT_MS - 1)
+                    self.assertEqual(boat.facing, -entry_side)
+                    self.assertEqual(boat.x < 0, boat.facing < 0)
+                    self.assertEqual(boat.x > config.SCREEN_WIDTH, boat.facing > 0)
+                    game._maybe_spawn_gift(release_at + boat.TURN_MS + boat.EXIT_MS)
+                    self.assertEqual(game.gift_boats, [])
+                    self.assertEqual(game.gift_boxes, [box])
+
     def test_pc_hud_uses_authoritative_laser_cooldown(self):
         g = self.world()
         laser = g.radiation_lasers[0]

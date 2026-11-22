@@ -156,6 +156,7 @@ p{color:#b4ccd8;line-height:1.5}
 .shop-gold { display: flex; align-items: center; gap: 6px; }
 .shop-gold,.shop-price { color: #ffe06e; }
 .shop-gold img { width: 20px; height: 20px; object-fit: contain; }
+.shop-close { width: 28px; min-height: 28px; padding: 0; }
 .shop-shelf { margin-bottom: 10px; }
 .shop-shelf h3 { margin: 0 0 4px; color: #a7e4ed; font-size: .9rem; }
 .shop small.owned,.shop small.equipped { padding: 1px 5px; border-radius: 4px; }
@@ -171,6 +172,6 @@ p{color:#b4ccd8;line-height:1.5}
 .shop-feature p { margin: 4px 0; }
 .shop-feature > img { width: 100%; max-height: 72px; object-fit: contain; }
 .shop > div { position: relative; display: grid; gap: 4px; min-width: 0; }
-.shop > div > button + button { min-height: 27px; }
+.shop-characters img { width: min(100%, 72px); height: 50px; }
 .shop > div > .shop-upgrade { position: absolute; top: 3px; right: 3px; min-height: 20px; padding: 1px 4px; font-size: .68rem; background: #1c4a4a; border-color: #58d6ca; }
 .shop > div:has(.shop-upgrade) img { max-width: max(15px, calc(100% - 50px)); justify-self: start; }

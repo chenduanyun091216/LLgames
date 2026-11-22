@@ -32,6 +32,7 @@ def _orochi_fire_art(gold):
     return art
 
 class _View(Game):
+    online_view = True
     @property
     def players(self):
         players = getattr(self, 'all_players', (self.player,))
@@ -64,13 +65,14 @@ class _IntegratedView(_View):
     def _draw_boss_hud(self):
         pass
 
-    def draw_local_hud(self):
+    def draw_local_hud(self, fps=None):
         super(_View, self)._draw_hud()
         if self.boss:
             super()._draw_boss_hud()
         if self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
             self.mobile_controls.draw(config.SCR, self)
-            fps = round(self.clock.get_fps())
+            if fps is None:
+                fps = round(self.clock.get_fps())
             self._draw_text_fit(f'FPS {fps or "--"}', self.font_tiny, (180, 220, 232),
                                 self.hud_fps_rect, align='right')
 
@@ -100,6 +102,11 @@ class _IntegratedView(_View):
         return False
 
     def _buy_or_equip_shop_item(self, category, key):
+        self.shop_category = category
+        if category == 'character':
+            self.shop_character = key
+        else:
+            self.shop_weapon = key
         self.lan.send(category, key)
 
     def _open_shop(self):
@@ -115,6 +122,7 @@ class _IntegratedView(_View):
         self.lan.send('continue')
 
     def _upgrade_weapon(self, key):
+        self.shop_category, self.shop_weapon = 'weapon', key
         self.lan.send('upgrade', key)
 
     def _upgrade_character(self, key):
@@ -279,6 +287,7 @@ class Presentation:
         if name == 'Bullet': return E.Bullet(0,0,config.WEAPON_DEFS[f['weapon_name']],f['weapon_name'])
         if name == 'Coin': return E.Coin(0,0,1)
         if name == 'GiftBox': return E.GiftBox(0)
+        if name == 'GiftBoat': return E.GiftBoat.__new__(E.GiftBoat)
         if name == 'Particle': return E.Particle(0,0,(255,255,255),0)
         if name == 'Explosion': return E.Explosion(0,0,count=0)
         if name in ('FireWall','IceFloor','MagneticStorm'): return CLASSES[name](0,0)
@@ -356,6 +365,9 @@ class Presentation:
                 if attr in r and getattr(obj, attr, None) != r[attr]:
                     setattr(obj, attr, value(r[attr]))
             for k,v in r['fields'].items(): setattr(obj,k,value(v))
+            if r['type'] == 'BossSignature':
+                # The second bite travels upward once the host selects its return target.
+                obj.chasing_up = obj.chasing and getattr(obj, 'second_target_x', None) is not None
             if isinstance(obj,E.Boss) and 'intro_until' not in r['fields']:
                 obj.intro_until=0
             if r['type']=='OrochiFireball':
@@ -379,6 +391,8 @@ class Presentation:
         self.objects = live
         for k in COLLECTIONS: setattr(self.view,k,[live[i] for i in snap['collections'].get(k,[])])
         for k,v in snap['game'].items():
+            if k == 'gift_messages':
+                continue  # Older hosts still send this retired field.
             if k not in GAME_FIELDS: raise ValueError('Unknown world field')
             converted = value(v)
             if k in ('water_heal_effects','muzzle_flashes'): converted = [tuple(row) for row in converted]
@@ -417,7 +431,7 @@ class Presentation:
             if event.get('type') == 'sound' and event.get('key') in allowed_sounds:
                 play_sound(event['key'])
 
-    def draw(self, target=None, *, clear=True):
+    def draw(self, target=None, *, clear=True, ui_labels=None):
         configure_world(self.orientation)
         config.SCR = target if target is not None else self.surface
         config.campaign_time_ms = self.time_ms
@@ -438,7 +452,7 @@ class Presentation:
                 self.view.desktop_controls = False
                 if clear:
                     (target.surface if target is not None else self.surface).fill((0, 0, 0, 0))
-                self.view.draw(draw_background=False)
+                self.view.draw(ui_labels, draw_background=False)
             finally:
                 controls.draw = draw
                 self.view.world_scrims = None

@@ -3,7 +3,7 @@ import math
 from functools import lru_cache, partial
 import random
 import pygame
-from .render import Draw, RenderSurface, blit_effect, effect_layer
+from .render import Draw, RenderSurface, blit_effect, effect_layer, scaled_surface
 
 from . import animation, config
 from .asset_loader import image_asset, scale_surface_cached
@@ -992,7 +992,7 @@ class ZongBoss(Boss):
         blit_effect(surf, halo, (int(x - 150), int(cy - 150)))
 
     @staticmethod
-    def draw_snow(surf, until, font=None, reduction=50):
+    def draw_snow(surf, until, font=None, reduction=50, *, visual_scale=1):
         now = config.game_ticks()
         if now >= until:
             return
@@ -1003,8 +1003,12 @@ class ZongBoss(Boss):
             half = flake.get_width() // 2
             x = (i * 137 + int(now * 0.023 * (1 + i % 3))) % width
             y = (i * 83 + int(now * 0.055 * (1 + i % 4))) % height
-            blit(flake, (max(0, min(width - flake.get_width(), x - half)),
-                         max(0, min(height - flake.get_height(), y - half))))
+            position = (max(0, min(width - flake.get_width(), x - half)),
+                        max(0, min(height - flake.get_height(), y - half)))
+            if visual_scale == 1:
+                blit(flake, position)
+            else:
+                scaled_surface(surf, (x, y), visual_scale).blit(flake, position, static=True)
         # Separate edges keep the transparent interior out of the compositor.
         horizontal = _snow_edge((width, 5))
         vertical = _snow_edge((5, height - 10))

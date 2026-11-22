@@ -77,8 +77,10 @@ class MobileWebTests(unittest.TestCase):
                     with patch('game_core.entities.blit_lit_sprite') as blit, \
                             patch.object(game.player, 'draw', wraps=game.player.draw) as draw_player:
                         game.draw(draw_background=False)
-                    self.assertAlmostEqual(draw_player.call_args.kwargs['visual_scale'], 1.25 * expected / 100)
-                    widths.append([call.args[1].get_width() for call in blit.call_args_list])
+                    self.assertAlmostEqual(draw_player.call_args.kwargs['visual_scale'],
+                                           1.25 * (expected / 100 if desktop else 1))
+                    widths.append([call.args[1].get_width() * (call.args[0].scale if isinstance(call.args[0], RenderSurface) else 1)
+                                   for call in blit.call_args_list])
                     self.assertEqual((game.player.rect(), game.enemies[0].rect(), game.boss.rect()), hitboxes)
                     self.assertEqual(game.state, GameState.PAUSED)
                 click(zoom_in)
@@ -259,6 +261,27 @@ class MobileWebTests(unittest.TestCase):
                 missile.x, missile.y, missile.angle = 240, 350, 0
                 game._advance_bullet(missile, 1000)
                 self.assertLess(missile.angle, 0)
+
+    def test_tossed_gift_cannot_be_targeted_or_hit_until_the_arc_ends(self):
+        game = self.game
+        game._start_game('easy')
+        box = GiftBox(300, y=130, toss=1)
+        game.gift_boxes = [box]
+        missile = Bullet(240, 240, config.WEAPON_DEFS['sniper'], 'sniper')
+        missile.sniper_missile = True
+        game.bullets = [missile]
+        game._advance_bullet(missile, 1000)
+        self.assertEqual(missile.angle, 0)
+        for _ in range(23):
+            missile.x, missile.y = box.x, box.y
+            self.assertFalse(game._handle_bullet_gift_hit(missile, 1000))
+            box.update()
+        missile.x, missile.y = box.x, box.y
+        self.assertFalse(game._handle_bullet_gift_hit(missile, 1000))
+        box.update()
+        missile.x, missile.y = box.x, box.y
+        self.assertTrue(game._handle_bullet_gift_hit(missile, 1000))
+        self.assertEqual(game.gift_boxes, [])
 
     def test_gift_lightning_waits_for_a_visible_nearby_target_and_hits_after_travel(self):
         game = self.game
@@ -903,11 +926,14 @@ class MobileWebTests(unittest.TestCase):
         game.spawn_enemy()
         first = game.enemies[0]
         self.assertEqual(first.edef['key'], 'lobster')
+        self.assertEqual(first.max_hp, 3)
         first.hit_by('pistol', 2)
         self.assertEqual(first.damage_taken, 0)
         first.y = Enemy.ENTRY_END_Y
-        first.hit_by('pistol', 2)
-        first.hit_by('rifle', 1.35)
+        first.hit_by('pistol', config.CAMPAIGN_BULLET_DAMAGE['pistol'])
+        first.hit_by('rifle', config.CAMPAIGN_BULLET_DAMAGE['rifle'])
+        self.assertFalse(first.is_killed('rifle'))
+        first.hit_by('pistol', config.CAMPAIGN_BULLET_DAMAGE['pistol'])
         self.assertTrue(first.is_killed('rifle'))
         game.spawn_enemy()
         for enemy in game.enemies[:]:
@@ -1171,15 +1197,18 @@ class MobileWebTests(unittest.TestCase):
         game._handle_click(game._campaign_rects()['start'].center)
         game.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_SPACE, mod=0)])
         game._handle_mobile_action('shop')
-        game.player.gold = 40
+        game.player.gold = 0
         rects = game._mobile_shop_rects()
         self.assertEqual(sum(key.startswith('weapon:') for key in rects), 4)
         self.assertEqual(sum(key.startswith('character:') for key in rects), 4)
         self.assertLess(rects['weapon:pistol'].bottom, rects['character:ice'].top)
-        game._handle_click(game._mobile_shop_rects()['skills:fire'].center)
+        self.assertGreater(rects['character:fire'].h, rects['weapon:pistol'].h)
+        self.assertFalse(any(key.startswith('skills:') for key in rects))
+        game._handle_click(rects['character:fire'].center)
         self.assertEqual(game.shop_character, 'fire')
-        self.assertEqual(game.player.gold, 40)
+        self.assertEqual(game.player.gold, 0)
         self.assertIsNone(game.player.character)
+        game.player.gold = 40
         game._handle_click(game._mobile_shop_rects()['character:fire'].center)
         self.assertEqual(game.player.gold, 14)
         self.assertEqual(game.player.character, 'fire')
@@ -1756,6 +1785,12 @@ class MobileWebTests(unittest.TestCase):
             projectile.draw(surface)
             self.assertGreater(surface.get_at((45, 60)).a, 0)
             self.assertEqual(surface.get_at((75, 60)).a, 0)
+        for angle, behind, ahead in ((0, (60, 76), (60, 106)), (90, (48, 90), (78, 90))):
+            homing = BossProjectile(60, 90, angle, 3, homing=True)
+            surface = pygame.Surface((120, 120), pygame.SRCALPHA)
+            homing.draw(surface)
+            self.assertGreater(surface.get_at(behind).a, 0)
+            self.assertEqual(surface.get_at(ahead).a, 0)
 
     def test_player_bullet_speed_is_reduced(self):
         from game_core.entities import Bullet
@@ -2099,7 +2134,8 @@ class MobileWebTests(unittest.TestCase):
                         self.assertFalse(boss.signature_opening_pending)
                         self.assertEqual(boss.signature.impact_at, now + 3000)
                         opening = boss.signature
-                        due = (opening.end_at if opening.key == 'boss' else now + 3000) + 10000
+                        due = ((opening.end_at if opening.key == 'boss' else now + 3000) + 10000
+                               if infinite else now + 11000)
                         with patch.object(boss, 'should_attack', return_value=False), \
                                 patch('game_core.entities.random.random', return_value=1):
                             game._update_boss_fight(opening.end_at)
@@ -2116,25 +2152,70 @@ class MobileWebTests(unittest.TestCase):
                         self.assertEqual(boss.last_attack_time, attack_time)
                         self.assertEqual(boss.next_death_laser_time, laser_time)
 
-    def test_early_bosses_cast_one_extra_signature_below_half_health(self):
-        game = self.game
+    def test_early_boss_timer_and_health_casts_are_independent(self):
         for level in range(1, 7):
             with self.subTest(level=level):
+                game = self.game
                 game._start_game('easy', level)
                 game._trigger_boss()
                 boss = game.boss
                 self.assertTrue(game._try_boss_signature(3000, opening=True))
-                opening = boss.signature
-                boss.hp = boss.max_hp / 2 - 1
-                self.assertFalse(game._try_boss_signature(3001))
-                game._update_boss_signature(opening.end_at)
-                boss.hp = boss.max_hp / 2
-                self.assertFalse(game._try_boss_signature(opening.end_at + 1))
-                boss.hp -= 1
-                self.assertTrue(game._try_boss_signature(opening.end_at + 1))
+                game._update_boss_signature(boss.signature.end_at)
+                self.assertEqual(boss.next_signature_time, 11000)
+                boss.hp = boss.max_hp * .6
+                self.assertTrue(game._try_boss_signature(11000))
+                timed = boss.signature
+                self.assertEqual(boss.next_signature_time, 19000)
+                game._update_boss_signature(timed.end_at)
+                boss.hp = boss.max_hp * .3
+                self.assertTrue(game._try_boss_signature(timed.end_at))
+                self.assertEqual(boss.next_signature_time, 19000)
                 extra = boss.signature
                 game._update_boss_signature(extra.end_at)
-                self.assertFalse(game._try_boss_signature(extra.end_at + 1))
+                self.assertTrue(boss.signature_half_health_cast)
+                self.assertFalse(boss.signature_health_pending)
+                self.assertEqual(game._try_boss_signature(extra.end_at), extra.end_at >= 19000)
+
+    def test_health_cast_waits_for_active_skill(self):
+        game = self.game
+        game._start_game('easy', 1)
+        game._trigger_boss()
+        boss = game.boss
+        game._try_boss_signature(3000, opening=True)
+        opening = boss.signature
+        boss.hp = boss.max_hp * .4
+        self.assertFalse(game._try_boss_signature(3001))
+        boss.hp = boss.max_hp * .3
+        game._update_boss_signature(opening.end_at)
+        self.assertTrue(game._try_boss_signature(opening.end_at))
+        self.assertEqual(boss.next_signature_time, 11000)
+
+    def test_crab_timer_ignores_living_summons_and_their_deaths(self):
+        game = self.game
+        game._start_game('easy', 2)
+        game._trigger_boss()
+        boss = game.boss
+        game._try_boss_signature(3000, opening=True)
+        game._update_boss_signature(boss.signature.end_at)
+        self.assertEqual(len(game.enemies), 2)
+        self.assertTrue(game._try_boss_signature(11000))
+        self.assertEqual(boss.next_signature_time, 19000)
+        for enemy in game.enemies[:]:
+            game._kill_enemy(enemy)
+        self.assertEqual(boss.next_signature_time, 19000)
+
+    def test_abyss_upward_bite_faces_up(self):
+        from game_core.boss_skills import BossSignature, BITE_REPEAT_MS
+        game = self.game
+        game._start_game('easy', 6)
+        game._trigger_boss()
+        signature = BossSignature(game.boss, game.player, 3000, 0, campaign=True)
+        surface = pygame.Surface((480, 850), pygame.SRCALPHA)
+        for age, angle in ((100, 0), (BITE_REPEAT_MS + 100, 180)):
+            signature.move(game.boss, 3000 + age, game.player)
+            with patch('game_core.boss_skills.blit_lit_sprite') as blit:
+                self.assertTrue(signature.draw_bite(surface, game.boss))
+                self.assertEqual(blit.call_args.kwargs['angle'], angle)
 
     def test_animated_boss_signatures_exclude_bosses_with_custom_skills(self):
         from game_core.boss_skills import SIGNATURES

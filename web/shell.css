@@ -29,6 +29,14 @@ html, body {
     margin: 0 !important;
     touch-action: none;
 }
+#canvas[data-scene-crop] {
+    width: calc(var(--game-width) * var(--scene-scale-x)) !important;
+    height: calc(var(--game-height) * var(--scene-scale-y)) !important;
+    clip-path: inset(0 calc(100% - var(--game-width)) calc(100% - var(--game-height)) 0);
+    image-rendering: auto;
+}
+/* Pygbag can paint its own preloader into the game canvas before the first frame. */
+#canvas:not([data-game-ready]) { opacity: 0; }
 #canvas:focus { outline: none; }
 #ttgames-ui { z-index: 6; pointer-events: none; }
 #ttgames-safe-area-fill {

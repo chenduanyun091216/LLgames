@@ -84,6 +84,7 @@ class InterpolationTests(unittest.TestCase):
         import pygame
         from game_core import config
         from game_core.background import draw_scrolling_background_art
+        from game_core.entities import BossProjectile, Bullet
         from game_core.game import BACKGROUND_SCROLL_TICKS, Game
         from online.adapters.core_adapter import OnlineGame
         from online.adapters.presentation import Presentation
@@ -91,23 +92,39 @@ class InterpolationTests(unittest.TestCase):
         pygame.init()
         window = pygame.display.set_mode((450, 970))
         host = OnlineGame(orientation='portrait')
+        shot = BossProjectile(180, 160, 0, 3)
+        host.enemy_projectiles = [shot]
+        missile = Bullet(200, 320, config.WEAPON_DEFS['sniper'], 'sniper')
+        missile.sniper_submissile = True
+        host.bullets = [missile]
         config.update_mobile_view(window.get_size(), (390, 844))
         game = Game(web=True, mobile_web=True)
         sent = []
         client = LAN(SimpleNamespace(slot=1, error='', send=sent.append))
+        client.render_density = 2
         drawn = []
+        shot_motion = []
+        missile_tail = []
         local_drawn = []
         original_draw = Presentation.draw
         def capture(presentation, *args, **kwargs):
             original_draw(presentation, *args, **kwargs)
             drawn.append(presentation.view.all_players[1].x)
             local_drawn.append(presentation.view.player.x)
+            shown_shot = presentation.view.enemy_projectiles[0]
+            shot_motion.append(shown_shot.y - shown_shot.prev_y)
+            shown_missile = presentation.view.bullets[0]
+            missile_tail.append(shown_missile.sniper_trail[-1][1] - shown_missile.y)
         with (patch.object(Presentation, 'draw', capture),
               patch('game_core.background.draw_scrolling_background_art', wraps=draw_scrolling_background_art) as background):
             for stamp in (0, 33, 67, 100, 133):
                 host.background_scroll_ticks = round(stamp * .06)
                 host.player.x = 100 + stamp * .1
                 host.all_players[1].x = 100 + stamp * .1
+                shot.y = 160 + stamp * .18
+                shot.prev_y = shot.y - shot.speed
+                missile.y = 320 - stamp * .42
+                missile.sniper_trail = [(missile.x, missile.y + offset) for offset in (16, 9)]
                 state = dict(host.snapshot(), match_id='one', mode='campaign')
                 state['world']['time_ms'] = stamp
                 with patch('online.client.integrated.monotonic', return_value=stamp / 1000):
@@ -117,6 +134,10 @@ class InterpolationTests(unittest.TestCase):
                 client.battle(game, state, [], False, None, window)
             self.assertGreater(drawn[-1], before)
             self.assertAlmostEqual(drawn[-1], 105)
+            self.assertAlmostEqual(shot_motion[-1], shot.speed)
+            self.assertAlmostEqual(missile_tail[-1], 9)
+            shown_shot = client.presentation.view.enemy_projectiles[0]
+            self.assertEqual((shown_shot.y, shown_shot.prev_y), (shot.y, shot.prev_y))
             expected_scroll = 2 + (50 - 33) / (67 - 33) * 2
             self.assertAlmostEqual(background.call_args.args[-1] * BACKGROUND_SCROLL_TICKS, expected_scroll)
             self.assertEqual(client.presentation.view.background_scroll_ticks, 8)
@@ -139,8 +160,59 @@ class InterpolationTests(unittest.TestCase):
             state['players'][0].update(input_seq=-1, input_age_ms=0, move_speed=300)
             with patch('online.client.integrated.monotonic', return_value=.200):
                 client.battle(game, state, [], False, None, window)
-            client.last_input = (1, 0, False)
+            client.presentation.view.mobile_controls.axis = (1, 0)
             with patch('online.client.integrated.monotonic', return_value=.200 + 1/60):
                 client.battle(game, state, [], False, None, window)
             self.assertAlmostEqual(local_drawn[-1] - local_drawn[-2], 5)
+            client.presentation.view.mobile_controls.axis = (0, 0)
+            with patch('online.client.integrated.monotonic', return_value=.200 + 2/60):
+                client.battle(game, state, [], False, None, window)
+            self.assertEqual(local_drawn[-1], local_drawn[-2])
             self.assertAlmostEqual(client.presentation.view.player.x, 113.3)
+
+    def test_web_water_badges_keep_their_css_size_and_do_not_overlap(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import pygame
+
+        from game_core import config
+        from game_core.game import Game
+        from game_core.main import BROWSER_QUALITIES, _browser_size
+        from online.adapters.core_adapter import OnlineGame
+        from online.client.integrated import LAN
+
+        pygame.init()
+        host = OnlineGame(orientation='landscape')
+        host.level_title_until = host.level_fade_in_until = 0
+        for player in host.all_players:
+            player.x, player.y = 450, 500
+            player.water_boost_until = player.water_haste_until = config.game_ticks() + 4000
+        state = dict(host.snapshot(), match_id='buffs', mode='campaign')
+        viewport = (844, 390)
+        client = LAN(SimpleNamespace(slot=1, error='', send=lambda message: None))
+        client.browser_viewport = viewport
+        game = Game(web=True, mobile_web=True)
+        for quality in BROWSER_QUALITIES:
+            with self.subTest(quality=quality):
+                window = pygame.display.set_mode(_browser_size(viewport, quality))
+                config.update_mobile_view(window.get_size(), viewport)
+                client.render_density = quality
+                with patch('game_core.background.draw_scrolling_background_art', return_value=False) as blend:
+                    client.battle(game, state, [], False, None, window)
+                    self.assertEqual(blend.called, quality == 2)
+                buffs = [label for label in client.ui_labels if label[0].startswith(('水增益', '水急速'))]
+                self.assertEqual(len(buffs), 4)
+                self.assertTrue(any(label[0].startswith('FPS ') for label in client.ui_labels))
+                self.assertTrue(any(label[0].startswith('第 1 关') for label in client.ui_labels))
+                rectangles = []
+                for _, size, bold, _, x, y, width, height, align in buffs:
+                    self.assertAlmostEqual(size * viewport[1] / config.SCREEN_HEIGHT, 12, delta=.25)
+                    self.assertTrue(bold)
+                    self.assertEqual(align, 'center')
+                    rect = pygame.Rect(x, y, width, height)
+                    self.assertEqual(rect.collidelist(rectangles), -1)
+                    rectangles.append(rect)
+        paused = dict(state, paused=True, pause_reason='manual_pause')
+        client.battle(game, paused, [], False, None, window)
+        self.assertEqual(client.ui_labels, ())

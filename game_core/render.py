@@ -10,6 +10,23 @@ def scale_rect(rect, scale):
     return resized
 
 
+def scaled_surface(target, anchor, scale):
+    """Scale one object's drawing around its unchanged world position."""
+    if scale == 1:
+        return target
+    if not isinstance(target, RenderSurface):
+        target = RenderSurface(target, target.get_size(), target.get_size(), (0, 0))
+    pixels = target.point(anchor)
+    factor = target.scale * scale
+    view = RenderSurface(target.surface, target.logical_size,
+                         (target.logical_size[0] * factor, target.logical_size[1] * factor),
+                         (pixels[0] - round(anchor[0] * factor), pixels[1] - round(anchor[1] * factor)),
+                         desktop_ui=target.desktop_ui, blit_flags=target.blit_flags)
+    view._dirty_rows = target._dirty_rows
+    view.tile = target.tile
+    return view
+
+
 @lru_cache(maxsize=24)
 def _scaled_static_image(image, size):
     return pygame.transform.smoothscale(image, size)
@@ -25,12 +42,14 @@ def trim_transparent(image):
 class RenderSurface:
     TILE = 48
 
-    def __init__(self, surface, logical_size, view_size, offset, *, track_damage=False, desktop_ui=False):
+    def __init__(self, surface, logical_size, view_size, offset, *, track_damage=False, desktop_ui=False,
+                 blit_flags=0):
         self.surface = surface
         self.logical_size = logical_size
         self.scale = view_size[0] / logical_size[0]
         self.offset = offset
         self.desktop_ui = desktop_ui
+        self.blit_flags = blit_flags
         self.tile = 32 if not desktop_ui else self.TILE
         self._dirty_rows = ([0] * ((surface.get_height() + self.tile - 1) // self.tile)
                             if track_damage else None)
@@ -74,7 +93,7 @@ class RenderSurface:
         return rect
 
     def blit_pixels(self, image, position):
-        self.mark(self.surface.blit(image, position))
+        self.mark(self.surface.blit(image, position, special_flags=self.blit_flags))
 
     def restore_background(self, target, background, margin_color='black'):
         bounds = background.get_rect(topleft=self.offset)

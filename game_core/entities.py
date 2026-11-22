@@ -6,7 +6,7 @@ import math
 import random
 from functools import lru_cache
 import pygame
-from .render import Draw, RenderSurface, blit_effect, effect_layer, scale_rect
+from .render import Draw, RenderSurface, blit_effect, effect_layer, scale_rect, scaled_surface
 from . import config
 from .visuals import blit_label, draw_electric_arc, draw_glow, draw_missile_trail
 from .boss_skills import BOSS_COLORS, DRAGON_FIREBALL_IMAGE, SIGNATURES, draw_bubble_crab
@@ -198,7 +198,7 @@ class Player:
             ('water_haste_until', 1.5),
             ('gift_speed_until', 2),
             ('swift_field_until', config.CHARACTER_FIELDS['water']['fire_rate']),
-            ('sniper_haste_until', 1.5),
+            ('sniper_haste_until', config.SNIPER_HASTE_SPEED),
             ('rage_until', rage_speed),
         ):
             if now < getattr(self, timer):
@@ -331,6 +331,10 @@ class Enemy:
         self.chase_partner = None
         self.slowed_until = 0
         self.slow_mult = 1.0
+        self.haste_pending = False
+        self.haste_until = 0
+        self.special_attack_at = 0
+        self.special_aim = 0
         self.infected = False
         self.infected_weapon = 'pistol'
         self.infected_owner = None
@@ -424,7 +428,11 @@ class Enemy:
             elif self.x <= left:
                 self.x, self.factory_patrol_direction = left, 1
         elif self.chase_color is None:
-            step = self.speed * move_mult
+            haste = config.CAMPAIGN_ENEMY_HASTE
+            if self.haste_pending and self.y + self.h / 2 >= config.GAME_AREA_BOTTOM * haste['progress']:
+                self.haste_pending = False
+                self.haste_until = now + haste['duration_ms']
+            step = self.movement_speed(now) * move_mult
             if self.entry_steps_left and self.y < self.ENTRY_END_Y:
                 distance = self.ENTRY_END_Y - self.y
                 if self.entry_steps_left == 1:
@@ -455,6 +463,9 @@ class Enemy:
                     left = max(left, self.chase_partner.x + gap)
             self.x = max(left, min(right, self.x + dx * step * .85))
             self.y += dy * step
+
+    def movement_speed(self, now):
+        return self.speed * (config.CAMPAIGN_ENEMY_HASTE['speed'] if now < self.haste_until else 1)
 
     def hit_by(self, weapon_name, amount=1.0):
         if self.y + self.h <= 0:
@@ -697,6 +708,19 @@ class Enemy:
                      ((x, y + 3), (x - 3, y + 1), (x - 2, y - 3),
                       (x + tip, y - 7), (x + 4, y), (x + 2, y + 2)))
         self._draw_ice_status(surf, now)
+        if now < self.haste_until:
+            for dx in (-.24, 0, .24):
+                x, y = self.x + self.w * dx, self.y + self.h * (.10 if dx else 0)
+                _line(surf, (107, 242, 255, 200), (x, y - self.h * .40), (x, y), 2)
+        if self.special_attack_at:
+            skill = config.CAMPAIGN_SPECIAL_ENEMY_ATTACKS[self.edef['key']]
+            x, y = self.x, self.y + self.h - 8
+            _circle(surf, (*skill['color'], 215), (round(x), round(y)), max(5, self.w // 4), 2)
+            if skill['aimed']:
+                angle = math.radians(self.special_aim)
+                length = config.GAME_AREA_BOTTOM
+                _line(surf, (*skill['color'], 140), (x, y),
+                      (x + math.sin(angle) * length, y + math.cos(angle) * length), 1)
         if now < self.slowed_until and now >= self.snowflake_until and not self.frozen:
             _circle(surf, (120, 210, 255, 100), (int(self.x), int(self.y + self.h // 2)),
                     max(round(14 * self.size_scale), self.w // 3), max(1, round(2 * self.size_scale)))
@@ -867,10 +891,11 @@ class Bullet:
                 _circle(surf, (*color, alpha), (int(self.x + dx * distance),
                         int(self.y + dy * distance)), gr)
             if self.gift_kind == 'fire':
+                reach = gr * 1.8 + math.sin(now * 0.02) * 2
                 flame = [
-                    (self.x - gr * 0.7, self.y + gr),
-                    (self.x, self.y + gr * 1.8 + math.sin(now * 0.02) * 2),
-                    (self.x + gr * 0.7, self.y + gr),
+                    (self.x + dx * gr - dy * gr * 0.7, self.y + dy * gr + dx * gr * 0.7),
+                    (self.x + dx * reach, self.y + dy * reach),
+                    (self.x + dx * gr + dy * gr * 0.7, self.y + dy * gr - dx * gr * 0.7),
                 ]
                 _polygon(surf, (255, 185, 40, 220), flame)
             else:
@@ -927,10 +952,77 @@ class Coin:
             _line(surf, (255, 249, 192, 205), glint, (glint[0] - 2, glint[1] + 5), 2)
 
 
+@lru_cache(maxsize=12)
+def _gift_boat_frame(art, facing):
+    return pygame.transform.flip(art, True, False) if facing < 0 else art
+
+
+class GiftBoat:
+    APPROACH_MS = 2000
+    TURN_MS = 100
+    EXIT_MS = 1500
+    WIDTH, HEIGHT = 136, 108
+
+    def __init__(self, now):
+        self.started_at = now
+        self.entry_side = random.choice((-1, 1))
+        self.delivery_fraction = 0.5 + random.uniform(0.06, 0.28) * (
+            self.entry_side if random.random() < 0.75 else -self.entry_side)
+        self.released = False
+        self.advance(now)
+
+    def delivery_point(self):
+        left, right = config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT
+        return left + (right - left) * self.delivery_fraction, min(104, config.GAME_AREA_BOTTOM * 0.16)
+
+    def advance(self, now):
+        age = now - self.started_at
+        x, y = self.delivery_point()
+        departure = age - self.APPROACH_MS - self.TURN_MS
+        if departure >= 0:
+            self.facing = -1 if x <= config.SCREEN_WIDTH / 2 else 1
+            edge = -self.WIDTH / 2 if self.facing < 0 else config.SCREEN_WIDTH + self.WIDTH / 2
+            t = min(1, departure / self.EXIT_MS)
+            self.x = x + (edge - x) * t * (0.65 + 0.35 * t)
+            self.y = y + 22 * t
+        else:
+            self.facing = -self.entry_side
+            start_x = config.SCREEN_WIDTH * (0.07 if self.entry_side < 0 else 0.93)
+            t = min(1, age / self.APPROACH_MS)
+            self.x = start_x + (x - start_x) * t * (2 - t)
+            self.y = -60 + (y + 60) * t * (2 - t)
+        stroke = departure / 54 if departure >= 0 else age / 82
+        self.frame = (0, 1, 2, 1)[int(stroke) % 4]
+        return departure >= self.EXIT_MS
+
+    def release(self, now):
+        if self.released or now < self.started_at + self.APPROACH_MS:
+            return None
+        self.released = True
+        x, y = self.delivery_point()
+        toward_center = 1 if x <= config.SCREEN_WIDTH / 2 else -1
+        return GiftBox(x + toward_center * 18, y=y + 28, toss=toward_center)
+
+    def draw(self, surf):
+        y = self.y + math.sin(self.frame * math.pi / 2) * 2
+        size = (self.WIDTH, self.HEIGHT)
+        position = (round(self.x - self.WIDTH / 2), round(y - self.HEIGHT / 2))
+        art = image_asset(f'effects/gift_boat_{self.frame}.png')
+        if art is None:
+            Draw.ellipse(surf, (142, 83, 43), (position[0] + 20, round(y), 96, 27))
+            return
+        art = _gift_boat_frame(art, self.facing)
+        if isinstance(surf, RenderSurface):
+            surf.blit(art, position, logical_size=size, static=True)
+        else:
+            surf.blit(scale_surface_cached(art, size), position)
+
+
 class GiftBox:
     SIZE = 54
+    TOSS_STEPS = 24
 
-    def __init__(self, x=None):
+    def __init__(self, x=None, *, y=None, toss=0):
         self.radius = self.SIZE // 2
         if x is None:
             min_x = max(50, config.GAME_AREA_LEFT + self.radius)
@@ -938,8 +1030,10 @@ class GiftBox:
             self.x = random.uniform(min_x, max_x)
         else:
             self.x = x
-        self.y = -self.SIZE
+        self.y = -self.SIZE if y is None else y
         self.speed = 1.7
+        self.toss = toss
+        self.toss_steps = 0
         self.kind = random.choice(('lightning', 'fire', 'ice', 'heal', 'haste'))
         self.breath_start_time = config.game_ticks()
         self.font = config.make_font(18, bold=True)
@@ -948,8 +1042,18 @@ class GiftBox:
         return pygame.Rect(int(self.x - self.radius), int(self.y - self.radius),
                            self.radius * 2, self.radius * 2)
 
+    def is_tossing(self):
+        return bool(self.toss) and self.toss_steps < self.TOSS_STEPS
+
     def update(self):
         self.y += self.speed
+        if self.is_tossing():
+            previous = self.toss_steps / self.TOSS_STEPS
+            self.toss_steps += 1
+            progress = self.toss_steps / self.TOSS_STEPS
+            self.x += self.toss * 3.2 * (1 - progress)
+            # A brief upward flick blends back into the regular fall speed.
+            self.y += 120 * (previous * (1 - previous) ** 2 - progress * (1 - progress) ** 2)
 
     def is_offscreen(self):
         return self.y > config.GAME_AREA_BOTTOM + self.radius
@@ -1006,11 +1110,11 @@ class Particle:
     def is_dead(self):
         return len(self.particles) == 0
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         for p in self.particles:
             alpha = int(255 * (p['life'] / p['max_life']))
             c = (*p['color'][:3], max(0, alpha))
-            _circle(surf, c, (p['x'], p['y']), p['size'])
+            _circle(surf, c, (p['x'], p['y']), p['size'] * visual_scale)
 
 
 class Explosion:
@@ -1327,7 +1431,7 @@ class Lightning:
     def is_expired(self):
         return config.game_ticks() - self.spawn_time >= self.lifetime
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         now = config.game_ticks()
         age = now - self.spawn_time
         travel = min(1, max(0, age / self.TRAVEL_MS))
@@ -1338,7 +1442,7 @@ class Lightning:
             tx, ty = target_point(*start) if target_point else (target.x, target.y + target.h // 2)
             end = (self.start_x + (tx - self.start_x) * travel,
                    self.start_y + (ty - self.start_y) * travel)
-            draw_electric_arc(surf, start, end, (255, 202, 58), alpha, now, index, 3)
+            draw_electric_arc(surf, start, end, (255, 202, 58), alpha, now, index, 3, visual_scale=visual_scale)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1768,7 +1872,7 @@ class SpinningDarts:
         _circle(surf, (255, 250, 235), (dx, dy), 2)
         _circle(surf, light, (dx, dy), 1)
 
-    def draw(self, surf):
+    def draw(self, surf, *, visual_scale=1):
         now = config.game_ticks()
         remaining = max(0.0, 1.0 - (now - self.spawn_time) / self.duration)
         flash = not self.released and remaining < 0.25 and (now // 120) % 2 == 0
@@ -1837,7 +1941,7 @@ class SpinningDarts:
                 origin = self.center() if t < 0.35 else (tx, ty)
                 draw_electric_arc(surf, origin, (dx, dy), (255, 225, 135), 195, now, idx)
                 _circle(surf, (255, 235, 150, 100), (dx, dy), 18, 2)
-            self._draw_disc(surf, dx, dy, spin, dark, light)
+            self._draw_disc(scaled_surface(surf, (dx, dy), visual_scale), dx, dy, spin, dark, light)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1938,26 +2042,6 @@ class BossProjectile:
             _circle(surf, (255, 197, 81), (self.x - 2, self.y - 2), self.r - 9)
             _circle(surf, (255, 242, 190), (self.x - 5, self.y - 6), 3)
             return
-        if self.homing:
-            now = config.game_ticks()
-            body = (155, 70, 255)
-            flame = (255, 120, 255)
-            pts = [
-                (self.x, self.y + 12),
-                (self.x - 7, self.y - 4),
-                (self.x, self.y - 13),
-                (self.x + 7, self.y - 4),
-            ]
-            _polygon(surf, body, pts)
-            _circle(surf, (230, 210, 255, 220), (int(self.x), int(self.y - 5)), 3)
-            _polygon(surf, flame, [
-                (self.x - 5, self.y + 9),
-                (self.x, self.y + 18 + math.sin(now * 0.02) * 3),
-                (self.x + 5, self.y + 9),
-            ])
-            _circle(surf, (170, 80, 255, 70), (int(self.x), int(self.y)), 15, 2)
-            return
-        # A rounded head and tapered wake form a drop facing its actual movement.
         center = (int(self.x), int(self.y))
         dx, dy = self.x - self.prev_x, self.y - self.prev_y
         distance = math.hypot(dx, dy)
@@ -1967,6 +2051,23 @@ class BossProjectile:
             angle = math.radians(self.angle)
             dx, dy = math.sin(angle), math.cos(angle)
         px, py = -dy, dx
+        if self.homing:
+            reach = 18 + math.sin(config.game_ticks() * 0.02) * 3
+            _polygon(surf, (155, 70, 255), [
+                (self.x + dx * 12, self.y + dy * 12),
+                (self.x - dx * 4 + px * 7, self.y - dy * 4 + py * 7),
+                (self.x - dx * 13, self.y - dy * 13),
+                (self.x - dx * 4 - px * 7, self.y - dy * 4 - py * 7),
+            ])
+            _circle(surf, (230, 210, 255, 220), (int(self.x + dx * 5), int(self.y + dy * 5)), 3)
+            _polygon(surf, (255, 120, 255), [
+                (self.x - dx * 9 + px * 5, self.y - dy * 9 + py * 5),
+                (self.x - dx * reach, self.y - dy * reach),
+                (self.x - dx * 9 - px * 5, self.y - dy * 9 - py * 5),
+            ])
+            _circle(surf, (170, 80, 255, 70), center, 15, 2)
+            return
+        # A rounded head and tapered wake form a drop facing its actual movement.
         color = self.tint or (255, 85, 65)
         _polygon(surf, (*color, 120), [
             (self.x + px * self.r * 0.9, self.y + py * self.r * 0.9),
@@ -2042,6 +2143,7 @@ class Boss:
         self.next_signature_time = 0
         self.signature_opening_pending = bdef['key'] in SIGNATURES
         self.signature_half_health_cast = False
+        self.signature_health_pending = False
         self.last_attack_time = 0
         self.base_w, self.base_h = bdef.get('size', (130, 120))
         self.size_scale = (config.MOBILE_LANDSCAPE_BOSS_SCALE if config.MOBILE_LANDSCAPE_VIEW
@@ -2284,18 +2386,6 @@ class Boss:
 
     def is_killed(self):
         return self.hp <= 0
-
-    def death_laser_rect(self, now=None):
-        if not self.can_laser():
-            return None
-        now = config.game_ticks() if now is None else now
-        if now >= self.laser_active_until:
-            return None
-        if self._laser_mouth_pose():
-            return self.death_laser_zones()[0]
-        w = max(24, self.w // 2)
-        top = int(self.y + self.h * 0.72)
-        return pygame.Rect(int(self.x - w // 2), top, w, max(1, config.SCREEN_HEIGHT - top))
 
     def death_laser_xs(self):
         pose = self._laser_mouth_pose()

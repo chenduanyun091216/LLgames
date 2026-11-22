@@ -66,6 +66,18 @@ class UnifiedLANTests(unittest.IsolatedAsyncioTestCase):
         await self.wait_for(lambda: self.host.room.game is not None)
         return p1, p2
 
+    async def test_native_host_closing_lobby_allows_immediate_creation(self):
+        from online.client.native import NativeTransport
+        native = NativeTransport()
+        native.origin = self.headers['Origin']
+        native.local_tls = True
+        try:
+            native.begin('create')
+            await self.wait_for(lambda: native.slot == 1)
+        finally:
+            await native.close()
+        await self.prepare()
+
     async def test_creation_retry_and_slot_reservation(self):
         self.assertIsNone(self.host.room)
         room = await self.prepare()
@@ -76,6 +88,20 @@ class UnifiedLANTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(guest['slot'], 2)
         _, owner = await self.join(room, host=True)
         self.assertEqual(owner['slot'], 1)
+
+    async def test_new_host_can_create_after_all_previous_players_disconnect(self):
+        room = await self.prepare()
+        owner, _ = await self.join(room, host=True)
+        guest, _ = await self.join(room)
+        await owner.close()
+        self.assertEqual((await self.post('/rooms', {'request_id': 'b' * 32})).status, 409)
+        await guest.close()
+        await self.wait_for(lambda: all(p.dropped_at is not None for p in self.host.room.players))
+        responses = await asyncio.gather(*(self.post('/rooms', {'request_id': char * 32}) for char in 'bc'))
+        self.assertEqual(sorted(r.status for r in responses), [200, 409])
+        new_room = await next(r for r in responses if r.status == 200).json()
+        self.assertNotEqual(room['room_id'], new_room['room_id'])
+        await self.join(new_room, host=True)
 
     async def test_campaign_start_level(self):
         await self.start('campaign', 11)

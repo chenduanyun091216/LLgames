@@ -195,6 +195,10 @@ def create_host(static_root, **options):
         if not valid_id(request_id):
             return web.json_response({'error': 'invalid_request_id'}, status=400)
         room = host.room
+        if room and room.players and all(p.dropped_at is not None for p in room.players):
+            # Keep reconnection available until somebody actually needs the empty room.
+            await host.dispose(room)
+            room = host.room  # Another creator may have reserved it during disposal.
         if room is None:
             room = host.room = MatchRoom(request_id, host.clock())
             room.task = asyncio.create_task(room.run())

@@ -78,6 +78,7 @@ class BossSignature:
         self.last_hit = -1
         self.origin = None
         self.chasing = False
+        self.chasing_up = False
         self.campaign = campaign
         self.left, self.right = config.GAME_AREA_LEFT, config.GAME_AREA_RIGHT
         self.bottom = config.SCREEN_HEIGHT
@@ -122,6 +123,7 @@ class BossSignature:
         second = age >= BITE_REPEAT_MS
         rush_age = age - BITE_REPEAT_MS if second else age
         self.chasing = rush_age < CHASE_MS
+        self.chasing_up = second and self.chasing
         below = self.bottom + boss.h * .22 + 22
         if self.chasing:
             boss.x = (self.second_target_x if second else
@@ -284,7 +286,7 @@ class BossSignature:
             return False
         blit_lit_sprite(surface, image, (boss.x - image.get_width() / 2,
                                         boss.y - boss.h * .22 + (height - size[1]) / 2), (130, 189, 207), 84,
-                        source='effects/boss_bite.png')
+                        source='effects/boss_bite.png', angle=180 if self.chasing_up else 0)
         return True
 
 

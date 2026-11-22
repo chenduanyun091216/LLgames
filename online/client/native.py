@@ -37,7 +37,7 @@ class NativeTransport:
         self.create_id = None
 
     async def start_host(self):
-        from web.run_web import GAME_PORT, TLS_DIR
+        from web.run_web import GAME_PORT, TLS_DIR, lan_addresses
 
         origin = f'https://127.0.0.1:{GAME_PORT}'
         try:
@@ -45,6 +45,10 @@ class NativeTransport:
             self.local_tls = ssl.create_default_context(cafile=ca if ca.is_file() else None)
             if await self.use_local_host(origin):
                 return
+            # A Web host bound to Wi-Fi can already own this machine's rooms.
+            for address in await asyncio.to_thread(lan_addresses):
+                if await self.use_local_host(f'https://{address}:{GAME_PORT}'):
+                    return
             command = [sys.executable, '--lan-host'] if '__compiled__' in globals() or getattr(sys, 'frozen', False) else [
                 sys.executable, '-m', 'online.server.serve']
             self.host = await asyncio.create_subprocess_exec(
@@ -96,17 +100,21 @@ class NativeTransport:
 
     async def connect(self, mode, value):
         try:
-            if mode == 'create':
+            room_code = len(value) == 4 and value.isascii() and value.isdigit()
+            if mode == 'create' or room_code:
+                if not self.origin and self.host_task:
+                    self.error = '正在准备本机联机服务…'
+                    await asyncio.shield(self.host_task)
+                    self.error = ''
                 if not self.origin:
-                    raise ValueError('本机联机服务未就绪')
+                    raise ValueError(self.address or '本机联机服务未就绪')
+            if mode == 'create':
                 self.target = self.origin
                 if self.create_id is None:
                     self.create_id = secrets.token_hex(16)
                 result = await self.request('/rooms', {'request_id': self.create_id})
                 self.code, self.host_token, self.invite = result['code'], result['host_token'], result['invite_url']
-            elif len(value) == 4 and value.isascii() and value.isdigit():
-                if not self.origin:
-                    raise ValueError('本机联机服务未就绪')
+            elif room_code:
                 self.target, self.code, self.host_token = self.origin, value, None
             else:
                 url = urlsplit(value if '://' in value else 'http://' + value)
@@ -201,6 +209,8 @@ class NativeTransport:
         self.invite = ''
 
     async def close(self):
+        if self.slot and not self.ended:
+            await self.leave()
         self.reset()
         if self.host_task:
             self.host_task.cancel()

@@ -1,5 +1,5 @@
 import {cannonMuzzle, trenchFrame, trenchSpireHeight} from './trench.js';
-import {bossBoxes, STEP, zoneX} from './battle.js';
+import {bossBoxes, GIFT_BOAT_HEIGHT, GIFT_BOAT_WIDTH, STEP, zoneX} from './battle.js';
 import {bubbleColors, orochiSideHead, orochiSideWarning, railShape, tentacleShape} from './bosses.js';
 import {drawCharacterFields} from './character-fields.js';
 
@@ -12,6 +12,19 @@ const niuArt = 'animations/bosses/boss_niu_';
 const niuPoses = new Map([['回旋战斧', 0], ['巨斧震地', 1], ['三重雷击', 2], ['六向弹幕', 3]]);
 const bossAnimation = (key, level) => 'animations/bosses/anim_' + key +
     (level === 12 ? '_idle' : level >= 9 ? '' : '_attack');
+const bossEffectPrefixes = [
+    ['boss_niu', 'effects/boss_niu_'],
+    ['boss_zongzong', 'effects/zong_bomb_'],
+    ['boss_mecha_lizard', 'effects/mecha_'],
+    ['boss_ancient_whale', 'effects/whale_'],
+    ['boss_shieldfish', 'effects/trench_'],
+    ['boss_orochi', 'effects/orochi_'],
+];
+
+function usesEffect(key, boss) {
+    return key.startsWith('effects/') && bossEffectPrefixes.every(([owner, prefix]) =>
+        owner === boss || !key.startsWith(prefix));
+}
 
 export class OceanScene extends Phaser.Scene {
     constructor() {
@@ -51,18 +64,19 @@ export class OceanScene extends Phaser.Scene {
             (boss === 'boss_niu' && key.startsWith(niuArt)) ||
             key === bossAnimation(boss, world.level) ||
             key.startsWith('players/') || /^animations\/players\/anim_.+_(idle|run|attack)$/.test(key) ||
-            (key.startsWith('effects/') && (world.level === 11 || !key.startsWith('effects/trench_'))) || key.startsWith('weapons/') ||
+            usesEffect(key, boss) || key.startsWith('weapons/') ||
             enemyArt.has(key) || ['ui/coin', 'ui/gift_box'].includes(key));
         const soundNames = [...soundKeys, 'music-0', 'music-' + world.level, 'music-' + world.level + '-boss'];
+        this.musicFiles = world.data.musicFiles ?? {};
         this.nextAssets = new Set(keys);
-        this.nextAudio = new Set(soundNames);
+        this.nextAudio = new Set(soundNames.map(name => this.musicFiles[name] ?? name));
         for (const key of keys) {
             if (this.textures.exists(key)) continue;
             const {url, frame} = manifest[key];
             if (frame) this.load.spritesheet(key, url, {frameWidth: frame[0], frameHeight: frame[1]});
             else this.load.image(key, url);
         }
-        for (const name of soundNames) {
+        for (const name of this.nextAudio) {
             if (!this.cache.audio.exists(name)) this.load.audio(name, 'audio/' + name + '.wav');
         }
         if (!this.load.list.size) return Promise.resolve();
@@ -133,8 +147,9 @@ export class OceanScene extends Phaser.Scene {
         this.music?.destroy();
         this.music = null;
         this.musicKey = key;
-        if (key && this.cache.audio.exists(key)) {
-            this.music = this.sound.add(key, {volume: .35, loop: true});
+        const track = this.musicFiles?.[key] ?? key;
+        if (track && this.cache.audio.exists(track)) {
+            this.music = this.sound.add(track, {volume: .35, loop: true});
             this.music.play();
         }
     }
@@ -217,7 +232,7 @@ export class OceanScene extends Phaser.Scene {
         this.drawPlayer(w, p, t);
         if (trenchBoss) this.drawTrenchCannonCharge(w, t);
         this.drawIceStatus(p, w.freezeUntil, t);
-        for (const e of w.enemies) this.drawEnemy(e, t, w.enemyFreezeUntil);
+        for (const e of w.enemies) this.drawEnemy(e, t, w.enemyFreezeUntil, w.bottom);
         if (w.boss) {
             this.drawBoss(w.boss, t);
             for (const box of bossBoxes(w.boss, t)) this.drawIceStatus(box, w.enemyFreezeUntil, t);
@@ -255,6 +270,13 @@ export class OceanScene extends Phaser.Scene {
             this.effects.fillStyle(0xffffe3, .95).fillCircle(b.x, b.y, 2.5 * scale);
         }
         for (const s of w.shots) {
+            if (s.skillColor) {
+                const color = Phaser.Display.Color.GetColor(...s.skillColor);
+                this.effects.fillStyle(color, .25).fillCircle(s.x, s.y, s.r + 4);
+                this.effects.fillStyle(color).fillCircle(s.x, s.y, s.r);
+                this.effects.fillStyle(0xfff8e8).fillCircle(s.x, s.y, s.r / 2);
+                continue;
+            }
             if (s.orochiOrb) {
                 const color = fxColors[s.orochiOrb];
                 const core = s.orochiOrb === 'ice' ? 0xeafdff : 0xffe897;
@@ -280,9 +302,14 @@ export class OceanScene extends Phaser.Scene {
             }
             const sprite = this.sprite(s.id, 'effects/' + s.art, s.x, s.y, s.r * 2.4, s.r * 2.4, 3);
             if (sprite) {
-                const directional = /missile|crescent|axe|trident/.test(s.art);
+                const directional = /missile|crescent|axe|trident|dragon_fireball/.test(s.art);
                 sprite.setRotation(s.spin ? t / 88 : directional ? s.angle - Math.PI / 2 : 0);
             }
+        }
+        if (w.giftBoat) {
+            const {id, frame, facing, x, y} = w.giftBoat;
+            this.sprite(id, 'effects/gift_boat_' + frame, x, y + Math.sin(frame * Math.PI / 2) * 2,
+                GIFT_BOAT_WIDTH, GIFT_BOAT_HEIGHT, 2)?.setFlipX(facing < 0);
         }
         for (const drop of w.drops) {
             const size = drop.kind === 'gift' ? 40 : 23;
@@ -318,7 +345,7 @@ export class OceanScene extends Phaser.Scene {
             .setDisplaySize(30 * world.view.entityScale, 24 * world.view.entityScale).setAngle(-78);
     }
 
-    drawEnemy(e, t, iceFieldUntil) {
+    drawEnemy(e, t, iceFieldUntil, bottom) {
         const frozenUntil = Math.max(e.frozenUntil ?? 0, iceFieldUntil);
         let key = 'enemies/enemy_' + e.kind, frame = '__BASE';
         if (e.kind === 'zongzong') key = 'bosses/zongzong';
@@ -344,6 +371,21 @@ export class OceanScene extends Phaser.Scene {
         if (!sprite) return;
         sprite.setTint(e.hitAt > t - 130 ? 0xffbdb4 : frozenUntil > t ? 0x89e9ff : e.tint ?? 0xffffff);
         this.drawIceStatus(e, frozenUntil, t);
+        if (e.hasteUntil > t) {
+            this.effects.lineStyle(2, 0x6bf2ff, .78);
+            for (const dx of [-.24, 0, .24]) {
+                const x = e.x + e.w * dx, y = e.y + e.h * (dx ? -.40 : -.50);
+                this.effects.lineBetween(x, y - e.h * .40, x, y);
+            }
+        }
+        if (e.specialAttackAt) {
+            const color = Phaser.Display.Color.GetColor(...e.special.color), y = e.y + e.h / 2 - 8;
+            this.effects.lineStyle(2, color, .84).strokeCircle(e.x, y, Math.max(5, e.w / 4));
+            if (e.special.aimed) {
+                this.effects.lineStyle(1, color, .55).lineBetween(e.x, y,
+                    e.x + Math.cos(e.specialAim) * bottom, y + Math.sin(e.specialAim) * bottom);
+            }
+        }
         if (e.hp < e.maxHp || e.kind === 'ancient_rift') {
             this.effects.fillStyle(0x071824, .85).fillRect(e.x - e.w * .36, e.y - e.h / 2 - 4, e.w * .72, 4);
             this.effects.fillStyle(0xffa060, 1).fillRect(e.x - e.w * .36, e.y - e.h / 2 - 4, e.w * .72 * e.hp / e.maxHp, 3);

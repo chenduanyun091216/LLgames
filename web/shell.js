@@ -33,35 +33,63 @@
         positionViewport();
     }
     const gameCanvas = document.getElementById('canvas');
-    if (/(?:\?|&)perf=1(?:&|$)/.test(window.location?.search || '')) {
+    const canvas = document.getElementById('ttgames-ui');
+    // iPadOS can request desktop sites and identify itself as a Mac.
+    window.ttgamesIPad = /iPad/.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    let sceneWidth, sceneHeight;
+    if (window.ttgamesIPad) {
+        window.ttgamesSetSceneSize = (width, height, outputWidth, outputHeight) => {
+            sceneWidth = width;
+            sceneHeight = height;
+            // Show the scene crop directly at viewport size, with a single browser resampling pass.
+            gameCanvas.style.setProperty('--scene-scale-x', outputWidth / width);
+            gameCanvas.style.setProperty('--scene-scale-y', outputHeight / height);
+            gameCanvas.toggleAttribute('data-scene-crop', width !== outputWidth || height !== outputHeight);
+        };
+    }
+    const showPerformance = /(?:\?|&)perf=1(?:&|$)/.test(window.location?.search || '');
+    if (showPerformance) {
         const stats = document.createElement('output');
         stats.id = 'ttgames-frame-stats';
         stats.style.cssText = 'position:fixed;top:calc(var(--game-top, 0px) + 2px);left:4px;z-index:30;pointer-events:none;max-width:calc(100vw - 20px);' +
             'font:12px monospace;color:white;background:#071b2bdd;padding:3px 6px';
         document.body.append(stats);
-        let last = null, started = null, mode = '', intervals = [];
-        document.addEventListener('visibilitychange', () => {
+        let last = null, started = null, mode = '', intervals = [], refreshes = 0;
+        const countRefresh = () => {
+            refreshes++;
+            requestAnimationFrame(countRefresh);
+        };
+        requestAnimationFrame(countRefresh);
+        const resetSample = () => {
             last = started = null;
             intervals = [];
-        });
-        window.ttgamesRecordFrame = currentMode => {
+            stats.textContent = '';
+        };
+        document.addEventListener('visibilitychange', resetSample);
+        window.ttgamesRecordFrame = (currentMode, resized = false) => {
             const now = performance.now();
-            if (document.hidden || currentMode !== mode) {
+            if (resized || document.hidden || currentMode !== mode) {
                 mode = currentMode;
-                last = started = null;
-                intervals = [];
+                resetSample();
             }
             if (document.hidden) return;
             if (last !== null) intervals.push(now - last);
             last = now;
-            if (started === null) started = now;
+            if (started === null) {
+                started = now;
+                refreshes = 0;
+            }
             if (now - started < 1000 || !intervals.length) return;
             const sorted = [...intervals].sort((a, b) => a - b);
             const p95 = sorted[Math.ceil(sorted.length * .95) - 1];
             const label = {single: '单人', lan: '联机', idle: '菜单/暂停'}[mode] || mode;
             stats.textContent = `${label} · ${Math.round(intervals.length * 1000 / (now - started))} FPS` +
+                ` · 浏览器 rAF ${Math.round(refreshes * 1000 / (now - started))} Hz` +
                 ` · 帧间隔 P95 ${p95.toFixed(1)} / 最大 ${sorted.at(-1).toFixed(1)} ms` +
                 ` · >50ms ${intervals.filter(value => value > 50).length}`;
+            const build = document.getElementById('ttgames-version')?.textContent;
+            if (build) stats.textContent += ' · ' + build;
             const network = window.ttgamesLAN;
             if (mode === 'lan' && network?.lastSnapshotAt != null) {
                 stats.textContent += ' · 网络最大间隔 ' + Math.round(network.maxSnapshotGap) +
@@ -70,33 +98,34 @@
             }
             started = now;
             intervals = [];
+            refreshes = 0;
         };
     }
     const safeAreaFill = document.getElementById('ttgames-safe-area-fill');
     if (gameCanvas && typeof ResizeObserver !== 'undefined') {
         const updateGameSize = () => {
-            window.ttgamesViewportWidth = gameCanvas.clientWidth;
-            window.ttgamesViewportHeight = gameCanvas.clientHeight;
+            window.ttgamesViewportWidth = canvas.clientWidth;
+            window.ttgamesViewportHeight = canvas.clientHeight;
         };
-        new ResizeObserver(updateGameSize).observe(gameCanvas);
+        new ResizeObserver(updateGameSize).observe(canvas);
         updateGameSize();
         if (safeAreaFill) {
             const ctx = safeAreaFill.getContext('2d');
             if (ctx) {
                 let hasInsets = false;
                 const insetObserver = new ResizeObserver(() => {
-                    hasInsets = safeAreaFill.clientWidth > gameCanvas.clientWidth ||
-                                safeAreaFill.clientHeight > gameCanvas.clientHeight;
+                    hasInsets = safeAreaFill.clientWidth > canvas.clientWidth ||
+                                safeAreaFill.clientHeight > canvas.clientHeight;
                 });
-                insetObserver.observe(gameCanvas);
+                insetObserver.observe(canvas);
                 insetObserver.observe(safeAreaFill);
                 window.ttgamesFillSafeArea = () => {
                     if (!hasInsets) return;
                     const visible = safeAreaFill.getBoundingClientRect();
-                    const game = gameCanvas.getBoundingClientRect();
+                    const game = canvas.getBoundingClientRect();
                     if (game.width >= visible.width && game.height >= visible.height) return;
                     const width = Math.round(visible.width), height = Math.round(visible.height);
-                    const sourceWidth = gameCanvas.width, sourceHeight = gameCanvas.height;
+                    const sourceWidth = sceneWidth || gameCanvas.width, sourceHeight = sceneHeight || gameCanvas.height;
                     if (Math.min(width, height, sourceWidth, sourceHeight, game.width, game.height) <= 0) return;
                     if (safeAreaFill.width !== width) safeAreaFill.width = width;
                     if (safeAreaFill.height !== height) safeAreaFill.height = height;
@@ -220,7 +249,8 @@
 
     let caching = false;
     const prepareCache = async () => {
-        if (caching) return;
+        // Keep the offline download out of performance samples.
+        if (caching || showPerformance) return;
         caching = true;
         const status = document.getElementById('ttgames-offline');
         const serviceWorker = navigator.serviceWorker;
@@ -274,7 +304,6 @@
         }
     });
 
-    const canvas = document.getElementById('ttgames-ui');
     const ctx = canvas.getContext('2d');
     const buildVersion = document.getElementById('ttgames-version');
     let previous = '';
@@ -283,7 +312,10 @@
     // The scene keeps its logical resolution; this separate layer draws glyphs at device resolution.
     window.ttgamesDrawUI = (frame, width, height, inBattle, paused, cutscene = '', home = false) => {
         if (!finished) finishProgress();
-        loading.hidden = true;
+        if (!loading.hidden) {
+            gameCanvas.setAttribute('data-game-ready', '');
+            loading.hidden = true;
+        }
         if (buildVersion) buildVersion.hidden = !home;
         const offlineStatus = document.getElementById('ttgames-offline');
         if (offlineStatus) offlineStatus.hidden = inBattle || paused;
