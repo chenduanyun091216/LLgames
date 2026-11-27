@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "bosses": {
+    "whale": {
+      "name": "远古巨鲸", "art": "bosses/boss_ancient_whale.png",
+      "skills": [
+        ["水柱", "geyser", 51, 39, 180, 22],
+        ["反弹珍珠", "pearl", 54, 180, 210, 26],
+        ["潮汐月刃", "crescent", 72, 120, 420, 42]
+      ]
+    },
+    "mecha": {
+      "name": "机械蜥蜴", "art": "bosses/boss_mecha_lizard.png",
+      "skills": [
+        ["轨道鞭", "lash", 54, 27, 180, 22],
+        ["定点导弹", "missile", 60, 36, 240, 28],
+        ["脉冲环", "ring", 69, 84, 420, 40]
+      ]
+    },
+    "orochi": {
+      "name": "八岐大蛇", "art": "bosses/boss_orochi.png",
+      "skills": [
+        ["蛇首砸击", "slam", 51, 21, 168, 20],
+        ["双束交叉", "cross", 66, 33, 270, 30],
+        ["雷暴", "storm", 78, 90, 450, 45]
+      ]
+    }
+  }
+}

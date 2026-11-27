@@ -29,15 +29,16 @@ def draw_missile_trail(surf, trail, width, *, blue=False):
 def panel_surface(w, h, accent, fill, radius, alpha, stroke=1):
     # Draw the contour at 2× so rounded edges survive narrow-screen scaling.
     size = (w * 2, h * 2)
-    panel = pygame.Surface(size, pygame.SRCALPHA)
     mask = pygame.Surface(size, pygame.SRCALPHA)
+    gradient = pygame.Surface((1, size[1]), pygame.SRCALPHA)
     radius *= 2
     pygame.draw.rect(mask, 'white', mask.get_rect(), border_radius=radius)
     for row in range(size[1]):
         light = 1 - row / max(1, size[1] - 1)
         rgb = tuple(min(255, base + int((16 + tint * 0.13) * light))
                     for base, tint in zip(fill, accent))
-        pygame.draw.line(panel, (*rgb, alpha), (0, row), (size[0] - 1, row))
+        gradient.set_at((0, row), (*rgb, alpha))
+    panel = pygame.transform.scale(gradient, size)
     panel.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
     pygame.draw.rect(panel, (*accent, 216), panel.get_rect(), 2 * stroke, border_radius=radius)
     pygame.draw.rect(panel, (*accent, 54), panel.get_rect().inflate(-4 * stroke, -4 * stroke),

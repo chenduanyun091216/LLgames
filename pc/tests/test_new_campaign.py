@@ -7,7 +7,7 @@ from unittest.mock import patch
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
-from game_core import config
+from game_core import config, sounds
 from game_core.entities import Enemy
 from game_core.game import BACKGROUND_SCROLL_TICKS, Game, GameState
 from game_core.abyss_bosses import MechaLizardBoss, AncientWhaleBoss
@@ -80,6 +80,38 @@ class NewCampaignTests(unittest.TestCase):
                 game.update()
             else:
                 self.assertEqual(game.state, GameState.VICTORY)
+
+    def test_next_level_music_starts_on_the_transition_frame(self):
+        sounds.stop_music()
+        self.addCleanup(sounds.stop_music)
+        first_boss_pcm = b'\x10\x00' * sounds.SAMPLE_RATE
+        next_level_pcm = b'\x20\x00' * sounds.SAMPLE_RATE
+
+        def track(level, boss, infinite, variant):
+            yield
+            return first_boss_pcm if (level, boss) == (1, True) else next_level_pcm
+
+        with patch.object(sounds, '_music_pcm', side_effect=track):
+            game = self.game()
+            sounds.advance_music()
+            game._trigger_boss()
+            sounds.advance_music()
+            channel = pygame.mixer.Channel(0)
+            self.assertEqual(channel.get_sound().get_raw()[:2], first_boss_pcm[:2])
+
+            game._kill_boss()
+            self.assertEqual(game.state, GameState.LEVEL_TRANSITION)
+            self.assertEqual(channel.get_sound().get_raw()[:2], first_boss_pcm[:2])
+            config.campaign_time_ms = game.level_transition_end
+            game.update()
+            self.assertEqual(game.current_level, 2)
+            self.assertIsNotNone(channel.get_sound())
+            self.assertEqual(channel.get_sound().get_raw()[:2], next_level_pcm[:2])
+
+            game._start_level(4)
+            self.assertFalse(channel.get_busy())
+            sounds.advance_music()
+            self.assertTrue(channel.get_busy())
 
     def test_factory_and_temple_waves_each_use_six_species(self):
         game = self.game()
@@ -309,7 +341,7 @@ class NewCampaignTests(unittest.TestCase):
                 game = self.game(desktop=desktop)
                 game._begin_infinite_run(12)
                 self.assertIsInstance(game.boss, OrochiBoss)
-                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (264, 3500))
+                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (292, 3300))
                 game.player.weapon_upgrades['rifle'] = 2
                 game.boss._start_death(config.game_ticks() - OrochiBoss.DEATH_DURATION)
                 self.assertTrue(game._settle_boss_if_killed())
@@ -320,7 +352,8 @@ class NewCampaignTests(unittest.TestCase):
                 with patch('game_core.game.random.random', return_value=.99):
                     game._update_playing(game.last_spawn_time + game.spawn_interval)
                 enemy, = game.enemies
-                self.assertAlmostEqual(enemy.max_hp, 3 * 1.24)
+                self.assertAlmostEqual(enemy.max_hp, 3 * 1.32)
+                self.assertEqual((enemy.attack_interval_min, enemy.attack_interval_max), (4900, 7700))
                 enemy.y = enemy.ENTRY_END_Y
                 enemy.hit_by('pistol', 3)
                 self.assertFalse(enemy.is_killed('pistol'))
@@ -329,7 +362,7 @@ class NewCampaignTests(unittest.TestCase):
                 game.background_scroll_ticks = BACKGROUND_SCROLL_TICKS - 1
                 game.update()
                 self.assertEqual(game.boss.bdef['key'], 'boss_lobster')
-                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (271, 3360))
+                self.assertEqual((game.boss.max_hp, game.boss.attack_interval), (299, 3168))
 
     def test_temple_worm_inherits_thirty_percent_hp_and_pursues(self):
         game = self.game()

@@ -101,8 +101,9 @@ class DesktopGameTests(unittest.TestCase):
         self.assertNotIn('upgrade:shotgun', game._mobile_shop_rects())
         self.assertNotIn('upgrade:pistol', game._mobile_shop_rects())
         game._shoot(10000)
-        self.assertTrue(all(math.isclose(b.damage, 1.6 * config.CAMPAIGN_BULLET_DAMAGE['shotgun'])
-                            for b in game.bullets))
+        total_damage = len(game.bullets) * 2.08
+        self.assertAlmostEqual(sum(b.damage for b in game.bullets), total_damage)
+        self.assertAlmostEqual(sum(b.damage for b in game.bullets if abs(b.angle) <= 6), total_damage * .6)
 
         game.player.owned_weapons.extend(('rifle', 'sniper'))
         game.player.current_weapon = 'rifle'
@@ -194,6 +195,7 @@ class DesktopGameTests(unittest.TestCase):
         original.x, original.y = 240, 260
         original.max_hp = 20
         other.x, other.y = 360, 300
+        other.max_hp = 20
         game.enemies = [original, other]
         missile.x, missile.y, missile.angle = 240, original.rect().bottom, 0
         game._detonate_sniper_missile(missile, 1000, original)
@@ -210,6 +212,11 @@ class DesktopGameTests(unittest.TestCase):
             game._advance_bullet(child, now)
             if child.rect().colliderect(original.rect()):
                 self.assertTrue(child.sniper_can_hit_original)
+                damage_before = original.damage_taken
+                game._apply_bullet_passive(original, child, now)
+                self.assertAlmostEqual(original.damage_taken - damage_before, child.damage * .05)
+                game._apply_bullet_passive(other, child, now)
+                self.assertAlmostEqual(other.damage_taken, child.damage)
                 break
         else:
             self.fail('The child missile did not turn back into the original target')

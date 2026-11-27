@@ -49,7 +49,9 @@ WEB_SOURCE = ROOT / 'web'
 GAME_SOURCE = ROOT / 'game_core'
 IMAGE_SOURCE = ROOT / 'assets' / 'images'
 CUTSCENE_SOURCES = tuple(ROOT / 'assets' / name for name in ('opening', 'ending'))
-SOURCE_FILES = tuple(sorted(GAME_SOURCE.glob('*.py')))
+SOURCE_FILES = tuple(sorted(GAME_SOURCE.rglob('*.py')))
+MODE_SOURCE = ROOT / 'assets' / 'modes'
+MODE_DATA = tuple(sorted(MODE_SOURCE.rglob('*.json')))
 SHELL_FILES = tuple(WEB_SOURCE / name for name in ('shell.css', 'shell.js', 'sw.js'))
 PYGAME_WHEEL = 'cp312/pygame_ce-2.5.7-cp312-cp312-wasm32_bi_emscripten.whl'
 PACKAGE_INDEX = f'index-{PYGBAG_VERSION}-cp{PYBUILD.replace(".", "")}.json'
@@ -69,6 +71,8 @@ CDN_FILES = (
 
 
 LAN_WEB_SCRIPTS = tuple(ROOT / 'online' / 'web' / name for name in ('bridge.js', 'integrated.js'))
+LAN_WEB_SCRIPTS += (MODE_SOURCE / 'deep_dive' / 'records.js',
+                    MODE_SOURCE / 'tide_race' / 'tide-records.js')
 LAN_WEB_PYTHON = tuple(path for group in ('adapters', 'shared', 'client')
                        for path in (ROOT / 'online' / group).glob('*.py')
                        if path.name != 'native.py')
@@ -76,7 +80,7 @@ LAN_WEB_PYTHON = tuple(path for group in ('adapters', 'shared', 'client')
 
 def source_manifest():
     entries = []
-    paths = [*SOURCE_FILES, *SHELL_FILES, Path(__file__), ROOT / 'requirements.txt']
+    paths = [*SOURCE_FILES, *MODE_DATA, *SHELL_FILES, Path(__file__), ROOT / 'requirements.txt']
     paths.extend((*LAN_WEB_SCRIPTS, *LAN_WEB_PYTHON))
     paths.extend(sorted(IMAGE_SOURCE.rglob('*.png')))
     for source in CUTSCENE_SOURCES:
@@ -208,7 +212,13 @@ def prepare_sources():
     package = STAGING / GAME_SOURCE.name
     package.mkdir()
     for source in SOURCE_FILES:
-        shutil.copy2(source, package / source.name)
+        target = package / source.relative_to(GAME_SOURCE)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    for source in MODE_DATA:
+        target = STAGING / source.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
     (STAGING / 'main.py').write_text(
         'import asyncio\nimport pygame\nfrom game_core.main import main\nasyncio.run(main())\n', encoding='utf-8')
     for source in LAN_WEB_PYTHON:
@@ -234,7 +244,7 @@ def prepare_sources():
     shutil.copytree(cached_font_dir, font_dir, dirs_exist_ok=True)
     from fontTools import subset
     # Include all source characters plus basic Latin used by dynamic HUD numbers.
-    text = ''.join(path.read_text(encoding='utf-8') for path in (*SOURCE_FILES, *LAN_WEB_PYTHON))
+    text = ''.join(path.read_text(encoding='utf-8') for path in (*SOURCE_FILES, *MODE_DATA, *LAN_WEB_PYTHON))
     options = subset.Options()
     font = subset.load_font(str(font_dir / 'NotoSansCJKsc-Regular.otf'), options)
     subsetter = subset.Subsetter(options=options)
@@ -349,7 +359,7 @@ def finalize_webroot(pygbag_output):
             lan_scripts.append(name)
         html = html.replace('</head>', ''.join(f'<script defer src="{name}"></script>' for name in lan_scripts) + '</head>')
     html = html.replace('</body>', '<canvas id="ttgames-ui" aria-hidden="true"></canvas>'
-                        '<canvas id="ttgames-safe-area-fill" aria-hidden="true"></canvas>'
+                        '<div id="ttgames-safe-area" aria-hidden="true"></div>'
                         '<small id="ttgames-version" hidden>Web __BUILD_VERSION__</small>'
                         '<div id="ttgames-offline" role="status"></div>'
                         '<button id="ttgames-fullscreen" type="button" aria-label="进入全屏" title="进入全屏">⛶</button>'
@@ -704,7 +714,8 @@ def serve_lan_site(host, port, setup_port, tls, setup_certificate, cert):
             setup_server = ThreadingHTTPServer((host, setup_port), handler)
             threading.Thread(target=setup_server.serve_forever, daemon=True).start()
         asyncio.run(serve_lan(host, port, root=WEBROOT, tls=tls, addresses=addresses,
-                              lan_warning=lan_warning))
+                              lan_warning=lan_warning,
+                              setup_port=setup_server.server_port if setup_server else None))
     except KeyboardInterrupt:
         pass
     finally:

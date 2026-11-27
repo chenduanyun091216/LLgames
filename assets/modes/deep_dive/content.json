@@ -1,0 +1,737 @@
+{
+  "version": 1,
+  "tools": {
+    "cutter": [
+      "切割器",
+      "锯齿"
+    ],
+    "lift_bag": [
+      "充气浮袋",
+      "浮袋"
+    ],
+    "sonar": [
+      "声呐",
+      "波纹"
+    ]
+  },
+  "rules": {
+    "hz": 60,
+    "speed": 120,
+    "weightDrag": 0.045,
+    "capacity": 6,
+    "oxygen": 120,
+    "air": 20,
+    "cutterSeconds": 2,
+    "cutterOxygen": 2,
+    "bags": 2,
+    "maxLift": 8,
+    "bindSeconds": 1,
+    "transitSeconds": 5,
+    "sonarCooldown": 8,
+    "sonarOxygen": 2,
+    "sonarSeconds": 3,
+    "sonarRange": 420
+  },
+  "treasures": {
+    "compass": [
+      "铜罗盘",
+      1,
+      30,
+      "在甲板裂口附近直接装舱"
+    ],
+    "clock": [
+      "航海钟",
+      3,
+      75,
+      "在沉船储藏间直接装舱"
+    ],
+    "crown": [
+      "船长王冠",
+      4,
+      130,
+      "切开舱门，或经船腹长廊绕行"
+    ],
+    "shell": [
+      "荧光贝",
+      1,
+      35,
+      "在洞口灯带旁直接装舱"
+    ],
+    "pearl": [
+      "钟乳珍珠",
+      2,
+      70,
+      "在中层水窟直接装舱"
+    ],
+    "crystal": [
+      "晶簇",
+      7,
+      180,
+      "在投放井用充气浮袋起吊"
+    ],
+    "plate": [
+      "铭牌",
+      1,
+      40,
+      "在观测站入口直接装舱"
+    ],
+    "astrolabe": [
+      "星盘",
+      3,
+      90,
+      "在样本室直接装舱"
+    ],
+    "mount": [
+      "望远镜座",
+      8,
+      210,
+      "在起吊井用充气浮袋起吊"
+    ]
+  },
+  "maps": {
+    "wreck": {
+      "name": "浅湾沉船",
+      "size": [
+        1800,
+        1200
+      ],
+      "background": "bg5",
+      "rooms": {
+        "dock": [
+          740,
+          0,
+          415,
+          300
+        ],
+        "entry": [
+          530,
+          350,
+          545,
+          270
+        ],
+        "middle": [
+          120,
+          350,
+          350,
+          270
+        ],
+        "vault": [
+          1170,
+          350,
+          505,
+          270
+        ],
+        "lower": [
+          310,
+          700,
+          765,
+          365
+        ],
+        "far": [
+          1170,
+          700,
+          460,
+          365
+        ],
+        "shaft": [
+          1400,
+          65,
+          260,
+          235
+        ]
+      },
+      "edges": [
+        {
+          "id": "0",
+          "a": "dock",
+          "b": "entry",
+          "rect": [
+            840,
+            275,
+            210,
+            100
+          ],
+          "gate": false
+        },
+        {
+          "id": "1",
+          "a": "entry",
+          "b": "middle",
+          "rect": [
+            445,
+            417,
+            110,
+            115
+          ],
+          "gate": false
+        },
+        {
+          "id": "2",
+          "a": "entry",
+          "b": "vault",
+          "rect": [
+            1050,
+            422,
+            145,
+            112
+          ],
+          "gate": true
+        },
+        {
+          "id": "3",
+          "a": "entry",
+          "b": "lower",
+          "rect": [
+            700,
+            595,
+            185,
+            130
+          ],
+          "gate": false
+        },
+        {
+          "id": "4",
+          "a": "lower",
+          "b": "far",
+          "rect": [
+            1050,
+            875,
+            145,
+            125
+          ],
+          "gate": false
+        },
+        {
+          "id": "5",
+          "a": "far",
+          "b": "vault",
+          "rect": [
+            1290,
+            595,
+            200,
+            130
+          ],
+          "gate": false
+        },
+        {
+          "id": "6",
+          "a": "vault",
+          "b": "shaft",
+          "rect": [
+            1450,
+            275,
+            155,
+            100
+          ],
+          "gate": true
+        },
+        {
+          "id": "7",
+          "a": "dock",
+          "b": "shaft",
+          "rect": [
+            1130,
+            65,
+            295,
+            126
+          ],
+          "gate": false
+        }
+      ],
+      "placements": [
+        [
+          {
+            "instance_id": "01",
+            "treasure_id": "compass",
+            "room": "entry",
+            "x": 961,
+            "y": 423
+          },
+          {
+            "instance_id": "02",
+            "treasure_id": "clock",
+            "room": "middle",
+            "x": 332,
+            "y": 496
+          },
+          {
+            "instance_id": "03",
+            "treasure_id": "crown",
+            "room": "vault",
+            "x": 1223,
+            "y": 482
+          }
+        ],
+        [
+          {
+            "instance_id": "01",
+            "treasure_id": "compass",
+            "room": "entry",
+            "x": 899,
+            "y": 411
+          },
+          {
+            "instance_id": "02",
+            "treasure_id": "clock",
+            "room": "middle",
+            "x": 399,
+            "y": 484
+          },
+          {
+            "instance_id": "03",
+            "treasure_id": "crown",
+            "room": "vault",
+            "x": 1305,
+            "y": 470
+          }
+        ]
+      ],
+      "dock": [
+        885,
+        36,
+        110,
+        100
+      ],
+      "air": [
+        815,
+        784
+      ],
+      "shaft": [
+        1500,
+        398
+      ],
+      "glass": [
+        1096,
+        572,
+        53,
+        12
+      ]
+    },
+    "grotto": {
+      "name": "回音洞穴",
+      "size": [
+        2400,
+        1500
+      ],
+      "background": "bg12",
+      "rooms": {
+        "dock": [
+          710,
+          0,
+          565,
+          325
+        ],
+        "entry": [
+          490,
+          385,
+          815,
+          330
+        ],
+        "middle": [
+          90,
+          380,
+          330,
+          365
+        ],
+        "vault": [
+          1400,
+          360,
+          775,
+          400
+        ],
+        "lower": [
+          415,
+          810,
+          880,
+          525
+        ],
+        "far": [
+          1420,
+          855,
+          780,
+          505
+        ],
+        "shaft": [
+          1510,
+          60,
+          600,
+          235
+        ]
+      },
+      "edges": [
+        {
+          "id": "0",
+          "a": "dock",
+          "b": "entry",
+          "rect": [
+            845,
+            300,
+            228,
+            110
+          ],
+          "gate": false
+        },
+        {
+          "id": "1",
+          "a": "entry",
+          "b": "middle",
+          "rect": [
+            395,
+            460,
+            120,
+            125
+          ],
+          "gate": false
+        },
+        {
+          "id": "2",
+          "a": "entry",
+          "b": "vault",
+          "rect": [
+            1280,
+            500,
+            145,
+            155
+          ],
+          "gate": false
+        },
+        {
+          "id": "3",
+          "a": "entry",
+          "b": "lower",
+          "rect": [
+            650,
+            690,
+            220,
+            145
+          ],
+          "gate": false
+        },
+        {
+          "id": "4",
+          "a": "lower",
+          "b": "far",
+          "rect": [
+            1270,
+            1030,
+            175,
+            165
+          ],
+          "gate": false
+        },
+        {
+          "id": "5",
+          "a": "far",
+          "b": "vault",
+          "rect": [
+            1620,
+            735,
+            220,
+            145
+          ],
+          "gate": false
+        },
+        {
+          "id": "6",
+          "a": "vault",
+          "b": "shaft",
+          "rect": [
+            1640,
+            270,
+            250,
+            115
+          ],
+          "gate": false
+        },
+        {
+          "id": "7",
+          "a": "middle",
+          "b": "lower",
+          "rect": [
+            360,
+            720,
+            120,
+            170
+          ],
+          "gate": false
+        }
+      ],
+      "placements": [
+        [
+          {
+            "instance_id": "01",
+            "treasure_id": "shell",
+            "room": "entry",
+            "x": 942,
+            "y": 479
+          },
+          {
+            "instance_id": "02",
+            "treasure_id": "pearl",
+            "room": "lower",
+            "x": 806,
+            "y": 970
+          },
+          {
+            "instance_id": "03",
+            "treasure_id": "crystal",
+            "room": "vault",
+            "x": 1760,
+            "y": 496
+          }
+        ],
+        [
+          {
+            "instance_id": "01",
+            "treasure_id": "shell",
+            "room": "entry",
+            "x": 846,
+            "y": 467
+          },
+          {
+            "instance_id": "02",
+            "treasure_id": "pearl",
+            "room": "lower",
+            "x": 946,
+            "y": 958
+          },
+          {
+            "instance_id": "03",
+            "treasure_id": "crystal",
+            "room": "vault",
+            "x": 1816,
+            "y": 484
+          }
+        ]
+      ],
+      "dock": [
+        885,
+        36,
+        110,
+        100
+      ],
+      "air": [
+        820,
+        867
+      ],
+      "shaft": [
+        1788,
+        488
+      ],
+      "glass": null
+    },
+    "observatory": {
+      "name": "沉没观测站",
+      "size": [
+        2600,
+        1650
+      ],
+      "background": "bg9",
+      "rooms": {
+        "dock": [
+          720,
+          0,
+          570,
+          315
+        ],
+        "entry": [
+          530,
+          390,
+          880,
+          360
+        ],
+        "middle": [
+          110,
+          365,
+          335,
+          400
+        ],
+        "vault": [
+          1530,
+          405,
+          910,
+          370
+        ],
+        "lower": [
+          480,
+          850,
+          920,
+          575
+        ],
+        "far": [
+          1505,
+          870,
+          865,
+          620
+        ],
+        "shaft": [
+          1680,
+          85,
+          680,
+          230
+        ]
+      },
+      "edges": [
+        {
+          "id": "0",
+          "a": "dock",
+          "b": "entry",
+          "rect": [
+            825,
+            290,
+            180,
+            125
+          ],
+          "gate": false
+        },
+        {
+          "id": "1",
+          "a": "entry",
+          "b": "middle",
+          "rect": [
+            420,
+            510,
+            135,
+            130
+          ],
+          "gate": false
+        },
+        {
+          "id": "2",
+          "a": "entry",
+          "b": "vault",
+          "rect": [
+            1385,
+            505,
+            170,
+            140
+          ],
+          "gate": true
+        },
+        {
+          "id": "3",
+          "a": "entry",
+          "b": "lower",
+          "rect": [
+            875,
+            725,
+            225,
+            150
+          ],
+          "gate": false
+        },
+        {
+          "id": "4",
+          "a": "lower",
+          "b": "far",
+          "rect": [
+            1375,
+            1030,
+            155,
+            180
+          ],
+          "gate": false
+        },
+        {
+          "id": "5",
+          "a": "far",
+          "b": "vault",
+          "rect": [
+            1700,
+            750,
+            210,
+            145
+          ],
+          "gate": true
+        },
+        {
+          "id": "6",
+          "a": "far",
+          "b": "vault",
+          "rect": [
+            2130,
+            750,
+            210,
+            145
+          ],
+          "gate": false
+        },
+        {
+          "id": "7",
+          "a": "vault",
+          "b": "shaft",
+          "rect": [
+            1790,
+            290,
+            225,
+            140
+          ],
+          "gate": false
+        }
+      ],
+      "placements": [
+        [
+          {
+            "instance_id": "01",
+            "treasure_id": "plate",
+            "room": "entry",
+            "x": 904,
+            "y": 485
+          },
+          {
+            "instance_id": "02",
+            "treasure_id": "astrolabe",
+            "room": "middle",
+            "x": 309,
+            "y": 568
+          },
+          {
+            "instance_id": "03",
+            "treasure_id": "mount",
+            "room": "vault",
+            "x": 1910,
+            "y": 504
+          }
+        ],
+        [
+          {
+            "instance_id": "01",
+            "treasure_id": "plate",
+            "room": "entry",
+            "x": 1034,
+            "y": 473
+          },
+          {
+            "instance_id": "02",
+            "treasure_id": "astrolabe",
+            "room": "middle",
+            "x": 373,
+            "y": 556
+          },
+          {
+            "instance_id": "03",
+            "treasure_id": "mount",
+            "room": "vault",
+            "x": 1970,
+            "y": 492
+          }
+        ]
+      ],
+      "dock": [
+        885,
+        36,
+        110,
+        100
+      ],
+      "air": [
+        1060,
+        915
+      ],
+      "shaft": [
+        1940,
+        494
+      ],
+      "glass": null
+    }
+  }
+}

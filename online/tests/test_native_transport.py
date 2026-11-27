@@ -54,6 +54,8 @@ class NativeTransportTests(unittest.IsolatedAsyncioTestCase):
         response.json = AsyncMock(return_value={
             'version': UNIFIED_VERSION, 'ready': True,
             'url': 'https://192.168.1.2:8001/',
+            'setup_url': 'http://192.168.1.2:8123/',
+            'lan_warning': '联机证书未覆盖 192.168.1.2',
         })
         probe = AsyncMock()
         probe.__aenter__.side_effect = [self.connector_error(error), response]
@@ -69,7 +71,9 @@ class NativeTransportTests(unittest.IsolatedAsyncioTestCase):
             await transport.start_host()
         spawn.assert_awaited_once()
         self.assertEqual(transport.origin, 'https://127.0.0.1:8001')
-        self.assertEqual(transport.address, 'https://192.168.1.2:8001/')
+        self.assertEqual(transport.address, '联机证书未覆盖 192.168.1.2')
+        self.assertEqual(transport.game_url, 'https://192.168.1.2:8001/')
+        self.assertEqual(transport.setup_url, 'http://192.168.1.2:8123/')
 
     async def test_standard_refusal_means_service_is_absent(self):
         probe = AsyncMock()

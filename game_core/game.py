@@ -5,7 +5,8 @@ P2: 方向键移动 小键盘1射击 小键盘2/3技能 小键盘Enter激光 小
 """
 import math, random, pygame
 from copy import deepcopy
-from . import config, menu_ui
+from functools import lru_cache
+from . import asset_loader, config, menu_ui
 from .render import Draw, RenderSurface, blit_effect, effect_layer, trim_transparent, scaled_surface
 from .asset_loader import image_asset, scale_surface_cached
 from .background import scrolling_background_art, trench_boss_art
@@ -66,6 +67,27 @@ LEVEL_TITLE_ART = (
     (('trench_angler', 'trench_anomalocaris', 'trench_jelly'), (150, 226, 236)),
     ((), (255, 156, 120)),
 )
+
+
+def level_title_assets(level):
+    enemies, _ = LEVEL_TITLE_ART[level - 1]
+    boss = BOSS_DEFS[LEVEL_CONFIGS[level - 1]['boss_idx']]
+    return (*(f'enemies/enemy_{key}.png' for key in enemies),
+            boss.get('sprite_asset', f"bosses/{boss['key']}.png"))
+
+
+@lru_cache(maxsize=128)
+def _logical_label(text, font, color, bounds):
+    image = font.render(text, True, color)
+    shadow = font.render(text, True, (0, 8, 20))
+    max_w, max_h = (max(1, value) for value in bounds)
+    width, height = image.get_size()
+    if width > max_w or height > max_h + 2:
+        scale = min(max_w / max(1, width), max_h / max(1, height))
+        size = max(1, int(width * scale)), max(1, int(height * scale))
+        image = pygame.transform.smoothscale(image, size)
+        shadow = pygame.transform.smoothscale(shadow, size)
+    return image, shadow
 
 
 TEMPLE_WORM = {'key': 'ancient_worm', 'name': '远古虫', 'is_large': False,
@@ -133,6 +155,7 @@ class Game:
         self.mobile_web = mobile_web
         self.scroll_campaign_backgrounds = scroll_campaign_backgrounds
         self.desktop_controls = desktop_controls
+        self.desktop_quality = 2
         self.campaign_ending = campaign_ending
         self.exit_confirmation = False
         self.actor_scale_percent = 100
@@ -145,6 +168,7 @@ class Game:
         self.font_countdown = make_font(16, bold=True)
         self._ui_labels = None
         self._desktop_fonts = {}
+        self._desktop_label = lru_cache(maxsize=256)(self._rasterize_desktop_label)
         self._ui_font_styles = {
             self.font_large: (48, True), self.font_med: (28, True),
             self.font_small: (20, False), self.font_tiny: (16, False),
@@ -272,6 +296,9 @@ class Game:
     def _load_bg(self):
         from .background import make_background
         level = self.infinite_background_level if self.infinite_mode else getattr(self, 'current_level', 1)
+        if (not self.infinite_mode and not self.online_view
+                and (self._scrolls_background() or self.desktop_controls and asset_loader.pc_4k_assets)):
+            return make_background(level, art_size=config.VIEW_SIZE, scrolling=self._scrolls_background())
         return make_background(level)
 
     def _boss_starts_immediately(self):
@@ -329,6 +356,7 @@ class Game:
 
     def resize_view(self, previous_area=None):
         self._desktop_fonts.clear()
+        self._desktop_label.cache_clear()
         if previous_area and not self.infinite_mode:
             old_left, old_right, old_bottom = previous_area
             horizontal_scale = (config.GAME_AREA_RIGHT - config.GAME_AREA_LEFT) / (old_right - old_left)
@@ -552,7 +580,7 @@ class Game:
 
     def _hud_controls(self):
         width = 170 if config.MOBILE_LANDSCAPE_VIEW else 108
-        health = pygame.Rect(0, config.SCREEN_HEIGHT - 43, width, 28)
+        health = pygame.Rect(0, config.SCREEN_HEIGHT - config.WEB_SAFE_INSETS[3] - 43, width, 28)
         health.centerx = config.SCREEN_WIDTH // 2 - (0 if config.MOBILE_LANDSCAPE_VIEW else 8)
         return (pygame.Rect(health.left - 36, health.y, 32, health.h),
                 health,
@@ -782,6 +810,11 @@ class Game:
                     self.actor_scale_percent = max(ACTOR_SCALE_MIN, self.actor_scale_percent - ACTOR_SCALE_STEP)
                 elif zoom_in.collidepoint(pos):
                     self.actor_scale_percent = min(ACTOR_SCALE_MAX, self.actor_scale_percent + ACTOR_SCALE_STEP)
+                elif self.desktop_controls and not self.web:
+                    for quality, rect in zip((2, 4), self._pause_quality_rects()):
+                        if rect.collidepoint(pos):
+                            self.desktop_quality = quality
+                            break
         elif s == GameState.PAID_REVIVE:
             revive, end_run = self._choice_rects()
             if revive.collidepoint(pos): self._paid_revive()
@@ -813,7 +846,10 @@ class Game:
 
     # ═══ Game Flow ════════════════════════════════════════════════════════════
     def _activate_home_action(self, action):
-        if action == 'back' and self.on_return_home is not None:
+        if action == 'modes':
+            from .arcade import ModeHub
+            self.side_game = ModeHub(self)
+        elif action == 'back' and self.on_return_home is not None:
             self.on_return_home()
         elif action == 'infinite':
             self._start_infinite_game()
@@ -1291,6 +1327,7 @@ class Game:
             bdef.update(shield_thresholds=(0.65, 0.30))
         elif bdef['key'] == 'boss_zongzong':
             bdef['easy_campaign'] = False
+            bdef['resistance_tier'] = 2
         self.boss = self._make_boss(bdef)
         self.boss_projectiles.clear()
         self.last_spawn_time = config.game_ticks()
@@ -2393,7 +2430,7 @@ class Game:
         progression = config.INFINITE_PROGRESSION
         chapters = self.infinite_boss_index
         first_round_steps = min(chapters, len(config.INFINITE_BOSS_HP))
-        return (100 + first_round_steps * progression['enemy_health_first_round_step']
+        return (progression['enemy_health_start_percent'] + first_round_steps * progression['enemy_health_first_round_step']
                 + (chapters - first_round_steps) * progression['enemy_health_per_chapter']) / 100
 
     def _infinite_damage_mult(self):
@@ -2492,6 +2529,11 @@ class Game:
         self.player.gold -= cost
         shots = player.shoot(now)
         level = player.weapon_upgrades.get(wkey, 0)
+        if wkey == 'shotgun':
+            center_count = len(shots) - 2
+            base_center_share = center_count / len(shots)
+            max_center_share = config.SHOTGUN_MAX_CENTER_DAMAGE_SHARE
+            center_share = base_center_share + (max_center_share - base_center_share) * level / config.WEAPON_UPGRADE_LIMIT
         missile = False
         if wkey == 'sniper' and level:
             player.sniper_shots = (player.sniper_shots + 1) % config.SNIPER_MISSILE_INTERVAL
@@ -2517,7 +2559,8 @@ class Game:
                     b.radius = 30
                     b.damage *= 1.5
             elif wkey == 'shotgun':
-                b.damage *= 1 + config.SHOTGUN_DAMAGE_PER_LEVEL * level
+                share = center_share / center_count if abs(b.angle) <= 6 else (1 - center_share) / 2
+                b.damage *= len(shots) * (1 + config.SHOTGUN_DAMAGE_PER_LEVEL * level) * share
             elif missile:
                 b.sniper_missile = True
                 b.split_count = level
@@ -2526,6 +2569,8 @@ class Game:
                 b.angle = 28 if b.x < config.SCREEN_WIDTH / 2 else -28
                 b.max_lifetime = 4500
                 b.damage = config.SNIPER_MISSILE_DAMAGE[level - 1]
+            elif wkey == 'sniper':
+                b.damage += config.SNIPER_DAMAGE_PER_LEVEL * level
         self.bullets.extend(shots)
         self.muzzle_flashes.append((player, now, wkey))
         play_sound(f'shoot_{wkey}')
@@ -2586,8 +2631,10 @@ class Game:
         self._explode_fire_rocket(bullet, now, self.state == GameState.BOSS_FIGHT,
                                   radius=config.SNIPER_MISSILE_RADIUS)
 
-    def _bullet_damage(self, b, now):
+    def _bullet_damage(self, b, now, target=None):
         damage = b.damage
+        if target is not None and target is getattr(b, 'sniper_original_target', None):
+            damage *= config.SNIPER_RETURN_DAMAGE_MULT
         shooter = getattr(b, 'source_player', self.player)
         if b.character == 'fire':
             damage *= 1.5 if self.infinite_mode else 1.2
@@ -2640,7 +2687,7 @@ class Game:
         if getattr(b, 'gift_kind', None) == 'ice' and self.infinite_mode:
             e.frozen = True
             e.frozen_until = now + 2000
-        e.hit_by(b.weapon_name, self._bullet_damage(b, now))
+        e.hit_by(b.weapon_name, self._bullet_damage(b, now, e))
         if not self.infinite_mode and getattr(b, 'gift_kind', None) == 'ice':
             e.apply_slow(now, 2500, 0.75)
             if not e.is_large and not e.is_zongzong and not e.frozen:
@@ -3043,7 +3090,7 @@ class Game:
             if not self.infinite_mode:
                 boss.next_signature_time = now + 8000 if opening else boss.next_signature_time + 8000
             elif key not in ('boss', 'boss_crab'):
-                boss.next_signature_time = now + 10000
+                boss.next_signature_time = now + config.INFINITE_PROGRESSION['boss_signature_repeat_ms']
         else:
             boss.signature_health_pending = False
             boss.signature_half_health_cast = True
@@ -3063,7 +3110,7 @@ class Game:
             signature.stop(boss)
             boss.signature = None
             if self.infinite_mode and signature.key == 'boss':
-                boss.next_signature_time = now + 10000
+                boss.next_signature_time = now + config.INFINITE_PROGRESSION['boss_signature_repeat_ms']
             return False
         if signature.key == 'boss_dragon' and now >= signature.next_fireball_at:
             signature.next_fireball_at = now + 400
@@ -3445,7 +3492,7 @@ class Game:
                         if self.state != GameState.BOSS_FIGHT:
                             return
                         continue
-                    damage = self._bullet_damage(b, now)
+                    damage = self._bullet_damage(b, now, self.boss)
                     reflected = not frozen and isinstance(self.boss, ZongBoss) and self.boss.reflects_bullet()
                     if reflected:
                         self._add_boss_projectiles([ZongReflectBullet(b.x, b.y)])
@@ -4071,7 +4118,7 @@ class Game:
         skill = self._special_enemy_attack(e)
         if skill:
             e.last_attack_time = config.game_ticks()
-            e.attack_interval = skill['opening_ms']
+            e.attack_interval = skill['opening_ms'] - progression['enemy_special_opening_reduction_ms']
         self.enemies.append(e)
 
     def _kill_enemy(self, e, *, linked=False):
@@ -4086,7 +4133,7 @@ class Game:
             signature = self.boss.signature
             if ((signature is None or all(signature.bubble_released))
                     and not any(enemy.chase_color is not None for enemy in self.enemies)):
-                self.boss.next_signature_time = config.game_ticks() + 10000
+                self.boss.next_signature_time = config.game_ticks() + config.INFINITE_PROGRESSION['boss_signature_repeat_ms']
         if not self.infinite_mode:
             self.campaign_enemies_defeated += 1
         if credit and any(player.character == 'water' for player in self.players):
@@ -4229,14 +4276,19 @@ class Game:
             return
 
     # ═══ Draw ═════════════════════════════════════════════════════════════════
-    def draw(self, ui_labels=None, draw_background=True):
-        s = self.state
-        fade = 0
-        if s == GameState.LEVEL_TRANSITION:
+    def level_fade_alpha(self):
+        if self.state == GameState.LEVEL_TRANSITION:
             remaining = self.level_transition_end - config.game_ticks()
             fade = 1 - remaining / LEVEL_FADE_MS
-        elif s in (GameState.PLAYING, GameState.BOSS_FIGHT):
+        elif self.state in (GameState.PLAYING, GameState.BOSS_FIGHT):
             fade = (self.level_fade_in_until - self._level_title_ticks()) / LEVEL_FADE_MS
+        else:
+            return 0
+        return round(255 * max(0, min(1, fade)))
+
+    def draw(self, ui_labels=None, draw_background=True, *, draw_level_fade=True, draw_intro_scrim=True):
+        s = self.state
+        fade = self.level_fade_alpha()
         self._ui_labels = None if fade > 0 else ui_labels
         if s == GameState.OPENING:
             self.draw_opening(config.SCR)
@@ -4258,7 +4310,8 @@ class Game:
             else:
                 self.bg_transition_prev = None
         if self.web_level_intro_active() or self.campaign_boss_intro_active():
-            self._draw_scrim(100)
+            if draw_intro_scrim:
+                self._draw_scrim(100)
             self._draw_level_title()
         elif s == GameState.DIFFICULTY_SELECT: self._draw_difficulty_select()
         elif s == GameState.CUSTOM_DIFFICULTY: self._draw_custom_difficulty()
@@ -4281,8 +4334,8 @@ class Game:
         elif s == GameState.PAID_REVIVE: self._draw_game(); self._draw_pause_overlay()
         if self.player_hit_impact is not None:
             self._draw_player_hit_impact()
-        if fade > 0:
-            self._draw_scrim(round(255 * min(1, fade)), (0, 0, 0))
+        if fade and draw_level_fade:
+            self._draw_scrim(fade, (0, 0, 0))
         if self.exit_confirmation:
             self._draw_pause_overlay()
         self._ui_labels = None
@@ -4591,7 +4644,7 @@ class Game:
         boss = self.boss
         width = 420 if config.MOBILE_LANDSCAPE_VIEW else 144
         x = (config.SCREEN_WIDTH - width) // 2 if config.MOBILE_LANDSCAPE_VIEW else 178
-        y = 8
+        y = config.WEB_SAFE_INSETS[1] + 8
         now = config.game_ticks()
         entering = now < boss.intro_until
         accent = (255, 184, 112) if entering else (100, 176, 192)
@@ -4782,18 +4835,18 @@ class Game:
                                 pygame.Rect(text_left, top + 68, text_width, 24), align='center')
         boss_slot = pygame.Rect(boss_x - boss_width // 2, top - (28 if compact else 67),
                                 boss_width + (12 if compact else 20), 100 if compact else 146)
-        self._draw_level_title_art(level, boss, enemy_center, boss_slot, compact)
+        self._draw_level_title_art(level, enemy_center, boss_slot, compact)
 
-    def _draw_level_title_art(self, level, boss, center, boss_slot, compact):
-        enemies, _ = LEVEL_TITLE_ART[level - 1]
-        art = [image_asset(f'enemies/enemy_{key}.png') for key in enemies]
+    def _draw_level_title_art(self, level, center, boss_slot, compact):
+        *enemies, boss = level_title_assets(level)
+        art = [image_asset(name) for name in enemies]
         icon_width = 28 if compact else 30
         step = icon_width + 5
         art = [image for image in art if image is not None]
         x = center[0] - (len(art) * step - 5) // 2
         slots = [(image, pygame.Rect(x + i * step, center[1] - 14, icon_width, 28))
                  for i, image in enumerate(art)]
-        boss_art = image_asset(boss.get('sprite_asset', f"bosses/{boss['key']}.png"))
+        boss_art = image_asset(boss)
         if boss_art is not None:
             slots.append((boss_art, boss_slot))
 
@@ -4966,7 +5019,8 @@ class Game:
 
     @property
     def hud_fps_rect(self):
-        return pygame.Rect(111, 88 if self.infinite_mode else 66, 49, 21)
+        x, y, _, _ = config.WEB_SAFE_INSETS
+        return pygame.Rect(x + 111, y + (88 if self.infinite_mode else 66), 49, 21)
 
     @property
     def hud_diagnostics_y(self):
@@ -4991,34 +5045,36 @@ class Game:
 
     def _draw_hud(self):
         now = config.game_ticks()
-        self._draw_panel(8, 8, 162, self.hud_diagnostics_y - 9, accent=(89, 188, 206), fill=(6, 23, 37), r=10, alpha=219)
+        sx, sy, _, _ = config.WEB_SAFE_INSETS
+        self._draw_panel(sx + 8, sy + 8, 162, self.hud_diagnostics_y - 9,
+                         accent=(89, 188, 206), fill=(6, 23, 37), r=10, alpha=219)
         if self.desktop_controls and isinstance(config.SCR, RenderSurface):
             source = image_asset('ui/coin.png') or self.coin_surface
-            config.SCR.blit(source, (16, 13), logical_size=self.coin_surface.get_size(), static=True)
+            config.SCR.blit(source, (sx + 16, sy + 13), logical_size=self.coin_surface.get_size(), static=True)
         else:
-            config.SCR.blit(self.coin_surface, (16, 13))
-        self._draw_text_fit(str(self.player.gold), self.font_small, GOLD_COLOR, pygame.Rect(42, 10, 46, 26))
+            config.SCR.blit(self.coin_surface, (sx + 16, sy + 13))
+        self._draw_text_fit(str(self.player.gold), self.font_small, GOLD_COLOR, pygame.Rect(sx + 42, sy + 10, 46, 26))
         if self.player.current_weapon:
             self._draw_text_fit(WEAPON_DEFS[self.player.current_weapon].name, self.font_tiny,
-                                (166, 213, 228), pygame.Rect(77, 11, 83, 24), align='right')
-        Draw.line(config.SCR, (55, 102, 121), (17, 38), (160, 38))
+                                (166, 213, 228), pygame.Rect(sx + 77, sy + 11, 83, 24), align='right')
+        Draw.line(config.SCR, (55, 102, 121), (sx + 17, sy + 38), (sx + 160, sy + 38))
         self._draw_text_fit(f'第 {self.chapter} 章  ·  击杀 {self.kill_count}', self.font_tiny, WHITE,
-                            pygame.Rect(17, 43, 143, 21))
+                            pygame.Rect(sx + 17, sy + 43, 143, 21))
         if self.infinite_mode:
             self._draw_text_fit(f'积分 {self.score}', self.font_tiny, (180, 220, 232),
-                                pygame.Rect(17, 66, 68, 21))
+                                pygame.Rect(sx + 17, sy + 66, 68, 21))
             self._draw_text_fit(f'死亡次数 {self.infinite_deaths}', self.font_tiny, (180, 220, 232),
-                                pygame.Rect(87, 66, 73, 21), align='right')
+                                pygame.Rect(sx + 87, sy + 66, 73, 21), align='right')
             minutes, seconds = divmod((now - self.infinite_start_time) // 1000, 60)
             self._draw_text_fit(f'用时 {minutes:02d}:{seconds:02d}', self.font_tiny,
-                                (180, 220, 232), pygame.Rect(17, 88, 90, 21))
+                                (180, 220, 232), pygame.Rect(sx + 17, sy + 88, 90, 21))
         else:
             self._draw_text_fit(f'第 {self.current_level} 关  ·  生命 {self.lives}', self.font_tiny,
-                                (180, 220, 232), pygame.Rect(17, 66, 90, 21))
+                                (180, 220, 232), pygame.Rect(sx + 17, sy + 66, 90, 21))
         if self.difficulty:
             y = 110 if self.infinite_mode else 88
             self._draw_text_fit(f'难度 {self.difficulty.name}', self.font_tiny,
-                                (180, 220, 232), pygame.Rect(17, y, 143, 21))
+                                (180, 220, 232), pygame.Rect(sx + 17, sy + y, 143, 21))
         left, health, right = self._hud_controls()
         labels = self._ui_labels
         # Keep the bottom controls and their text behind the player on every frame.
@@ -5057,11 +5113,18 @@ class Game:
         return tuple((pygame.Rect(x + 2, row_y, 42, 36), pygame.Rect(x + 108, row_y, 42, 36))
                      for row_y in (y - 91, y - 45))
 
+    def _pause_quality_rects(self):
+        x, y = config.SCREEN_WIDTH // 2, config.SCREEN_HEIGHT // 2 - 137
+        return pygame.Rect(x + 2, y, 70, 36), pygame.Rect(x + 80, y, 70, 36)
+
     def _draw_pause_overlay(self, *, shade=145):
         self._draw_scrim(shade, (0, 10, 28))
         settings = self.state == GameState.PAUSED and not self.exit_confirmation
         glass = settings or self.exit_confirmation
         pw, ph = 320, 228 if settings else 150
+        quality_row = settings and self.desktop_controls and not self.web
+        if quality_row:
+            ph += 46
         px, py = config.SCREEN_WIDTH // 2 - pw // 2, config.SCREEN_HEIGHT // 2 + 75 - ph
         blue = ((30, 63, 85), (93, 145, 171), (237, 249, 255))
         amber = ((230, 156, 89), (255, 219, 176), (57, 31, 32))
@@ -5086,9 +5149,18 @@ class Game:
         self._draw_title_text(title, title_rect, accent=(115, 205, 255))
         if settings:
             volume, zoom = self._pause_settings_rects()
-            for y in (volume[0].top - 8, zoom[0].bottom + 8):
+            quality_buttons = self._pause_quality_rects() if quality_row else ()
+            first = quality_buttons or volume
+            for y in (first[0].top - 8, zoom[0].bottom + 8):
                 Draw.line(config.SCR, (62, 112, 133), (px + 14, y), (px + pw - 14, y))
             disabled = ((21, 39, 52), (53, 79, 94), (142, 170, 183))
+            if quality_row:
+                self._draw_text_fit('画质', self.font_small, WHITE,
+                                    pygame.Rect(px + 10, first[0].y, 134, first[0].h))
+                selected = ((34, 106, 122), (132, 224, 232), (246, 255, 255))
+                for quality, rect in zip((2, 4), quality_buttons):
+                    self._draw_button(f'{quality}K', *rect,
+                                      palette=selected if quality == self.desktop_quality else blue)
             rows = (('背景音乐', music_volume_percent(), 0, 100, volume),
                     ('画面缩放', self.actor_scale_percent, ACTOR_SCALE_MIN, ACTOR_SCALE_MAX, zoom))
             for label, value, minimum, maximum, (decrease, increase) in rows:
@@ -5223,32 +5295,11 @@ class Game:
             blit = target.blit_pixels
             shadow_offset = 1
             logical_size, bold = self._ui_font_styles[font]
-            size = target.length(logical_size)
-            font = self._desktop_font(size, bold)
-            text_w, text_h = font.size(text)
-            fit = min(1, max(1, rect.w) / max(1, text_w), max(1, rect.h) / max(1, text_h))
-            if fit < 1:
-                size = max(1, int(size * fit))
-                font = self._desktop_font(size, bold)
-            while size > 1 and (font.size(text)[0] > rect.w or font.get_height() > rect.h):
-                size -= 1
-                font = self._desktop_font(size, bold)
-        small_native = native and size <= 18
-        if small_native:
-            glyph_size = font.size(text)
-            large_font = self._desktop_font(size * 2, bold)
-            s = small_desktop_label(large_font, text, tuple(color[:3]), glyph_size)
-            shadow = small_desktop_label(large_font, text, (0, 8, 20), glyph_size, alpha=100)
+            s, shadow = self._desktop_label(text, target.length(logical_size), bold, tuple(color), rect.size)
         else:
-            s = font.render(text, True, color)
-            shadow = font.render(text, True, (0, 8, 20))
-        max_w, max_h = max(1, rect.w), max(1, rect.h)
-        if not native and (s.get_width() > max_w or s.get_height() > max_h + 2):
-            scale = min(max_w / max(1, s.get_width()), max_h / max(1, s.get_height()))
-            nw = max(1, int(s.get_width() * scale))
-            nh = max(1, int(s.get_height() * scale))
-            s = pygame.transform.smoothscale(s, (nw, nh))
-            shadow = pygame.transform.smoothscale(shadow, (nw, nh))
+            s, shadow = _logical_label(text, font, tuple(color), rect.size)
+            if isinstance(target, RenderSurface):
+                blit = lambda image, position: target.blit(image, position, static=True)
         if align == 'center':
             pos = s.get_rect(center=rect.center)
         elif align == 'right':
@@ -5257,6 +5308,24 @@ class Game:
             pos = s.get_rect(midleft=(rect.left, rect.centery))
         blit(shadow, pos.move(shadow_offset, shadow_offset))
         blit(s, pos)
+
+    def _rasterize_desktop_label(self, text, size, bold, color, bounds):
+        width, height = bounds
+        font = self._desktop_font(size, bold)
+        text_w, text_h = font.size(text)
+        fit = min(1, max(1, width) / max(1, text_w), max(1, height) / max(1, text_h))
+        if fit < 1:
+            size = max(1, int(size * fit))
+            font = self._desktop_font(size, bold)
+        while size > 1 and (font.size(text)[0] > width or font.get_height() > height):
+            size -= 1
+            font = self._desktop_font(size, bold)
+        if size <= 18:
+            glyph_size = font.size(text)
+            large_font = self._desktop_font(size * 2, bold)
+            return (small_desktop_label(large_font, text, color[:3], glyph_size),
+                    small_desktop_label(large_font, text, (0, 8, 20), glyph_size, alpha=100))
+        return font.render(text, True, color), font.render(text, True, (0, 8, 20))
 
     def _desktop_font(self, size, bold):
         key = size, bold
@@ -5279,8 +5348,9 @@ class Game:
     def _draw_scrim(self, alpha, color=(2, 16, 25)):
         target = config.SCR
         size = target.get_size()
-        transparent_layer = self.web and isinstance(target, RenderSurface)
-        if transparent_layer:
+        rendered = isinstance(target, RenderSurface)
+        transparent_layer = self.web and rendered
+        if rendered:
             size = tuple(target.length(value) for value in size)
         key = size, color, transparent_layer
         if getattr(self, '_scrim_key', None) != key:
@@ -5288,7 +5358,7 @@ class Game:
             self._scrim = pygame.Surface(size, pygame.SRCALPHA) if transparent_layer else pygame.Surface(size).convert()
             self._scrim.fill(color)
         self._scrim.set_alpha(alpha)
-        if transparent_layer:
+        if rendered:
             target.blit_pixels(self._scrim, target.offset)
         else:
             target.blit(self._scrim, (0, 0))

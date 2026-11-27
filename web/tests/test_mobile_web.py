@@ -34,6 +34,20 @@ class MobileWebTests(unittest.TestCase):
         config.update_mobile_view((480, 850))
         self.game = Game()
 
+    def test_safe_area_moves_touch_controls_without_shrinking_the_scene(self):
+        baseline = {action: center for action, center, *_ in self.game.mobile_controls._buttons(self.game)}
+        left, top, right, bottom = 12, 14, 16, 20
+        with patch.object(config, 'WEB_SAFE_INSETS', (left, top, right, bottom)):
+            shifted = {action: center for action, center, *_ in self.game.mobile_controls._buttons(self.game)}
+            x, y = baseline['attack']
+            self.assertEqual(shifted['attack'], (x - right, y - bottom))
+            x, y = baseline['pause']
+            self.assertEqual(shifted['pause'], (x - right, y + top))
+            x, y = baseline['weapon:pistol']
+            self.assertEqual(shifted['weapon:pistol'], (x + left, y - bottom))
+            self.assertEqual(self.game._hud_controls()[1].bottom, 850 - bottom - 15)
+            self.assertEqual(config.VIEW_SIZE, (480, 850))
+
     def test_pause_settings_change_actor_size_without_moving_hitboxes(self):
         self.addCleanup(sounds.set_music_volume_percent, sounds.music_volume_percent())
         for desktop in (False, True):
@@ -876,10 +890,10 @@ class MobileWebTests(unittest.TestCase):
         game = self.game
         game._start_infinite_game()
         cycle = len(config.BOSS_DEFS)
-        for defeated, hp, interval in ((0, 30, 4600), (cycle - 1, 264, 3500),
-                                       (cycle, 271, 3360), (2 * cycle, 355, 3220),
-                                       (6 * cycle, 691, 2660), (7 * cycle, 775, 2520),
-                                       (8 * cycle, 859, 2520)):
+        for defeated, hp, interval in ((0, 32, 4400), (cycle - 1, 292, 3300),
+                                       (cycle, 299, 3168), (2 * cycle, 383, 3036),
+                                       (6 * cycle, 719, 2508), (7 * cycle, 803, 2376),
+                                       (8 * cycle, 887, 2376)):
             with self.subTest(defeated=defeated):
                 game.chapter = defeated + 1
                 game.infinite_background_level = defeated % cycle + 1
@@ -1266,7 +1280,7 @@ class MobileWebTests(unittest.TestCase):
             with self.subTest(size=size):
                 config.update_mobile_view(size)
                 rects = self.game._mobile_menu_rects()
-                self.assertEqual(set(rects), {'easy', 'medium', 'hard', 'infinite', 'keys'})
+                self.assertEqual(set(rects), {'easy', 'medium', 'hard', 'infinite', 'keys', 'modes'})
                 cards = list(rects.values())
                 self.assertEqual(len({rect.top for rect in cards}),
                                  1 if config.MOBILE_LANDSCAPE_VIEW else 3)
@@ -2134,7 +2148,7 @@ class MobileWebTests(unittest.TestCase):
                         self.assertFalse(boss.signature_opening_pending)
                         self.assertEqual(boss.signature.impact_at, now + 3000)
                         opening = boss.signature
-                        due = ((opening.end_at if opening.key == 'boss' else now + 3000) + 10000
+                        due = ((opening.end_at if opening.key == 'boss' else now + 3000) + 9400
                                if infinite else now + 11000)
                         with patch.object(boss, 'should_attack', return_value=False), \
                                 patch('game_core.entities.random.random', return_value=1):

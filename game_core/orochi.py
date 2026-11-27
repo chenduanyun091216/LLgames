@@ -165,7 +165,7 @@ class OrochiBoss(Boss):
         self._load_artwork()
 
     def _load_artwork(self):
-        self._hd_artwork = asset_loader.web_hd_assets
+        self._hd_artwork = asset_loader.image_variant()
         self.idle_frames = self._load_idle_frames()
         self.slam_art = _load_art('animations/bosses/boss_orochi_slam.png')
         self.laser_art = _load_art('animations/bosses/boss_orochi_laser.png')
@@ -763,7 +763,7 @@ class OrochiBoss(Boss):
         Draw.circle(surf, (255, 238, 201, 225), (round(x), round(y)), radius, 2)
 
     def draw(self, surf, *, visual_scale=1):
-        if self._hd_artwork != asset_loader.web_hd_assets:
+        if self._hd_artwork != asset_loader.image_variant():
             self._load_artwork()
         now = config.game_ticks()
         age = self.age(now)

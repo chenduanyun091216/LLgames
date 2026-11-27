@@ -211,35 +211,27 @@ assert.match(frameStats.textContent, /联机 · 30 FPS · 浏览器 rAF 60 Hz/);
 assert.match(frameStats.textContent, />50ms 0/);
 assert.strictEqual(refreshCallbacks.length, 1);
 
-// The game can fill inset edges immediately after presenting.
+// The scene spans the viewport while safe-area bounds are sent to the controls.
 let insetCallback;
 context.ResizeObserver = class { constructor(fn) { insetCallback = fn; } observe() {} };
-const paint = [];
-let gameBounds = {left: 20, right: 824, top: 0, bottom: 370, width: 804, height: 370};
-Object.assign(canvas, {clientWidth: 804, clientHeight: 370});
+const gameBounds = {left: 0, right: 844, top: 0, bottom: 390};
+let safeBounds = {left: 20, right: 824, top: 0, bottom: 370};
+Object.assign(canvas, {clientWidth: 844, clientHeight: 390});
 canvas.getBoundingClientRect = () => gameBounds;
 context.navigator.platform = 'MacIntel';
 context.navigator.maxTouchPoints = 5;
 gameCanvas.style = {setProperty(key, value) { this[key] = value; }};
 gameCanvas.toggleAttribute = (key, enabled) => gameCanvas[key] = enabled;
-elements['ttgames-safe-area-fill'] = {
-    clientWidth: 844, clientHeight: 390,
-    getBoundingClientRect: () => ({left: 0, top: 0, width: 844, height: 390}),
-    getContext: () => ({drawImage(...args) { paint.push(args); }}),
-};
+elements['ttgames-safe-area'] = {getBoundingClientRect: () => safeBounds};
 vm.runInNewContext(fs.readFileSync('web/shell.js', 'utf8'), context);
 context.window.ttgamesSetSceneSize(640, 320, 960, 480);
 assert.strictEqual(gameCanvas['data-scene-crop'], true);
 assert.strictEqual(gameCanvas.style['--scene-scale-x'], 1.5);
-assert.strictEqual(context.window.ttgamesViewportWidth, 804);
-insetCallback();
-context.window.ttgamesFillSafeArea();
-assert.strictEqual(paint.length, 5);
-assert(paint.some(call => call[1] === 639));
+assert.strictEqual(context.window.ttgamesViewportWidth, 844);
+assert.strictEqual(context.window.ttgamesViewportHeight, 390);
+assert.strictEqual(context.window.ttgamesSafeArea, '20,0,20,20');
 context.window.ttgamesSetSceneSize(960, 480, 960, 480);
 assert.strictEqual(gameCanvas['data-scene-crop'], false);
-gameBounds = {left: 0, right: 844, top: 0, bottom: 390, width: 844, height: 390};
-Object.assign(canvas, {clientWidth: 844, clientHeight: 390});
+safeBounds = gameBounds;
 insetCallback();
-context.window.ttgamesFillSafeArea();
-assert.strictEqual(paint.length, 5);
+assert.strictEqual(context.window.ttgamesSafeArea, '0,0,0,0');

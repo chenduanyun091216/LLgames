@@ -61,6 +61,7 @@ SCR = None
 VIEW_SCALE = 1.0
 VIEW_OFFSET = (0, 0)
 VIEW_SIZE = (SCREEN_WIDTH, SCREEN_HEIGHT)
+WEB_SAFE_INSETS = (0, 0, 0, 0)
 
 
 def update_mobile_view(window_size, layout_size=None, *, render_size=None):
@@ -487,7 +488,7 @@ CAMPAIGN_SPECIAL_ENEMY_ATTACKS = {
                    'speed': 5.2, 'aimed': True, 'color': (123, 241, 194)},
 }
 CAMPAIGN_ENEMY_ATTACK_MS = ((10500, 14500), (7500, 10500), (5500, 8200))
-INFINITE_ENEMY_ATTACK_MS = (5200, 8200)
+INFINITE_ENEMY_ATTACK_MS = (4900, 7700)
 CAMPAIGN_TEMPLE_FAN_ENEMIES = ('ancient_ray', 'ancient_seahorse')
 CAMPAIGN_TEMPLE_FAN_ANGLES = ((0,), (-9, 9), (-16, 0, 16))
 TRENCH_FAN_ANGLES = ((-24, 0, 24), (-24, -8, 8, 24), (-28, -14, 0, 14, 28))
@@ -524,14 +525,18 @@ RIFLE_DAMAGE_PER_LEVEL = 0.10
 RIFLE_SPEED_PER_LEVEL = 0.15
 RIFLE_RED_CHANCES = (0.08, 0.11, 0.14)
 RIFLE_BLAST_RADIUS = 100
-SHOTGUN_DAMAGE_PER_LEVEL = 0.20
+SHOTGUN_DAMAGE_PER_LEVEL = 0.36
 SHOTGUN_EXTRA_CHANCES = (0.18, 0.24, 0.30)
+SHOTGUN_MAX_CENTER_DAMAGE_SHARE = 0.60
+SNIPER_DAMAGE_PER_LEVEL = 0.70
+SNIPER_SPEED_PER_LEVEL = 0.10
 SNIPER_MISSILE_INTERVAL = 4
 SNIPER_HASTE_CHANCES = (0.22, 0.28, 0.34)
 SNIPER_HASTE_MS = 3000
 SNIPER_HASTE_SPEED = 1.5
-SNIPER_MISSILE_DAMAGE = (3.25, 4.25, 5.25)
+SNIPER_MISSILE_DAMAGE = (4.0, 4.8, 5.55)
 SNIPER_MISSILE_RADIUS = 64
+SNIPER_RETURN_DAMAGE_MULT = 0.05
 WEAPON_UPGRADE_DESCRIPTIONS = {
     'pistol': ('手枪不可强化',),
     'rifle': (
@@ -539,11 +544,12 @@ WEAPON_UPGRADE_DESCRIPTIONS = {
         '各级爆炸红弹概率 ' + '/'.join(f'{chance:.0%}' for chance in RIFLE_RED_CHANCES),
     ),
     'shotgun': (
-        f'每级弹丸伤害 +{SHOTGUN_DAMAGE_PER_LEVEL:.0%}',
+        f'每级散射伤害 +{SHOTGUN_DAMAGE_PER_LEVEL:.0%}，强化会集中中央弹丸伤害',
         '各级四发散射概率 ' + '/'.join(f'{chance:.0%}' for chance in SHOTGUN_EXTRA_CHANCES),
     ),
     'sniper': (
-        f'每 {SNIPER_MISSILE_INTERVAL} 发一枚追踪导弹，爆炸分裂 1/2/3 枚',
+        f'每级普弹伤害 +{SNIPER_DAMAGE_PER_LEVEL:g}、射速 +{SNIPER_SPEED_PER_LEVEL:.0%}',
+        f'每 {SNIPER_MISSILE_INTERVAL} 发一枚追踪导弹，分裂导弹回中原目标时伤害较低',
         '导弹基础伤害 ' + '/'.join(f'{damage:g}' for damage in SNIPER_MISSILE_DAMAGE),
         f'发射导弹时可使射速 +{SNIPER_HASTE_SPEED - 1:.0%}，持续 {SNIPER_HASTE_MS / 1000:g} 秒',
         '射速加成概率 ' + '/'.join(f'{chance:.0%}' for chance in SNIPER_HASTE_CHANCES),
@@ -551,19 +557,22 @@ WEAPON_UPGRADE_DESCRIPTIONS = {
 }
 
 # 无限模式 Boss 首轮参数，按 BOSS_DEFS 顺序排列。
-INFINITE_BOSS_HP = (30, 44, 62, 84, 108, 134, 158, 180, 204, 224, 244, 264)
-INFINITE_BOSS_ATTACK_MS = (4600, 4300, 4050, 3800, 3600, 3450, 5400, 3900, 4450, 4650, 4150, 3500)
+INFINITE_BOSS_HP = (32, 48, 68, 92, 120, 150, 176, 200, 226, 248, 270, 292)
+INFINITE_BOSS_ATTACK_MS = (4400, 4100, 3850, 3600, 3400, 3250, 5100, 3700, 4200, 4400, 3900, 3300)
 INFINITE_REINFORCEMENT_MS = (5500, 5000, 4600, 4300, 4000, 4200, 4300, 4600, 5800, 6200, 0, 0)
 INFINITE_REINFORCEMENT_CAP = (1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 0, 0)
 INFINITE_PROGRESSION = {
     'boss_hp_per_chapter': 7,
     'boss_attack_reduction_per_round': 4,
     'boss_attack_min_percent': 72,
+    'boss_signature_repeat_ms': 9400,
     'reinforcement_reduction_per_round': 5,
     'reinforcement_min_percent': 75,
     'reinforcement_extra_cap': 2,
+    'enemy_health_start_percent': 108,
     'enemy_health_first_round_step': 2,
     'enemy_health_per_chapter': 3,
+    'enemy_special_opening_reduction_ms': 200,
     'enemy_move_start': 1.20,
     'enemy_move_per_round': 0.04,
     'enemy_move_max': 1.36,

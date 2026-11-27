@@ -4,12 +4,13 @@ PC, browser and authoritative multiplayer use these exact objects.  Network
 adapters may serialize ABYSS_PROJECTILE_FIELDS, but must not reimplement damage.
 Angles use the game's convention: zero points down, positive points right.
 """
+from functools import lru_cache
 import math
 import random
 import pygame
 
 from . import animation, config
-from .asset_loader import image_asset
+from .asset_loader import image_asset, scale_surface_cached
 from .entities import Boss, BossProjectile
 from .render import Draw, RenderSurface, blit_effect, effect_layer
 from .visuals import draw_glow, draw_missile_trail
@@ -50,20 +51,38 @@ EMP_DASH_MS = 360
 EMP_RETURN_MS = 480
 EMP_ORB_COUNT = 8
 EMP_ORB_ASSET = 'effects/mecha_emp_iron_ball.png'
+BOSS_EFFECT_IMAGES = {
+    'boss_mecha_lizard': (EFFECT_ASSETS['guided_missile'], EFFECT_ASSETS['molten_burst'],
+                          EMP_ORB_ASSET, 'animations/bosses/anim_boss_mecha_lizard.png'),
+    'boss_ancient_whale': (EFFECT_ASSETS['tidal_crescent'], EFFECT_ASSETS['rune_geyser'],
+                           EFFECT_ASSETS['ancient_pearl'], 'enemies/enemy_ancient_rift.png'),
+}
 
 
-def _blit(surf, image, center, size):
-    """Scale from the source PNG at the actual output resolution."""
-    scale = surf.scale if isinstance(surf, RenderSurface) else 1
-    size = tuple(max(1, round(v * scale)) for v in size)
-    if image.get_size() != size:
-        image = pygame.transform.smoothscale(image, size)
-    center = surf.point(center) if isinstance(surf, RenderSurface) else center
-    position = image.get_rect(center=(round(center[0]), round(center[1]))).topleft
-    if isinstance(surf, RenderSurface):
-        surf.blit_pixels(image, position)
-    else:
-        surf.blit(image, position)
+def _blit(surf, image, center, size=None):
+    """Draw a centered image, optionally scaling it to a logical size."""
+    rendered = isinstance(surf, RenderSurface)
+    if size is not None:
+        scale = surf.scale if rendered else 1
+        image = scale_surface_cached(image, tuple(round(v * scale) for v in size))
+    center = surf.point(center) if rendered else tuple(round(v) for v in center)
+    blit = surf.blit_pixels if rendered else surf.blit
+    blit(image, image.get_rect(center=center).topleft)
+
+
+@lru_cache(maxsize=24)
+def _molten_frame(image, size, angle):
+    # The rotated canvas still fits the same square used by the original effect.
+    source_size = image.get_size()
+    shrink = min(1, max(size) / max(source_size))
+    image = scale_surface_cached(image, tuple(round(length * shrink) for length in source_size))
+    rotated = pygame.transform.rotate(image, angle)
+    return pygame.transform.smoothscale(rotated, size) if rotated.get_size() != size else rotated
+
+
+@lru_cache(maxsize=8)
+def _whale_swim_frame(image, direction):
+    return pygame.transform.rotate(image, 7 * direction)
 
 
 class AbyssProjectile(BossProjectile):
@@ -331,18 +350,19 @@ class AbyssProjectile(BossProjectile):
         nearest = math.hypot(nearest_x - self.x, nearest_y - self.y)
         return nearest <= self.r
 
-    def _missile_art(self, image):
+    def _missile_art(self, image, scale):
         # The PNG includes a long exhaust above its downward-facing nose.
         # Preserve its aspect ratio and anchor the nose, not the whole canvas,
         # to the circular gameplay hitbox. Rotation shares that same pivot.
-        factor = self.r * 3 / image.get_width()
-        height = image.get_height() * factor
+        width = self.r * 3
+        height = width * image.get_height() / image.get_width()
         rad = math.radians(self.angle)
         center = (self.x - math.sin(rad) * height * .40,
                   self.y - math.cos(rad) * height * .40)
+        image = scale_surface_cached(image, (round(width * scale), round(height * scale)))
         if self.angle:
             image = pygame.transform.rotate(image, self.angle)
-        return image, tuple(v * factor for v in image.get_size()), center
+        return image, center
 
     def draw(self, surf):
         if not self.alive:
@@ -418,12 +438,22 @@ class AbyssProjectile(BossProjectile):
             effect_size = (max(1, round(self.width * scale)),
                            max(1, round(self.height * 2.2 * scale)))
         image = image_asset(EFFECT_ASSETS[self.skill], effect_size)
+        if self.skill == 'guided_missile':
+            if active:
+                draw_missile_trail(surf, getattr(self, 'missile_trail', ()), 9)
+            elif self.missile_pass != 2:
+                return
+            if image is not None:
+                sprite, center = self._missile_art(image, scale)
+                if not active:
+                    sprite = sprite.copy()
+                    sprite.set_alpha(115)
+                _blit(surf, sprite, center)
+            elif active:
+                Draw.rect(surf, color, self.bounds(), 2)
+            return
         if not active:
             if self.skill in FACTORY_SKILLS:
-                if image is not None and self.skill == 'guided_missile' and self.missile_pass == 2:
-                    preview, size, center = self._missile_art(image.copy())
-                    preview.set_alpha(115)
-                    _blit(surf, preview, center, size)
                 return
             rad = math.radians(self.angle)
             Draw.line(surf, color, (self.x, self.y),
@@ -432,28 +462,21 @@ class AbyssProjectile(BossProjectile):
             if image is not None and self.skill not in LANES + RINGS:
                 preview = image.copy()
                 preview.set_alpha(100)
-                if self.skill == 'guided_missile':
-                    preview, size, center = self._missile_art(preview)
-                    _blit(surf, preview, center, size)
-                else:
-                    _blit(surf, preview, (self.x, self.y), (self.r * 3, self.r * 3))
+                _blit(surf, preview, (self.x, self.y), (self.r * 3, self.r * 3))
             return
-        if self.skill == 'guided_missile':
-            draw_missile_trail(surf, getattr(self, 'missile_trail', ()), 9)
         if image is None:
             Draw.rect(surf, color, self.bounds(), 2)
             return
         if self.skill in LANES:
             size = (self.width * 1.35, self.height)
             center = (self.x, self.y + self.height / 2)
-        elif self.skill == 'guided_missile':
-            image, size, center = self._missile_art(image)
         elif self.skill == 'tidal_crescent':
             size, center = (self.width, self.height * 2.2), (self.x, self.y)
         else:
             size, center = (self.r * 3, self.r * 3), (self.x, self.y)
-            if self.angle and self.skill not in ('ancient_pearl', 'pearl_fragment'):
-                image = pygame.transform.rotate(image, self.angle)
+            if self.skill == 'molten_burst' and self.angle:
+                side = max(1, round(size[0] * scale))
+                image = _molten_frame(image, (side, side), self.angle)
         _blit(surf, image, center, size)
 
     def _draw_geyser(self, surf, color):
@@ -778,17 +801,18 @@ class AncientWhaleBoss(AbyssBoss):
                 return
         else:
             edge = atlas.get_width() // 8
-            art = atlas.subsurface((frame * edge, action * edge, edge, edge))
-            if edge != height:
-                art = pygame.transform.smoothscale(art, (height, height))
+            art = scale_surface_cached(animation.square_frame(atlas, frame, edge, row=action), (height, height))
         if skill == 'tidal_crescent' and self.swim_direction < 0:
             art = pygame.transform.flip(art, True, False)
         elif not skill:
             turn = min(1, max(0, (now - self.swim_turn_at) / 420))
-            tilt = -7 * self.swim_direction * math.cos(math.pi * turn)
-            art = pygame.transform.rotate(art, tilt)
+            if turn == 1:
+                art = _whale_swim_frame(art, self.swim_direction)
+            else:
+                tilt = -7 * self.swim_direction * math.cos(math.pi * turn)
+                art = pygame.transform.rotate(art, tilt)
         center = self.x, self.y + self.h / 2
-        _blit(surf, art, center, tuple(side / scale for side in art.get_size()))
+        _blit(surf, art, center)
         if skill in ('whale_suction', 'whale_swallow'):
             mouth_y = self.y + self.h * .81
             for i in range(3):

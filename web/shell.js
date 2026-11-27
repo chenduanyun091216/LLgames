@@ -14,6 +14,7 @@
     const box = document.getElementById('infobox');
     const loading = document.getElementById('ttgames-loading');
     const visibleViewport = window.visualViewport;
+    let updateGameSize;
     if (visibleViewport) {
         const positionViewport = () => {
             if (visibleViewport.width <= 0 || visibleViewport.height <= 0) return;
@@ -22,6 +23,7 @@
             style.setProperty('--game-viewport-top', `${visibleViewport.offsetTop}px`);
             style.setProperty('--game-viewport-right', `${visibleViewport.offsetLeft + visibleViewport.width}px`);
             style.setProperty('--game-viewport-bottom', `${visibleViewport.offsetTop + visibleViewport.height}px`);
+            updateGameSize?.();
             if (loading.hidden) return;
             style.setProperty('--loading-center-x', `${visibleViewport.offsetLeft + visibleViewport.width / 2}px`);
             style.setProperty('--loading-center-y', `${visibleViewport.offsetTop + visibleViewport.height / 2}px`);
@@ -37,11 +39,8 @@
     // iPadOS can request desktop sites and identify itself as a Mac.
     window.ttgamesIPad = /iPad/.test(navigator.userAgent) ||
         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    let sceneWidth, sceneHeight;
     if (window.ttgamesIPad) {
         window.ttgamesSetSceneSize = (width, height, outputWidth, outputHeight) => {
-            sceneWidth = width;
-            sceneHeight = height;
             // Show the scene crop directly at viewport size, with a single browser resampling pass.
             gameCanvas.style.setProperty('--scene-scale-x', outputWidth / width);
             gameCanvas.style.setProperty('--scene-scale-y', outputHeight / height);
@@ -101,51 +100,23 @@
             refreshes = 0;
         };
     }
-    const safeAreaFill = document.getElementById('ttgames-safe-area-fill');
+    const safeArea = document.getElementById('ttgames-safe-area');
     if (gameCanvas && typeof ResizeObserver !== 'undefined') {
-        const updateGameSize = () => {
+        updateGameSize = () => {
             window.ttgamesViewportWidth = canvas.clientWidth;
             window.ttgamesViewportHeight = canvas.clientHeight;
-        };
-        new ResizeObserver(updateGameSize).observe(canvas);
-        updateGameSize();
-        if (safeAreaFill) {
-            const ctx = safeAreaFill.getContext('2d');
-            if (ctx) {
-                let hasInsets = false;
-                const insetObserver = new ResizeObserver(() => {
-                    hasInsets = safeAreaFill.clientWidth > canvas.clientWidth ||
-                                safeAreaFill.clientHeight > canvas.clientHeight;
-                });
-                insetObserver.observe(canvas);
-                insetObserver.observe(safeAreaFill);
-                window.ttgamesFillSafeArea = () => {
-                    if (!hasInsets) return;
-                    const visible = safeAreaFill.getBoundingClientRect();
-                    const game = canvas.getBoundingClientRect();
-                    if (game.width >= visible.width && game.height >= visible.height) return;
-                    const width = Math.round(visible.width), height = Math.round(visible.height);
-                    const sourceWidth = sceneWidth || gameCanvas.width, sourceHeight = sceneHeight || gameCanvas.height;
-                    if (Math.min(width, height, sourceWidth, sourceHeight, game.width, game.height) <= 0) return;
-                    if (safeAreaFill.width !== width) safeAreaFill.width = width;
-                    if (safeAreaFill.height !== height) safeAreaFill.height = height;
-
-                    // Extend the edge pixels under the system insets while keeping the game area intact.
-                    const x = [0, Math.ceil(game.left - visible.left), Math.floor(game.right - visible.left), width];
-                    const y = [0, Math.ceil(game.top - visible.top), Math.floor(game.bottom - visible.top), height];
-                    const sx = [0, 0, sourceWidth - 1], sy = [0, 0, sourceHeight - 1];
-                    for (let row = 0; row < 3; row++) {
-                        for (let col = 0; col < 3; col++) {
-                            if (row === 1 && col === 1) continue;
-                            const w = x[col + 1] - x[col], h = y[row + 1] - y[row];
-                            if (w <= 0 || h <= 0) continue;
-                            ctx.drawImage(gameCanvas, sx[col], sy[row], col === 1 ? sourceWidth : 1,
-                                          row === 1 ? sourceHeight : 1, x[col], y[row], w, h);
-                        }
-                    }
-                };
+            if (safeArea) {
+                const game = canvas.getBoundingClientRect();
+                const safe = safeArea.getBoundingClientRect();
+                window.ttgamesSafeArea = [safe.left - game.left, safe.top - game.top,
+                    game.right - safe.right, game.bottom - safe.bottom]
+                    .map(inset => Math.max(0, Math.ceil(inset))).join(',');
             }
-        }
+        };
+        const layoutObserver = new ResizeObserver(updateGameSize);
+        layoutObserver.observe(canvas);
+        if (safeArea) layoutObserver.observe(safeArea);
+        updateGameSize();
     }
     const progress = loading.querySelector('progress');
     const loadingStatus = loading.querySelector('.loading-status');

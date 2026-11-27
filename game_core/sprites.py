@@ -5,50 +5,71 @@
 import random
 import math
 import pygame
-from .render import Draw, RenderSurface, trim_transparent
+from .render import Draw, RenderSurface
 from functools import lru_cache
-from .asset_loader import image_asset
+from . import asset_loader
+from .asset_loader import image_asset, scale_surface_cached
 from .config import (
     WHITE, BLACK, GOLD_COLOR, make_font,
 )
 
-@lru_cache(maxsize=128)
-def _lit_sprite(image, color, strength):
+def _make_lit_sprite(image, color, strength):
     """Trace the existing alpha silhouette and keep the original sprite on top."""
     width, height = image.get_size()
     mask = pygame.mask.from_surface(image, 100)
     result = pygame.Surface((width + 6, height + 6), pygame.SRCALPHA)
+    outline = pygame.mask.Mask(result.get_size())
     for radius, alpha in ((3, strength // 4), (2, strength // 2), (1, strength)):
+        outline.clear()
         for dx, dy in ((-radius, 0), (radius, 0), (0, -radius), (0, radius)):
-            mask.to_surface(result, setcolor=(*color, alpha), unsetcolor=None,
-                            dest=(3 + dx, 3 + dy))
+            outline.draw(mask, (3 + dx, 3 + dy))
+        outline.to_surface(surface=result, setcolor=(*color, alpha), unsetcolor=None)
     result.blit(image, (3, 3))
     return result
 
 
-@lru_cache(maxsize=128)
-def _resize_sprite(image, size):
+_lit_sprite = lru_cache(maxsize=128)(_make_lit_sprite)
+
+
+def _resize_sprite(image, size, *, prefilter=False):
+    if prefilter:
+        width, height = image.get_size()
+        # Nearby animation sizes share a source with at least 2× the displayed resolution.
+        reduction = min(width // max(1, 2 * size[0]), height // max(1, 2 * size[1]))
+        if reduction >= 2:
+            image = scale_surface_cached(image, (width // reduction, height // reduction))
     return pygame.transform.smoothscale(image, size)
 
 
-def blit_lit_sprite(target, image, position, color, strength=140, source=None, *, angle=0):
+@lru_cache(maxsize=384)
+def _render_lit_sprite(image, size, color, strength, prefilter, angle):
+    sprite = _resize_sprite(image, size, prefilter=prefilter)
+    if angle:
+        sprite = pygame.transform.rotate(sprite, angle)
+    bounds = sprite.get_bounding_rect()
+    cropped = sprite.subsurface(bounds)
+    lit = _make_lit_sprite(cropped, color, strength) if bounds else cropped
+    return lit, bounds.x - sprite.get_width() // 2 - 3, bounds.y - sprite.get_height() // 2 - 3
+
+
+def blit_lit_sprite(target, image, position, color, strength=140, source=None, *, angle=0, logical_size=None):
     if isinstance(target, RenderSurface):
         if isinstance(source, str):
             source = image_asset(source)
-        size = tuple(target.length(value) for value in image.get_size())
-        sprite = _resize_sprite(source or image, size)
+        size = tuple(target.length(value) for value in (logical_size or image.get_size()))
+        prefilter = target.desktop_ui and asset_loader.pc_4k_assets
         x, y = target.point(position)
-        if angle:
-            center = x + size[0] // 2, y + size[1] // 2
-            sprite = pygame.transform.rotate(sprite, angle)
-            x, y = sprite.get_rect(center=center).topleft
-        lit = _lit_sprite(sprite, color, strength)
-        if not target.desktop_ui:
-            art, dx, dy = trim_transparent(lit)
-            target.blit_pixels(art, (x - 3 + lit.get_width() // 2 + dx,
-                                     y - 3 + lit.get_height() // 2 + dy))
-        else:
-            target.blit_pixels(lit, (x - 3, y - 3))
+        step = 8 if prefilter else 4
+        if (prefilter or not target.desktop_ui) and not angle and min(size) >= 128:
+            # Reuse outlines across nearby breathing sizes, keeping the sprite centered.
+            cached_size = tuple((value + step // 2) // step * step for value in size)
+            x += (size[0] - cached_size[0]) // 2
+            y += (size[1] - cached_size[1]) // 2
+            size = cached_size
+        if not angle and not target.surface.get_clip().colliderect(x - 3, y - 3, size[0] + 6, size[1] + 6):
+            return
+        art, dx, dy = _render_lit_sprite(source or image, size, color, strength, prefilter, angle)
+        target.blit_pixels(art, (x + size[0] // 2 + dx, y + size[1] // 2 + dy))
         return
     if angle:
         center = image.get_rect(topleft=position).center

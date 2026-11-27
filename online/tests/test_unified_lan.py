@@ -455,18 +455,25 @@ class IllustratedHomeTests(unittest.TestCase):
                 window = pygame.display.set_mode(size)
                 config.update_mobile_view(size)
                 game = Game(desktop_controls=not web, web=web, mobile_web=web)
-                transport = SimpleNamespace(address='', begin=Mock(), reset=Mock())
+                setup_url = 'http://192.168.1.2:8123/'
+                game_url = 'https://192.168.1.2:8001/'
+                transport = SimpleNamespace(address='', begin=Mock(), reset=Mock(),
+                                            setup_url=setup_url, game_url=game_url, open_home_link=Mock())
                 layout = menu_ui.entrance_rects()
                 self.assertEqual(len({layout[key].width for key in ('single', 'create', 'join')}), 1)
                 self.assertEqual(layout['keys'].width, layout['keys'].height)
-                self.assertEqual(layout['keys'].left - layout['join'].right, 8)
+                self.assertEqual(layout['keys'].left - layout['modes'].right, 8)
                 self.assertEqual(layout['join'].top, layout['keys'].top)
                 _, poster, row = menu_ui._home_boxes(entrances=True)
                 self.assertLess(poster.bottom, row.top)
                 self.assertTrue(config.SCR.get_rect().contains(layout['keys']))
-                for action in layout:
+                links = dict(zip((setup_url, game_url), menu_ui.home_link_rects(2)))
+                for rect in links.values():
+                    self.assertGreater(rect.top, row.bottom)
+                    self.assertTrue(config.SCR.get_rect().contains(rect))
+                for action, rect in {**layout, **links}.items():
                     client = LAN(transport)
-                    x, y = layout[action].center
+                    x, y = rect.center
                     if web:
                         event = pygame.event.Event(pygame.FINGERDOWN, finger_id=1,
                                                    x=x * config.VIEW_SCALE / size[0],
@@ -494,14 +501,20 @@ class IllustratedHomeTests(unittest.TestCase):
                                                            pos=(round(x * config.VIEW_SCALE), round(y * config.VIEW_SCALE)))
                         self.assertTrue(game.handle_events([back_event]))
                         self.assertEqual(client.page, 'home')
+                    elif action == 'modes':
+                        self.assertEqual(client.page, 'single')
+                        self.assertIsNotNone(game.side_game)
                     elif action == 'create':
                         self.assertEqual(client.page, 'room')
                         transport.begin.assert_called_once_with('create', '')
                     elif action == 'join':
                         self.assertEqual(client.page, 'join')
-                    else:
+                    elif action == 'keys':
                         self.assertTrue(client.home_keys)
                         self.assertEqual(game.state, GameState.KEY_SETTINGS)
+                    else:
+                        self.assertEqual(client.page, 'home')
+                        transport.open_home_link.assert_called_with(action)
 
     def test_pc_lobby_shortcuts_dispatch_only_enabled_buttons(self):
         from types import SimpleNamespace

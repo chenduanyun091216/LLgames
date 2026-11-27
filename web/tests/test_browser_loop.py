@@ -55,6 +55,7 @@ class BrowserLoopTests(unittest.IsolatedAsyncioTestCase):
         def events():
             return [pygame.event.Event(pygame.QUIT)] if callbacks[0] >= hz * 2 and not lan else []
         with patch('game_core.main.platform.window', browser, create=True), \
+                patch.object(config, 'WEB_SAFE_INSETS', (0, 0, 0, 0)), \
                 patch('game_core.main.perf_counter', side_effect=lambda: clock[0]), \
                 patch('game_core.main.asyncio.sleep', side_effect=refresh), \
                 patch('game_core.game.Game', side_effect=make_game), \
@@ -78,6 +79,12 @@ class BrowserLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(draws), 240)
         self.assertAlmostEqual(len(updates), 120, delta=1)
 
+    async def test_campaign_prepares_next_panorama_during_playing(self):
+        with patch('game_core.background.load_panorama', return_value=None) as load:
+            await self.run_loop()
+        next_level = [call.args for call in load.call_args_list if call.args[0] == 2]
+        self.assertEqual(next_level, [(2, _browser_size((400, 240), 1.75), 'images-hd')])
+
     async def test_ipad_keeps_hd_output_and_touch_mapping_across_quality_changes(self):
         samples = {}
         scene_sizes = []
@@ -85,9 +92,11 @@ class BrowserLoopTests(unittest.IsolatedAsyncioTestCase):
             screen = pygame.display.get_surface()
             width, height = config.VIEW_SIZE
             if index == 0:
+                browser.ttgamesSafeArea = '20,0,10,15'
                 screen.fill('magenta', (width, 0, 1, height + 1))
                 screen.fill('magenta', (0, height, width + 1, 1))
             elif index == 1:
+                self.assertEqual(config.WEB_SAFE_INSETS, (48, 0, 24, 36))
                 self.assertEqual(screen.get_at((width, height // 2)), screen.get_at((width - 1, height // 2)))
                 self.assertEqual(screen.get_at((width, height)), screen.get_at((width - 1, height - 1)))
             if index in (1, 31, 61, 91):
@@ -97,6 +106,9 @@ class BrowserLoopTests(unittest.IsolatedAsyncioTestCase):
                     output, config.VIEW_SIZE, center)
             if index == 80:
                 browser.innerWidth, browser.innerHeight = 240, 400
+                browser.ttgamesSafeArea = '0,12,0,18'
+            elif index == 91:
+                self.assertEqual(config.WEB_SAFE_INSETS, (0, 24, 0, 36))
 
         with patch.object(pygame.display, 'set_mode', wraps=pygame.display.set_mode) as set_mode:
             await self.run_loop(ipad=True, switch_quality=True, inspect_frame=inspect_frame,

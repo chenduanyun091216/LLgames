@@ -6,6 +6,8 @@ import math, random, struct
 from time import perf_counter
 import pygame
 
+from . import config
+
 _sound_cache = {}
 
 SAMPLE_RATE = 22050
@@ -337,6 +339,14 @@ def _snd_dart_burst():
 
 
 _SOUND_BUILDERS = {
+    'courier_flow': lambda: _gen_fnoise(1.8, 0.1, lp=.06, attack=.15, decay=.9),
+    'courier_power': lambda: _gen_tone(150, 380, .18, 'soft', .18),
+    'courier_leak': lambda: _gen_tone(920, 690, .35, 'soft', .22),
+    'courier_latch': lambda: _gen_tone(520, 220, .12, 'triangle', .23),
+    'courier_whale': lambda: _gen_tone(230, 95, .61, 'sine', .24),
+    'courier_deliver': _snd_level_up,
+    'courier_impact': _snd_player_hit,
+    'courier_cargo': _snd_error,
     'shoot_pistol': _snd_shoot_pistol,
     'shoot_rifle': _snd_shoot_rifle,
     'shoot_shotgun': _snd_shoot_shotgun,
@@ -412,6 +422,7 @@ _MUSIC_THEMES = (
 
 _pending_music = None
 _requested_music = None
+_next_campaign_music = None
 _music_volume = 1.0
 _music_volume_percent = 80
 _MUSIC_TRACK_GAIN = 0.72
@@ -442,8 +453,8 @@ def set_music_volume(volume):
 
 
 def stop_music(fade_ms=0):
-    global _pending_music, _requested_music, _music_volume
-    _pending_music = _requested_music = None
+    global _pending_music, _requested_music, _next_campaign_music, _music_volume
+    _pending_music = _requested_music = _next_campaign_music = None
     _music_volume = 1.0
     if pygame.mixer.get_init():
         channel = pygame.mixer.Channel(_MUSIC_CHANNEL)
@@ -454,38 +465,71 @@ def stop_music(fade_ms=0):
 
 
 def start_music(level=0, boss=False, infinite=False, variant=0):
-    """Queue a track without synthesizing it inside a gameplay update."""
-    global _pending_music, _requested_music
+    """Activate a prepared track, or queue its remaining synthesis."""
+    global _pending_music, _requested_music, _next_campaign_music
     track = (level, boss, infinite, variant)
-    if track != _requested_music:
-        _requested_music = track
-        _pending_music = _music_pcm(*track)
+    if track == _requested_music:
+        return
+    prepared = None
+    if _next_campaign_music is not None and _next_campaign_music[0] == track:
+        prepared = _next_campaign_music[1]
+    previous = _requested_music
+    _requested_music = track
+    _next_campaign_music = None
+    next_level = level + int(boss)
+    if not infinite and 1 <= level <= next_level <= len(config.LEVEL_CONFIGS):
+        next_track = (next_level, not boss, False, 0)
+        _next_campaign_music = (next_track, _music_pcm(*next_track))
+    if isinstance(prepared, bytes):
+        _pending_music = None
+        _play_music_pcm(prepared)
+    else:
+        if previous is not None and pygame.mixer.get_init():
+            pygame.mixer.Channel(_MUSIC_CHANNEL).stop()
+        _pending_music = prepared if prepared is not None else _music_pcm(*track)
 
 
 def advance_music(budget=0.004):
-    """Give synthesis a small frame budget and keep playing the previous track."""
-    global _pending_music, _requested_music
-    if _pending_music is None:
+    """Use the frame budget for the requested track, then the next campaign cue."""
+    global _pending_music, _next_campaign_music
+    deadline = perf_counter() + budget
+    if _pending_music is not None:
+        pcm = _advance_music_pcm(_pending_music, deadline)
+        if pcm is None:
+            return
+        _pending_music = None
+        _play_music_pcm(pcm)
+    if _next_campaign_music is not None:
+        track, work = _next_campaign_music
+        if not isinstance(work, bytes):
+            pcm = _advance_music_pcm(work, deadline)
+            if pcm is not None:
+                _next_campaign_music = (track, pcm)
+
+
+def _advance_music_pcm(work, deadline):
+    try:
+        while perf_counter() < deadline:
+            next(work)
+    except StopIteration as finished:
+        return finished.value
+
+
+def _play_music_pcm(pcm):
+    global _requested_music
+    if not ensure_audio():
+        _requested_music = None
         return
     try:
-        deadline = perf_counter() + budget
-        while perf_counter() < deadline:
-            next(_pending_music)
-    except StopIteration as finished:
-        _pending_music = None
-        if not ensure_audio():
-            _requested_music = None
-            return
-        try:
-            snd = pygame.mixer.Sound(buffer=finished.value)
-            snd.set_volume(_music_sound_volume())
-            channel = pygame.mixer.Channel(_MUSIC_CHANNEL)
-            # SDL captures the channel volume when the fade-in starts.
-            channel.stop()
-            channel.set_volume(_music_volume)
-            channel.play(snd, loops=-1, fade_ms=30)
-        except (pygame.error, AttributeError):
-            _requested_music = None
+        snd = pygame.mixer.Sound(buffer=pcm)
+        snd.set_volume(_music_sound_volume())
+        channel = pygame.mixer.Channel(_MUSIC_CHANNEL)
+        # SDL captures the channel volume when the fade-in starts.
+        channel.stop()
+        channel.set_volume(_music_volume)
+        channel.play(snd, loops=-1, fade_ms=30)
+    except (pygame.error, AttributeError):
+        _requested_music = None
 
 
 def _music_note(cache, midi, seconds, wave, volume, attack, decay):

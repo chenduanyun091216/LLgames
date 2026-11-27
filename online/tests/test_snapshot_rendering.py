@@ -423,6 +423,25 @@ class SnapshotTests(unittest.TestCase):
         self.assertIsNone(p.view.bg_transition_prev)
         self.assertEqual(p.surface.get_size(),(960,720))
 
+    def test_campaign_transition_keeps_boss_music_until_the_next_level(self):
+        previous_time = config.campaign_time_ms
+        self.addCleanup(setattr, config, 'campaign_time_ms', previous_time)
+        with patch('game_core.game.start_music'), patch('online.adapters.presentation.start_music') as music:
+            game = self.campaign_boss(1)
+            presentation = Presentation(pygame.Surface((960, 720)))
+            presentation.apply(encode_world(game))
+            music.assert_called_once_with(1, boss=True)
+            music.reset_mock()
+
+            game._kill_boss()
+            presentation.apply(encode_world(game))
+            music.assert_not_called()
+
+            config.campaign_time_ms = game.level_transition_end
+            game.update()
+            presentation.apply(encode_world(game))
+            music.assert_called_once_with(2, boss=False)
+
     def test_shared_axe_is_visual_only_and_draw_never_simulates(self):
         from online.adapters.core_adapter import SharedReturningAxe
         g=self.campaign_boss(7)

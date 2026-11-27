@@ -7,6 +7,8 @@ os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 import pygame
 from game_core import config
+from game_core.entities import Enemy
+from game_core.game import Game
 from game_core.render import RenderSurface
 from game_core.special_bosses import ZongBoss, ZongReflectBullet
 
@@ -36,6 +38,32 @@ class ZongSkillsTests(unittest.TestCase):
         with patch('game_core.config.game_ticks', return_value=8001):
             boss.update()
             self.assertEqual(boss.snow_until, 8000)
+
+    def test_split_body_resistance_uses_mode_and_damage_source(self):
+        for mode, resisted in (('easy', 1), ('medium', .75), ('hard', .5), ('infinite', .5)):
+            with self.subTest(mode=mode):
+                game = Game()
+                game.current_level = 8
+                game.infinite_boss_index = 7
+                game.infinite_mode = mode == 'infinite'
+                game.difficulty = config.DIFFICULTY_PRESETS['hard' if game.infinite_mode else mode]
+                with patch('game_core.game.start_music'), patch('game_core.game.play_sound'):
+                    if game.infinite_mode:
+                        game._trigger_infinite_boss()
+                    else:
+                        game._trigger_boss()
+                boss = game.boss
+                self.assertIsInstance(boss, ZongBoss)
+                boss.y = Enemy.ENTRY_DAMAGE_Y
+                for index, box in enumerate(boss.hitboxes()):
+                    for source in ('bullet', 'skill'):
+                        with self.subTest(index=index, source=source):
+                            before = boss.body_hp[:]
+                            boss.hit_by('pistol', 2, source=source, hit_rect=box)
+                            reduced = source == ('bullet', 'skill')[index]
+                            self.assertAlmostEqual(before[index] - boss.body_hp[index],
+                                                   2 * (resisted if reduced else 1))
+                            self.assertEqual(before[1 - index], boss.body_hp[1 - index])
 
     def test_opening_and_rage_snow_use_difficulty_durations(self):
         for tier, duration in enumerate((3000, 4000, 5000)):

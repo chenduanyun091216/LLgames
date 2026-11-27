@@ -72,8 +72,10 @@ class WeaponUpgradeEffectsTests(unittest.TestCase):
                 self.assertEqual([b.color for b in shots],
                                  [(255, 230, 40), (255, 55, 45), (255, 55, 45), (255, 230, 40)])
                 self.assertEqual([b.radius for b in shots], [10, 13, 13, 10])
-                for b in shots:
-                    self.assertAlmostEqual(b.damage, config.CAMPAIGN_BULLET_DAMAGE['shotgun'] * (1 + .2 * level))
+                total_damage = 4 * (1 + .36 * level)
+                center_damage = total_damage * (.5 + (.6 - .5) * level / 3)
+                self.assertAlmostEqual(sum(b.damage for b in shots), total_damage)
+                self.assertAlmostEqual(sum(b.damage for b in shots[1:3]), center_damage)
 
     def test_unupgraded_weapons_do_not_roll_for_special_effects(self):
         for weapon in ('rifle', 'shotgun', 'sniper'):
@@ -87,6 +89,7 @@ class WeaponUpgradeEffectsTests(unittest.TestCase):
             with self.subTest(level=level):
                 game = self.game('sniper', level)
                 self.fire(game, 0).assert_not_called()
+                self.assertAlmostEqual(game.bullets[0].damage, 3.25 + .7 * level)
                 game.player.sniper_shots = 3
                 self.fire(game, chance).assert_called_once_with()
                 self.assertEqual(game.player.sniper_haste_until, 0)
@@ -94,8 +97,9 @@ class WeaponUpgradeEffectsTests(unittest.TestCase):
                 self.fire(game, chance - .001).assert_called_once_with()
                 self.assertEqual(game.player.sniper_haste_until, 13000)
                 self.assertEqual(game.bullets[0].damage, config.SNIPER_MISSILE_DAMAGE[level - 1])
-                normal_gap = math.ceil(config.WEAPON_DEFS['sniper'].fire_rate / .70)
-                fast_gap = math.ceil(normal_gap / 1.5)
+                delay = math.ceil(config.WEAPON_DEFS['sniper'].fire_rate / .70) / (1 + .10 * level)
+                normal_gap = math.ceil(delay)
+                fast_gap = math.ceil(delay / 1.5)
                 for now, gap in ((12999, fast_gap), (13000, normal_gap)):
                     game.player.last_shot_time = now - gap + 1
                     self.assertFalse(game.player.can_shoot(now))
@@ -178,7 +182,7 @@ class WeaponUpgradeEffectsTests(unittest.TestCase):
                 game._shoot(now)
             self.assertEqual(game.player.sniper_haste_until, now + 3000)
         normal_gap = math.ceil(config.WEAPON_DEFS['sniper'].fire_rate / .70)
-        fast_gap = math.ceil(normal_gap / 1.5)
+        fast_gap = math.ceil(normal_gap / 1.1 / 1.5)
         self.assertFalse(game.player.can_shoot(11000 + fast_gap - 1))
         self.assertTrue(game.player.can_shoot(11000 + fast_gap))
         game._start_game('medium')

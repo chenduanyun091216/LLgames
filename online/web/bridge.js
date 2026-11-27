@@ -9,6 +9,7 @@ class Bridge {
     this.storage = options.storage || root.sessionStorage;
     this.onState = options.onState || (() => {});
     this.onStatus = options.onStatus || (() => {});
+    this.beforeHello = options.beforeHello;
     this.getOrientation = options.getOrientation || (() => (root.innerWidth >= root.innerHeight ? 'landscape' : 'portrait'));
     this.isHidden = options.isHidden || (() => root.document?.hidden === true);
     this.retryCount = 0; this.lastError = '';
@@ -25,11 +26,15 @@ class Bridge {
     const scheme = this.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = this.socket = new this.WebSocket(`${scheme}//${this.location.host}/ws`);
     this.seq = 0; this.latest = ''; this.match = null; this.slot = 0; this.welcomed = false; this.onStatus('connecting');
-    ws.onopen = () => {
+    ws.onopen = async () => {
+      if (this.beforeHello) await this.beforeHello();
       if (generation !== this.generation) return;
+      if (ws.readyState !== 1) return;
       let token = null;
       try { token = this.storage.getItem('llonline:' + this.code); } catch (_) {}
-      ws.send(JSON.stringify({type:'hello', version:this.version, code:this.code, ...(token ? {token} : this.hostToken ? {host_token:this.hostToken} : {})}));
+      ws.send(JSON.stringify({type:'hello', version:this.version, code:this.code,
+        ...(this.extraModes ? {extra_modes: this.extraModes} : {}),
+        ...(token ? {token} : this.hostToken ? {host_token:this.hostToken} : {})}));
     };
     ws.onmessage = e => {
       if (generation !== this.generation) return;
@@ -46,7 +51,7 @@ class Bridge {
       } else if (data.type === 'error') {
         const reason = data.code || data.error || '';
         this.lastError = reason;
-        const terminal = ['room_full','invalid_token','invalid_room','protocol_version','bad_hello','room_code','wrong_room_code','invalid_reconnect_token','hello_required','unsupported_version','invalid_code'].includes(reason);
+        const terminal = ['room_full','invalid_token','invalid_room','protocol_version','bad_hello','room_code','wrong_room_code','invalid_reconnect_token','hello_required','unsupported_version','invalid_code','update_required'].includes(reason);
         if (terminal) { this.stopped = true; this.welcomed = false; }
         this.onStatus(terminal ? 'stopped' : 'error', data.message || reason || '请求失败');
       }

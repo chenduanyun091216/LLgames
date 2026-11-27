@@ -138,18 +138,20 @@ class MobileControls:
 
     def _buttons(self, game):
         width, height = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
-        compact = height < 500
+        safe_left, safe_top, safe_right, safe_bottom = config.WEB_SAFE_INSETS
+        bottom = height - safe_bottom
+        compact = bottom - safe_top < 500
         gap = 70 if compact else 76
         inset = width // 50 if not game.desktop_controls else 0
-        right = width - (42 if compact else 48) - inset
+        right = width - safe_right - (42 if compact else 48) - inset
         left = right - gap
-        fire_y = height - (72 if compact else 80)
+        fire_y = bottom - (72 if compact else 80)
         auto_x = right if game.desktop_controls else right - 78
         if not config.MOBILE_LANDSCAPE_VIEW:
             auto_x += inset  # Keep clear of the portrait health controls.
         # Mirror the offsets so both skills sit on the same arc around attack.
         arc_long, arc_short = (88, 32) if compact else (96, 35)
-        utility_y = 40 if compact else 48
+        utility_y = safe_top + (40 if compact else 48)
         utility_radius = 22 if compact else 27
         if game.desktop_controls:
             utility_y += 5
@@ -160,16 +162,17 @@ class MobileControls:
         else:
             if compact:
                 char_y, char_gap, char_radius = 102, 62, 21
-                weapon_y, weapon_x, weapon_radius, weapon_gap = height - 191, (36, 104), 24, 66
+                weapon_y, weapon_x, weapon_radius, weapon_gap = bottom - 191, (36, 104), 24, 66
             else:
                 char_y = 145 if config.MOBILE_LANDSCAPE_VIEW else 222
                 char_gap, char_radius = 67, 25
-                weapon_y, weapon_x, weapon_radius, weapon_gap = height - 270, (56, 136), 30, 78
+                weapon_y, weapon_x, weapon_radius, weapon_gap = bottom - 270, (56, 136), 30, 78
+            char_y += safe_top
             char_right = right if config.MOBILE_LANDSCAPE_VIEW else right + inset - inset // 3
             char_left = char_right - gap
             char_positions = ((char_left, char_y), (char_right, char_y),
                               (char_left, char_y + char_gap), (char_right, char_y + char_gap))
-            weapon_positions = [(x, y) for y in (weapon_y - weapon_gap, weapon_y) for x in weapon_x]
+            weapon_positions = [(x + safe_left, y) for y in (weapon_y - weapon_gap, weapon_y) for x in weapon_x]
         skill_radius = 24 if compact else 28
         button_rows = [
             ('shop', (left, utility_y), utility_radius, '商店', (85, 190, 230)),
@@ -473,9 +476,11 @@ class MobileControls:
         _, (cx, cy), radius, _, _ = buttons[-1]
         game._draw_gift_hud(config.game_ticks(), cx + radius, cy + radius + 3)
 
-        short = config.SCREEN_HEIGHT < 500
-        center = self.joystick_origin or ((70 if short else 96) + config.SCREEN_WIDTH // 50,
-                                         config.SCREEN_HEIGHT - (70 if short else 108))
+        safe_left, safe_top, _, safe_bottom = config.WEB_SAFE_INSETS
+        bottom = config.SCREEN_HEIGHT - safe_bottom
+        short = bottom - safe_top < 500
+        center = self.joystick_origin or (safe_left + (70 if short else 96) + config.SCREEN_WIDTH // 50,
+                                         bottom - (70 if short else 108))
         radius = 46 if short else 64
         edge = (111, 226, 226) if self.joystick_origin is not None else (106, 172, 192)
         blit_center(_joystick_base(round(radius * scale), edge), center)

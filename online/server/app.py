@@ -13,7 +13,8 @@ from urllib.parse import urlsplit
 
 from aiohttp import WSMsgType, web
 from online.shared.world import WORLD_SIZES
-from online.shared.protocol import decode, ProtocolError, MAX_MESSAGE, VERSION
+from online.shared.protocol import (decode, ProtocolError, MAX_MESSAGE, VERSION,
+                                    COOP_MODES, DUEL_RESULT_ACTIONS)
 
 STATIC_ROOT = Path(__file__).resolve().parents[1] / 'build' / 'web'
 ROOM_KEY = web.AppKey('room', object)
@@ -52,8 +53,15 @@ class Room:
         self.failed = False
         self.last_state = None
 
-    def clear_input(self):
+    def clear_input(self, peer=None):
         if self.game:
+            if (getattr(self, 'mode', None) == 'tide_race' and peer is not None
+                    and peer.slot not in self.game.required_slots()):
+                return
+            if getattr(self, 'mode', None) in ('boss_duel', 'tide_race'):
+                self.game.invalidate()
+            elif getattr(self, 'mode', None) == 'sub_courier':
+                self.game.reset_input()
             for p in self.players:
                 self.game.set_input(p.slot, 0, 0, False)
 
@@ -68,18 +76,35 @@ class Room:
         if self.failed:
             return 'server_error'
         minimum = 1 if self.game and (getattr(self.game, 'infinite_mode', False) or getattr(self.game, 'departed', set())) else 2
-        if len(self.players) < minimum or any(p.ws is None for p in self.players):
+        players = self.players
+        if getattr(self, 'mode', None) == 'tide_race' and self.game and self.game.result is None:
+            required = self.game.required_slots()
+            minimum = len(required)
+            players = [p for p in players if p.slot in required]
+        if len(players) < minimum or any(p.ws is None for p in players):
             return 'disconnected'
-        if any(p.suspended for p in self.players):
+        if any(p.suspended for p in players):
             return 'suspended'
-        if self.orientation not in WORLD_SIZES or any(p.orientation != self.orientation for p in self.players):
+        if self.orientation not in WORLD_SIZES or any(p.orientation != self.orientation for p in players):
             return 'orientation_mismatch'
-        if any(p.manual_pause for p in self.players):
+        if any(p.manual_pause for p in players):
             return 'manual_pause'
         return None
 
     def start(self, difficulty, **options):
-        if self.factory is None:
+        if self.factory is None and options.get('mode') == 'run_gun':
+            from online.adapters.run_gun import RunGunRoom
+            factory = RunGunRoom
+        elif self.factory is None and options.get('mode') == 'sub_courier':
+            from online.adapters.sub_courier import SubCourierRoom
+            factory = SubCourierRoom
+        elif self.factory is None and options.get('mode') == 'tide_race':
+            from online.adapters.tide_race import TideRaceRoom
+            factory = TideRaceRoom
+        elif self.factory is None and options.get('mode') == 'boss_duel':
+            from game_core.modes.boss_duel import BossDuel
+            factory = BossDuel.from_room
+        elif self.factory is None:
             from online.adapters.core_adapter import OnlineGame
             factory = OnlineGame
         else:
@@ -103,7 +128,7 @@ class Room:
                 state = self.last_state
         state = dict(state) if state is not None else {'tick':0, 'phase':'lobby', 'players':[], 'gold':0, 'lives':0, 'world':{}}
         game_players = {p['slot']:p for p in state.get('players', [])}
-        state['players'] = [dict(game_players.get(p.slot, {'slot':p.slot,'alive':True,'hp':0,'max_hp':0,'shop_open':False}), connected=p.ws is not None, ready=p.ready, orientation=p.orientation,
+        state['players'] = [dict(game_players.get(p.slot, {'slot':p.slot,'alive':True,'hp':0,'max_hp':0,'shop_open':False}), connected=p.ws is not None, ready=p.ready, orientation=p.orientation, manual_pause=p.manual_pause,
                                  input_seq=p.input_seq, input_age_ms=max(0, (time.monotonic() - p.last_input) * 1000)) for p in self.players]
         reason = self.pause_reason() or state.get('pause_reason')
         state.update(orientation=self.orientation, world_size=list(WORLD_SIZES[self.orientation]) if self.orientation else None, type='state', version=VERSION, match_id=self.match_id, difficulty=self.difficulty, paused=bool(reason or state.get('paused')), pause_reason=reason)
@@ -137,7 +162,7 @@ class Room:
                         if now - p.last_input > .4:
                             self.game.set_input(p.slot, 0, 0, False)
                     if not self.pause_reason():
-                        self.game.step()
+                        self.advance()
                 except Exception:
                     self.fail()
             count += 1
@@ -148,11 +173,16 @@ class Room:
                 next_tick = now
             await asyncio.sleep(max(0, next_tick - time.monotonic()))
 
+    def advance(self):
+        self.game.step()
+
     def handle(self, peer, msg):
         kind = msg['type']
         if kind == 'orientation':
+            if peer.orientation == msg['orientation'] and getattr(self, 'mode', None) in ('boss_duel', 'sub_courier'):
+                return None
             peer.orientation = msg['orientation']
-            self.clear_input()
+            self.clear_input(peer)
             return None
         if kind == 'room_orientation':
             if peer.slot != 1:
@@ -181,7 +211,7 @@ class Room:
                 return self.pause_reason()
             self.start(msg['difficulty'])
             return None
-        if kind not in ('input', 'action'):
+        if kind not in ('input', 'action','mode_input','mode_action'):
             return 'unexpected_message'
         if msg['match_id'] != self.match_id:
             return 'stale_match'
@@ -189,12 +219,16 @@ class Room:
             return 'stale_sequence'
         peer.seq = msg['seq']
         if kind == 'action' and msg['action'] in ('suspend','resume'):
+            if peer.suspended == (msg['action'] == 'suspend') and getattr(self, 'mode', None) in ('boss_duel', 'sub_courier'):
+                return None
             peer.suspended = msg['action'] == 'suspend'
-            self.clear_input()
+            self.clear_input(peer)
             return None
         if self.game is None:
             return 'not_started'
         if kind == 'action' and msg['action'] == 'restart':
+            if getattr(self, 'mode', None) in ('boss_duel', 'sub_courier', 'tide_race'):
+                return 'unexpected_action'
             if peer.slot != 1:
                 return 'host_only'
             if len(self.players) != 2 or any(p.ws is None or not p.ready for p in self.players):
@@ -206,12 +240,26 @@ class Room:
             self.start(self.difficulty)
             return None
         if kind == 'action' and msg['action'] in ('pause', 'unpause'):
+            if peer.manual_pause == (msg['action'] == 'pause') and getattr(self, 'mode', None) in ('boss_duel', 'sub_courier'):
+                return None
             peer.manual_pause = msg['action'] == 'pause'
-            self.clear_input()
+            self.clear_input(peer)
             return None
-        if self.pause_reason() and not (kind == 'action' and msg['action'] == 'shop_close'):
+        terminal_action = (kind == 'mode_action' and getattr(self, 'mode', None) in ('boss_duel', 'sub_courier', 'tide_race')
+                           and msg['action'] in DUEL_RESULT_ACTIONS)
+        if self.pause_reason() and not terminal_action and not (kind == 'action' and msg['action'] == 'shop_close'):
             return 'paused'
+        if kind in ('mode_input','mode_action'):
+            if getattr(self, 'mode', None) not in COOP_MODES or msg['epoch'] != self.game.epoch:
+                return 'stale_mode_input'
+            if terminal_action:
+                return self.duel_result_action(peer, msg['action'])
+            peer.last_input = time.monotonic()
+            peer.input_seq = msg['seq']
+            return self.game.mode_input(peer.slot,msg)
         if kind == 'input':
+            if getattr(self, 'mode', None) in ('boss_duel', 'sub_courier', 'tide_race'):
+                return 'unexpected_message'
             peer.last_input = time.monotonic()
             peer.input_seq = msg["seq"]
             self.game.set_input(peer.slot, msg['dx'], msg['dy'], msg['shoot'])
@@ -298,7 +346,7 @@ async def websocket(request):
         peer.queue = asyncio.Queue(maxsize=1)
         await ws.send_json({'type':'welcome','version':version,'slot':peer.slot,'token':peer.token,'match_id':room.match_id, **({'room_id':room.id} if host else {})})
         peer.sender = asyncio.create_task(send_states(peer))
-        room.clear_input()
+        room.clear_input(peer)
         room.broadcast()
         credit, last = 120., time.monotonic()
         async for incoming in ws:
@@ -331,7 +379,7 @@ async def websocket(request):
                 sender.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await sender
-            room.clear_input()
+            room.clear_input(peer)
             room.broadcast()
         await ws.close()
     return ws

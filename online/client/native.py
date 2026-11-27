@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import aiohttp
 
-from online.shared.protocol import UNIFIED_VERSION
+from online.shared.protocol import EXTRA_MODES, UNIFIED_VERSION
 
 
 class NativeTransport:
@@ -26,6 +26,8 @@ class NativeTransport:
         self.seq = 0
         self.error = ''
         self.address = ''
+        self.game_url = ''
+        self.setup_url = ''
         self.host = None
         self.host_task = None
         self.origin = ''
@@ -35,6 +37,11 @@ class NativeTransport:
         self.invite = ''
         self.leave_id = None
         self.create_id = None
+        self.extra_modes = {}
+
+    @property
+    def ready(self):
+        return self.socket is not None and not self.socket.closed
 
     async def start_host(self):
         from web.run_web import GAME_PORT, TLS_DIR, lan_addresses
@@ -78,8 +85,15 @@ class NativeTransport:
         if info.get('version') != UNIFIED_VERSION or not info.get('ready') or not info.get('url'):
             raise ValueError('8001 的 TTgames 联机服务未就绪')
         self.origin = origin
-        self.address = info.get('lan_warning') or info['url']
+        self.game_url = info['url']
+        self.setup_url = info.get('setup_url', '')
+        self.address = info.get('lan_warning') or self.game_url
         return True
+
+    def open_home_link(self, url):
+        import webbrowser
+
+        webbrowser.open(url)
 
     def http(self):
         if self.session is None:
@@ -139,12 +153,20 @@ class NativeTransport:
             self.error = str(exc)
 
     async def receive(self):
+        tls = self.local_tls if self.target == self.origin else True
+        async with self.http().get(self.target + '/health', ssl=tls) as response:
+            info = await response.json() if response.ok else {}
+            remote_modes = info.get('extra_modes') or {}
+            self.extra_modes = {m: rev for m, rev in EXTRA_MODES.items()
+                                if remote_modes.get(m) == rev}
         async with self.http().ws_connect(self.target + '/ws', origin=self.target, heartbeat=10,
-                                          ssl=self.local_tls if self.target == self.origin else True,
+                                          ssl=tls,
                                           max_msg_size=16 * 1024 * 1024) as ws:
             self.socket = ws
             self.seq = 0
             hello = {'type': 'hello', 'version': UNIFIED_VERSION, 'code': self.code}
+            if self.extra_modes:
+                hello['extra_modes'] = self.extra_modes
             if self.token:
                 hello['token'] = self.token
             elif self.host_token:
@@ -163,7 +185,7 @@ class NativeTransport:
                         self.state = msg
                     elif msg['type'] == 'error':
                         self.error = msg['error']
-                        if self.slot == 0 or msg['error'] in ('invalid_reconnect_token', 'wrong_room_code'):
+                        if self.slot == 0 or msg['error'] in ('invalid_reconnect_token', 'wrong_room_code', 'update_required'):
                             raise ValueError(self.error)
                 if ws.close_code == 1001:
                     self.ended = True
@@ -175,7 +197,7 @@ class NativeTransport:
         ws = self.socket
         if not ws or ws.closed or not self.slot:
             return
-        if message['type'] in ('action', 'input'):
+        if message['type'] in ('action', 'input','mode_input','mode_action'):
             if self.state is None:
                 return
             self.seq += 1

@@ -15,7 +15,7 @@ from .host import create_host
 WEBROOT = Path(__file__).resolve().parents[2] / 'build' / 'web-offline'
 
 
-async def serve(host, port, *, root=WEBROOT, tls=None, addresses=(), lan_warning=''):
+async def serve(host, port, *, root=WEBROOT, tls=None, addresses=(), lan_warning='', setup_port=None):
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     signal_installed = False
@@ -37,8 +37,12 @@ async def serve(host, port, *, root=WEBROOT, tls=None, addresses=(), lan_warning
         port = runner.addresses[0][1]
         scheme = 'https' if tls else 'http'
         names = [host] if not ip.is_unspecified else [*addresses, '127.0.0.1']
-        urls = [f'{scheme}://{name if ":" not in name else "[" + name + "]"}:{port}/' for name in names]
-        runner.app[HOST_KEY].public_url = urls[0]
+        names = [name if ':' not in name else f'[{name}]' for name in names]
+        urls = [f'{scheme}://{name}:{port}/' for name in names]
+        room_host = runner.app[HOST_KEY]
+        room_host.public_url = urls[0]
+        if setup_port is not None:
+            room_host.setup_url = f'http://{names[0]}:{setup_port}/'
         print(json.dumps({'port': port, 'urls': urls}), flush=True)
         if lan_warning:
             print(lan_warning, file=sys.stderr, flush=True)

@@ -108,14 +108,14 @@ class RenderSurface:
             if visible:
                 target.blit(background, visible.topleft, visible.move(-bounds.x, -bounds.y))
 
-    def composite_onto(self, target, *, offset=(0, 0), blit_flags=pygame.BLEND_ALPHA_SDL2):
-        """Blend only touched tiles, then clear them for the next frame."""
+    def collect_damage(self):
+        """Consume this frame's dirty tiles and retain the areas for restoration."""
         tile = self.tile
         bounds = self.surface.get_rect()
         self._previous_areas.clear()
         for row, mask in enumerate(self._dirty_rows):
             height = tile
-            if mask and not self.desktop_ui:
+            if mask:
                 # Identical rows cover exactly the same pixels; merge their SDL calls.
                 next_row = row + 1
                 while next_row < len(self._dirty_rows) and self._dirty_rows[next_row] == mask:
@@ -129,11 +129,16 @@ class RenderSurface:
                     end += 1
                 mask &= ~(((1 << (end - left)) - 1) << left)
                 area = pygame.Rect(left * tile, row * tile, (end - left) * tile, height).clip(bounds)
-                destination = (area.x + offset[0], area.y + offset[1])
-                target.blit(self.surface, destination, area, special_flags=blit_flags)
-                self.surface.fill((0, 0, 0, 0), area)
                 self._previous_areas.append(area)
             self._dirty_rows[row] = 0
+        return self._previous_areas
+
+    def composite_onto(self, target, *, offset=(0, 0), blit_flags=pygame.BLEND_ALPHA_SDL2):
+        """Blend only touched tiles, then clear them for the next frame."""
+        for area in self.collect_damage():
+            destination = (area.x + offset[0], area.y + offset[1])
+            target.blit(self.surface, destination, area, special_flags=blit_flags)
+            self.surface.fill((0, 0, 0, 0), area)
 
 
 class Draw:

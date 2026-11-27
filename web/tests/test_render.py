@@ -10,6 +10,21 @@ from game_core.visuals import _glow, draw_glow, draw_water_drift
 
 
 class RenderTests(unittest.TestCase):
+    def test_scroll_reuses_filtered_rows_across_nearby_frames(self):
+        from game_core import background
+        panorama = pygame.Surface((8, 600))
+        for y in range(600):
+            panorama.fill((y % 251, 0, 0), (0, y, 8, 1))
+        target = pygame.Surface((8, 256))
+        with patch.object(background, '_background_panorama', return_value=panorama):
+            for y in (33.5, 32.5):
+                background.draw_scrolling_background_art(target, (0, 0), 1, target.get_size(), 1 - y / 344)
+                for row in (0, 31, 62, 63, 64, 255):
+                    self.assertAlmostEqual(target.get_at((0, row)).r, (int(y) + row) % 251 + .5, delta=1)
+                if y == 33.5:
+                    misses = background._filtered_rows.cache_info().misses
+            self.assertEqual(background._filtered_rows.cache_info().misses, misses)
+
     def test_fractional_background_scroll_blends_adjacent_rows(self):
         from game_core.background import draw_scrolling_background_art
 
@@ -18,7 +33,8 @@ class RenderTests(unittest.TestCase):
             panorama.fill((red, 0, 0), (0, y, 2, 1))
         target = pygame.Surface((4, 4))
         with patch('game_core.background._background_panorama', return_value=panorama):
-            for progress, expected in ((1, 0), (.875, 25), (.75, 50), (.625, 75), (.5, 100), (0, 200)):
+            for progress, expected in ((1, 0), (.875, 25), (.75, 50), (.625, 75), (.5, 100),
+                                       (.125, 175), (.01, 200), (0, 200)):
                 self.assertTrue(draw_scrolling_background_art(target, (1, 1), 1, (2, 2), progress))
                 self.assertAlmostEqual(target.get_at((1, 1)).r, expected, delta=1)
                 self.assertEqual(target.get_at((0, 1)).r, 0)

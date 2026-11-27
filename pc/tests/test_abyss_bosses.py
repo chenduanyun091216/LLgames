@@ -2,7 +2,7 @@
 import os
 import math
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
 os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
@@ -562,10 +562,59 @@ class AbyssBossTests(unittest.TestCase):
         if image is None:
             self.skipTest('Final PNG assets unavailable in this checkout')
         shot = AbyssProjectile('guided_missile', 200, 200, scale=.8)
-        art, size, center = shot._missile_art(image)
-        self.assertAlmostEqual(size[0] / size[1], image.get_width() / image.get_height())
-        self.assertAlmostEqual(center[1] + size[1] * .4, shot.y)
+        art, center = shot._missile_art(image, 4)
+        width = shot.r * 3
+        height = width * image.get_height() / image.get_width()
+        self.assertEqual(art.get_size(), (round(width * 4), round(height * 4)))
+        self.assertAlmostEqual(center[1] + height * .4, shot.y)
         self.assertEqual(center[0], shot.x)
+
+    def test_missile_preview_and_active_turns_reuse_the_output_sized_art(self):
+        art = pygame.Surface((400, 1200), pygame.SRCALPHA)
+        pixels = pygame.Surface((640, 640), pygame.SRCALPHA)
+        target = RenderSurface(pixels, (160, 160), pixels.get_size(), (0, 0))
+        with patch.object(config, 'game_ticks', return_value=1000) as clock, \
+                patch('game_core.abyss_bosses.image_asset', return_value=art), \
+                patch('game_core.abyss_bosses._blit') as blit, \
+                patch.object(pygame.transform, 'rotate', wraps=pygame.transform.rotate) as rotate:
+            shot = AbyssProjectile('guided_missile', 80, 100, scale=.5, warning_ms=180)
+            shot.missile_pass = 2
+            shot.draw(target)
+            preview = blit.call_args.args[1]
+            self.assertEqual(preview.get_alpha(), 115)
+
+            clock.return_value = 1180
+            shot.draw(target)
+            scaled = blit.call_args.args[1]
+            self.assertEqual(scaled.get_alpha(), 255)
+            self.assertEqual(scaled.get_size(), (84, 252))
+
+            for angle in (32, -24):
+                shot.angle = angle
+                shot.draw(target)
+                center = blit.call_args.args[2]
+                rad = math.radians(angle)
+                self.assertAlmostEqual(center[0] + 63 * .4 * math.sin(rad), shot.x)
+                self.assertAlmostEqual(center[1] + 63 * .4 * math.cos(rad), shot.y)
+            self.assertEqual(rotate.call_args_list, [call(scaled, 32), call(scaled, -24)])
+        self.assertEqual(art.get_alpha(), 255)
+
+    def test_molten_burst_reuses_small_rotated_frames_across_projectiles(self):
+        art = pygame.Surface((1024, 1024), pygame.SRCALPHA)
+        pixels = pygame.Surface((640, 640), pygame.SRCALPHA)
+        target = RenderSurface(pixels, (160, 160), pixels.get_size(), (0, 0))
+        with patch.object(config, 'game_ticks', return_value=1000), \
+                patch('game_core.abyss_bosses.image_asset', return_value=art), \
+                patch.object(target, 'blit_pixels') as blit, \
+                patch.object(pygame.transform, 'rotate', wraps=pygame.transform.rotate) as rotate:
+            for x in (70, 100):
+                shot = AbyssProjectile('molten_burst', x, 80, angle=32, scale=.5, warning_ms=0)
+                shot.draw(target)
+        rotate.assert_called_once()
+        self.assertEqual(rotate.call_args.args[0].get_size(), (180, 180))
+        first, second = (item.args[0] for item in blit.call_args_list)
+        self.assertIs(first, second)
+        self.assertEqual(first.get_size(), (180, 180))
 
     def test_dead_boss_cannot_attack(self):
         for cls in (MechaLizardBoss, AncientWhaleBoss):

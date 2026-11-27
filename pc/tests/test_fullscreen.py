@@ -7,12 +7,148 @@ os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 import pygame
 
-from game_core import config
-from game_core.game import Game
+from game_core import asset_loader, config
+from game_core.game import Game, GameState
 from game_core.main import main
 
 
 class FullscreenTests(unittest.IsolatedAsyncioTestCase):
+    def test_prepared_panorama_and_foreground_regions_keep_view_offset(self):
+        from pygame._sdl2 import Renderer, Window
+        from game_core.render import RenderSurface
+        from pc.presenter import WindowsPresenter
+
+        pygame.display.init()
+        self.addCleanup(pygame.display.quit)
+        window = Window('Presenter test', size=(320, 240), hidden=True)
+        renderer = Renderer(window, accelerated=0)
+        presenter = WindowsPresenter(window, renderer, target_textures=True)
+        panorama = pygame.Surface((160, 232))
+        panorama.fill((10, 70, 170))
+        background = panorama.subsurface((0, 70, 160, 116))
+        background.fill((20, 80, 160))
+        with patch('pc.presenter.PANORAMA_UPLOAD_BYTES', 160 * 32 * 4):
+            for _ in range(8):
+                presenter.prepare_background(panorama)
+        prepared = presenter.prepared_background
+        source = pygame.Rect(0, 4, 160, 116)
+        destination = pygame.Rect(0, 4, 320, 232)
+        pixels = pygame.Surface((160, 124), pygame.SRCALPHA)
+        foreground = RenderSurface(pixels, source.size, source.size, source.topleft,
+                                   track_damage=True, desktop_ui=True)
+
+        foreground.mark(pixels.fill('red', (54, 51, 8, 8)))
+        self.assertTrue(presenter.draw_layers(background, foreground, source, destination))
+        self.assertIs(presenter.background, prepared)
+        self.assertEqual(renderer.to_surface().get_at((114, 104))[:3], (255, 0, 0))
+
+        foreground.mark(pixels.fill('green', (120, 84, 7, 9)))
+        self.assertTrue(presenter.draw_layers(background, foreground, source, destination))
+        composed = renderer.to_surface()
+        self.assertEqual(composed.get_at((114, 104))[:3], (20, 80, 160))
+        self.assertEqual(composed.get_at((244, 170))[:3], (0, 255, 0))
+        self.assertFalse(pixels.get_bounding_rect())
+
+    async def test_accelerated_presenter_keeps_render_sizes_and_physical_clicks(self):
+        presenter = Mock()
+        presenter.window.size = (3840, 2160)
+        presenter.draw_layers.return_value = False
+        frames = []
+        game = None
+
+        def open_presenter(flags):
+            pygame.display.set_mode((1, 1), flags)
+            return presenter
+
+        def make_game(**kwargs):
+            nonlocal game
+            game = Game(**kwargs)
+            game.state = GameState.PAUSED
+            game._last_touch_event = -120
+            game.draw = Mock()
+            return game
+
+        def events():
+            if len(frames) == 5:
+                return [pygame.event.Event(pygame.QUIT)]
+            if len(frames) in (1, 3):
+                button = game._pause_quality_rects()[len(frames) == 1]
+                pos = tuple(coordinate * 4 for coordinate in button.center)
+                return [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)]
+            if len(frames) == 2:
+                return [pygame.event.Event(pygame.RENDER_DEVICE_RESET)]
+            return []
+
+        def present(surface, source, destination, *, layers_drawn):
+            self.assertEqual(config.VIEW_SCALE, 4)
+            self.assertEqual(source.size, surface.get_size())
+            self.assertEqual(destination, pygame.Rect(0, 0, 3840, 2160))
+            frames.append(source.size)
+
+        presenter.present.side_effect = present
+        self.addCleanup(pygame.quit)
+        try:
+            with patch('pygame.event.get', side_effect=events), \
+                    patch('pygame.display.flip') as flip, \
+                    patch('game_core.game.Game', side_effect=make_game), \
+                    patch.object(Game, '_load_bg'), patch('game_core.background.background_art', return_value=None), \
+                    patch('game_core.sounds.start_music'), patch('game_core.sounds.advance_music'), \
+                    patch('game_core.sounds.make_sound'):
+                await main(open_desktop_presenter=open_presenter)
+            self.assertEqual(frames, [(2560, 1440), (2560, 1440), (3840, 2160), (3840, 2160), (2560, 1440)])
+            presenter.reset_textures.assert_called_once_with()
+            flip.assert_not_called()
+        finally:
+            asset_loader.pc_4k_assets = False
+            config.campaign_time_ms = None
+
+    async def test_native_pause_switch_changes_4k_assets_at_window_resolution(self):
+        native = Mock()
+        native.maximize.side_effect = lambda: pygame.display.set_mode((2560, 1440), pygame.RESIZABLE)
+        frames = []
+        game = None
+
+        def make_game(**kwargs):
+            nonlocal game
+            game = Game(**kwargs)
+            game.state = GameState.PAUSED
+            game._last_touch_event = -120
+            game.update = Mock()
+            return game
+
+        def events():
+            index = len(frames)
+            if index == 5:
+                return [pygame.event.Event(pygame.QUIT)]
+            if index in (1, 3):
+                button = game._pause_quality_rects()[index == 1]
+                x, y = button.center
+                pos = (round(x * config.VIEW_SCALE), round(y * config.VIEW_SCALE))
+                return [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=pos)]
+            return []
+
+        def flip():
+            frames.append((config.VIEW_SIZE, asset_loader.pc_4k_assets))
+            self.assertEqual(pygame.display.get_surface().get_size(), (2560, 1440))
+            self.assertEqual(game.state, GameState.PAUSED)
+
+        try:
+            with patch('pygame._sdl2.Window', Mock(from_display_module=Mock(return_value=native))), \
+                    patch('pygame.event.get', side_effect=events), \
+                    patch('pygame.display.flip', side_effect=flip), \
+                    patch('game_core.game.Game', side_effect=make_game), \
+                    patch('game_core.background.background_art', return_value=None), \
+                    patch('game_core.sounds.start_music'), patch('game_core.sounds.advance_music'), \
+                    patch('game_core.sounds.make_sound'):
+                await main()
+            self.assertEqual(frames, [((2560, 1440), False), ((2560, 1440), False),
+                                      ((2560, 1440), True), ((2560, 1440), True),
+                                      ((2560, 1440), False)])
+        finally:
+            asset_loader.pc_4k_assets = False
+            config.campaign_time_ms = None
+            pygame.quit()
+
     async def test_windows_window_stays_transparent_until_the_first_frame_is_presented(self):
         order = Mock()
         native = order.window

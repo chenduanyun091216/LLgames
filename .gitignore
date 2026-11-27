@@ -10,6 +10,11 @@ __pycache__/
 /.web-build/
 /assets/images_lg/
 
+# Standalone demos and archived assets/screenshots
+/phaser/
+/outputs/
+/pelican-bicycle.html
+
 # IDE and operating system files
 /.idea/
 .DS_Store

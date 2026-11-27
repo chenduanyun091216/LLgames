@@ -1,17 +1,34 @@
 /* The game owns rendering and input. JavaScript owns browser network/storage APIs. */
 (() => {
-    const invite = new URL(location.href).searchParams.get('room') || '';
+    const params = new URL(location.href).searchParams;
+    const invite = params.get('room') || '';
     let resumeCode = '';
     try { resumeCode = sessionStorage.getItem('ttgames-lan-active') || ''; } catch (_) {}
     if (invite && invite !== resumeCode) resumeCode = '';
     const transport = window.ttgamesLAN = {
-        address: location.origin, invite, resumeCode, error: '', leaveResult: false,
+        address: location.origin, gameUrl: location.origin + '/', setupUrl: '',
+        invite, resumeCode, requestedMode: invite || resumeCode ? '' : (params.get('mode') || ''), error: '', leaveResult: false,
         state: '', stateRevision: 0, slot: 0, ended: false, ready: false, createId: '', leaveId: '',
         lastSnapshotAt: null, maxSnapshotGap: 0,
         perf: new URL(location.href).searchParams.get('perf') === '1',
     };
+    const health = () => fetch('/health', {signal: AbortSignal.timeout(4000)})
+        .then(response => response.ok ? response.json() : {})
+        .then(info => {
+            transport.setupUrl = info.setup_url || '';
+            const modes = Object.fromEntries(['boss_duel', 'sub_courier', 'tide_race']
+                .filter(mode => info.extra_modes?.[mode] === 1).map(mode => [mode, 1]));
+            bridge.extraModes = Object.keys(modes).length ? modes : null;
+        })
+        .catch(() => {});
+    transport.openHomeLink = url => window.open(url, '_blank', 'noopener');
     const bridge = new LLBridge({
         version: 2,
+        beforeHello: () => {
+            const pending = initialHealth || health();
+            initialHealth = null;
+            return pending;
+        },
         onStatus(kind, detail) {
             if (kind === 'ended' || kind === 'stopped') {
                 try { sessionStorage.removeItem('ttgames-lan-active'); } catch (_) {}
@@ -37,6 +54,7 @@
             }
         },
     });
+    let initialHealth = health();
     const requestId = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
     async function request(path, body) {
         const response = await fetch(path, {
@@ -78,6 +96,9 @@
     transport.send = raw => {
         if (!bridge.welcomed) return;
         const message = JSON.parse(raw);
+        if (message.type === 'mode_input' || message.type === 'mode_action') {
+            return bridge.send({...message, seq: ++bridge.seq, match_id: bridge.match}) ? bridge.seq : null;
+        }
         if (message.type === 'input') return bridge.input(message.dx, message.dy, message.shoot) ? bridge.seq : null;
         else if (message.type === 'action') bridge.action(message.action, message.key);
         else bridge.send(message);

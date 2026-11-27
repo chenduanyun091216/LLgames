@@ -5,7 +5,7 @@ import random, math
 from functools import lru_cache
 import pygame
 from . import config
-from .asset_loader import cover_image_asset, image_asset, scale_surface_cached
+from .asset_loader import cover_image_asset, image_asset, image_variant, scale_surface_cached
 from .config import (
     OCEAN_BLUE, SAND_COLOR, SAND_DARK, BEACH_HEIGHT,
     OCEAN_SURFACE, OCEAN_MID, OCEAN_DEEP,
@@ -22,7 +22,8 @@ def clear_background_cache():
     background_art.cache_clear()
     trench_boss_art.cache_clear()
     _panorama_frame.cache_clear()
-    _background_panorama.cache_clear()
+    _filtered_rows.cache_clear()
+    load_panorama.cache_clear()
 
 
 def _gradient_line(surf, y, color_top, color_bottom, h):
@@ -60,20 +61,27 @@ def trench_boss_art(size):
         art = image_asset(f'backgrounds/trench-boss-{layout}.{suffix}')
         if art is not None:
             # The painted openings and their gameplay anchors both use viewport fractions.
-            return scale_surface_cached(art, size)
+            art = scale_surface_cached(art, size)
+            return art.convert(32) if suffix == 'jpg' else art
     return None
 
 
-@lru_cache(maxsize=2)
-def _background_panorama(level, size):
+@lru_cache(maxsize=3)
+def load_panorama(level, size, variant):
     for suffix in ('jpg', 'png'):
-        panorama = cover_image_asset(f'backgrounds/bg{level}.{suffix}', size, panorama=True)
+        panorama = cover_image_asset(f'backgrounds/bg{level}.{suffix}', size, panorama=True, variant=variant)
         if panorama is not None:
-            fade = pygame.Surface(panorama.get_size(), pygame.SRCALPHA)
+            width, height = panorama.get_size()
+            fade = pygame.Surface((width, min(128, height)), pygame.SRCALPHA)
             fade.fill((20, 39, 48, 76))
-            panorama.blit(fade, (0, 0))
+            for y in range(0, height, fade.get_height()):
+                panorama.blit(fade, (0, y))
             return panorama
     return None
+
+
+def _background_panorama(level, size):
+    return load_panorama(level, size, image_variant())
 
 
 @lru_cache(maxsize=4)
@@ -89,32 +97,43 @@ def scrolling_background_art(level, size, progress):
     return None
 
 
+@lru_cache(maxsize=32)
+def _filtered_rows(panorama, top, strip_height, phase):
+    width = panorama.get_width()
+    height = min(strip_height, panorama.get_height() - top - 1)
+    strip = panorama.subsurface((0, top, width, height)).copy()
+    adjacent = panorama.subsurface((0, top + 1, width, height))
+    adjacent.set_alpha(phase * 64)
+    strip.blit(adjacent, (0, 0), special_flags=pygame.BLEND_ALPHA_SDL2)
+    return strip
+
+
 def draw_scrolling_background_art(target, offset, level, size, progress):
     panorama = _background_panorama(level, size)
     if panorama is None:
         return False
     position = (panorama.get_height() - size[1]) * (1 - max(0, min(1, progress)))
-    y = math.floor(position)
-    opacity = round((position - y) * 255)
-    if opacity == 255:
-        y, opacity = y + 1, 0
-    target.blit(_panorama_frame(panorama, size, y), offset)
-    if opacity:
-        # Blend adjacent crops to translate the panorama by a fraction of a pixel.
-        next_row = _panorama_frame(panorama, size, y + 1)
-        original_alpha = next_row.get_alpha()
-        next_row.set_alpha(opacity)
-        try:
-            target.blit(next_row, offset, special_flags=pygame.BLEND_ALPHA_SDL2)
-        finally:
-            next_row.set_alpha(original_alpha)
+    y, phase = divmod(round(position * 4), 4)
+    if not phase:
+        target.blit(_panorama_frame(panorama, size, y), offset)
+        return True
+    # Cache only visible strips and their three fractional positions.
+    width, height = size
+    strip_height = (height + 7) // 8
+    for top in range(y - y % strip_height, y + height, strip_height):
+        strip = _filtered_rows(panorama, top, strip_height, phase)
+        start, end = max(y, top), min(y + height, top + strip.get_height())
+        target.blit(strip, (offset[0], offset[1] + start - y), (0, start - top, width, end - start))
     return True
 
 
-def make_background(level=1, *, art_size=None):
+def make_background(level=1, *, art_size=None, scrolling=False):
     cache_key = (level, config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
     # Prepare the display-sized art even if a logical surface survived a previous visit.
-    image = background_art(level, art_size) if art_size is not None else None
+    image = None
+    if art_size is not None:
+        image = (scrolling_background_art(level, art_size, .5) if scrolling
+                 else background_art(level, art_size))
     if cache_key in _bg_surf:
         return _bg_surf[cache_key]
     if art_size is None:

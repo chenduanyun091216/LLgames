@@ -414,7 +414,8 @@ class Presentation:
             self.view.bg_transition_prev = previous_background if self.time_ms < self.view.bg_transition_until else None
             self._background_level = level
         music = (level, bool(self.view.boss), self.view.infinite_mode, self.view.infinite_music_variant)
-        if music != self._music_boss:
+        # The defeated boss disappears before the next level replaces the scene.
+        if self.scene_state != GameState.LEVEL_TRANSITION and music != self._music_boss:
             if self.view.infinite_mode:
                 start_music(level, boss=music[1], infinite=True, variant=music[3])
             else:

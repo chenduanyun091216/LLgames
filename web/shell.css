@@ -10,16 +10,16 @@ html, body {
     color-scheme: dark;
 }
 :root {
-    --game-visible-left: var(--game-viewport-left, 0px);
-    --game-visible-top: var(--game-viewport-top, 0px);
-    --game-visible-right: min(var(--game-viewport-right, 100vw), 100vw);
-    --game-visible-bottom: min(var(--game-viewport-bottom, 100dvh), 100dvh);
-    --game-left: max(var(--game-visible-left), env(safe-area-inset-left, 0px));
-    --game-top: max(var(--game-visible-top), env(safe-area-inset-top, 0px));
-    --game-right: min(var(--game-visible-right), calc(100vw - env(safe-area-inset-right, 0px)));
-    --game-bottom: min(var(--game-visible-bottom), calc(100dvh - env(safe-area-inset-bottom, 0px)));
+    --game-left: var(--game-viewport-left, 0px);
+    --game-top: var(--game-viewport-top, 0px);
+    --game-right: min(var(--game-viewport-right, 100vw), 100vw);
+    --game-bottom: min(var(--game-viewport-bottom, 100dvh), 100dvh);
     --game-width: calc(var(--game-right) - var(--game-left));
     --game-height: calc(var(--game-bottom) - var(--game-top));
+    --safe-left: max(var(--game-left), env(safe-area-inset-left, 0px));
+    --safe-top: max(var(--game-top), env(safe-area-inset-top, 0px));
+    --safe-right: min(var(--game-right), calc(100vw - env(safe-area-inset-right, 0px)));
+    --safe-bottom: min(var(--game-bottom), calc(100dvh - env(safe-area-inset-bottom, 0px)));
 }
 #canvas, #ttgames-ui {
     position: fixed !important;
@@ -39,12 +39,13 @@ html, body {
 #canvas:not([data-game-ready]) { opacity: 0; }
 #canvas:focus { outline: none; }
 #ttgames-ui { z-index: 6; pointer-events: none; }
-#ttgames-safe-area-fill {
+#ttgames-safe-area {
     position: fixed;
-    top: var(--game-visible-top);
-    left: var(--game-visible-left);
-    width: calc(var(--game-visible-right) - var(--game-visible-left));
-    height: calc(var(--game-visible-bottom) - var(--game-visible-top));
+    top: var(--safe-top);
+    left: var(--safe-left);
+    width: calc(var(--safe-right) - var(--safe-left));
+    height: calc(var(--safe-bottom) - var(--safe-top));
+    visibility: hidden;
     pointer-events: none;
 }
 #infobox {
@@ -129,8 +130,8 @@ html, body {
 #ttgames-version {
     position: fixed;
     z-index: 20;
-    top: calc(var(--game-top) + 8px);
-    right: calc(100vw - var(--game-right) + 12px);
+    top: calc(var(--safe-top) + 8px);
+    right: calc(100vw - var(--safe-right) + 12px);
     padding: 4px 6px;
     border-radius: 4px;
     background: #071b2bd9;
@@ -157,13 +158,13 @@ html, body {
     pointer-events: none;
 }
 @media (max-width: 600px) {
-    #ttgames-version:not([hidden]) ~ #ttgames-offline { top: calc(var(--game-top) + 32px); }
+    #ttgames-version:not([hidden]) ~ #ttgames-offline { top: calc(var(--safe-top) + 32px); }
 }
 #ttgames-fullscreen, #ttgames-quality > summary {
     position: fixed;
     z-index: 20;
-    top: calc(var(--game-top) + 62px);
-    right: calc(100vw - var(--game-right) + 12px);
+    top: calc(var(--safe-top) + 62px);
+    right: calc(100vw - var(--safe-right) + 12px);
     width: 38px;
     height: 38px;
     padding: 0;
@@ -181,12 +182,12 @@ html, body {
 #ttgames-fullscreen:active { background: #0a2335; border-color: #d0fff5; }
 #ttgames-fullscreen:focus-visible { outline: 2px solid white; outline-offset: 3px; }
 @media (orientation: landscape) {
-    #ttgames-fullscreen { top: calc(var(--game-top) + 8px); left: calc(var(--game-left) + var(--game-width) * .23); right: auto; transform: translateX(-50%); width: 32px; height: 32px; }
+    #ttgames-fullscreen { top: calc(var(--safe-top) + 8px); left: calc(var(--game-left) + var(--game-width) * .23); right: auto; transform: translateX(-50%); width: 32px; height: 32px; }
 }
 
 #ttgames-fullscreen[data-menu] {
-    top: calc(var(--game-top) + 8px);
-    left: calc(var(--game-left) + 12px);
+    top: calc(var(--safe-top) + 8px);
+    left: calc(var(--safe-left) + 12px);
     right: auto;
     transform: none;
 }
@@ -218,7 +219,7 @@ html, body {
     box-sizing: border-box;
     width: min(var(--quality-menu-width), calc(var(--game-width) - 20px));
     min-inline-size: 0;
-    max-height: calc(var(--game-height) - var(--menu-top) - 10px);
+    max-height: calc(var(--safe-bottom) - var(--game-top) - var(--menu-top) - 10px);
     overflow: auto;
     touch-action: pan-y;
     overscroll-behavior: contain;

@@ -39,6 +39,17 @@ class BrowserTransport:
         return str(self.bridge.address)
 
     @property
+    def game_url(self):
+        return str(self.bridge.gameUrl)
+
+    @property
+    def setup_url(self):
+        return str(self.bridge.setupUrl)
+
+    def open_home_link(self, url):
+        self.bridge.openHomeLink(url)
+
+    @property
     def ready(self):
         return bool(self.bridge.ready)
 
@@ -59,6 +70,12 @@ class LAN:
         self.last_send = 0
         self.last_input = None
         self.settings_sent = False
+        self.caps_sent = False
+        self.side_view = None
+        self.duel_view = None
+        self.courier_view = None
+        self.duel_picker = False
+        self.requested_mode = None
         self.presentation = None
         self.scene = None
         self.scene_layout = None
@@ -90,6 +107,11 @@ class LAN:
         if isinstance(transport, BrowserTransport) and str(transport.resumeCode):
             self.start_room('join', str(transport.resumeCode))
 
+    def close_courier_view(self):
+        if self.courier_view is not None:
+            self.courier_view.silence()
+            self.courier_view = None
+
     def message(self, text):
         self.notice = text
         self.notice_until = monotonic() + 4
@@ -101,7 +123,13 @@ class LAN:
         self.transport.send(msg)
 
     def home(self):
+        self.close_courier_view()
         self.transport.reset()
+        self.caps_sent = False
+        self.side_view = None
+        self.duel_view = None
+        self.duel_picker = False
+        self.requested_mode = None
         self.page = 'home'
         self.presentation = None
         self.scene = None
@@ -200,16 +228,24 @@ class LAN:
     def lobby(self, game, events, state, direction):
         reset = self.home if not self.transport.slot else self.leave
         rows = []
+        briefing = ()
         error = str(self.transport.error)
         detail = '' if error == 'orientation_mismatch' else error
-        if error == 'wrong_room_code':
+        if error == 'update_required':
+            detail = '请更新游戏后重连，原席位暂时保留'
+        elif error == 'wrong_room_code':
             detail = '房间不存在，请核对房主提供的房间号或邀请链接'
         elif error == 'room_in_use':
             detail = '已有房间。加入请输入房主的四位房间号，重新创建需等原房间关闭。'
             rows.append(('重新创建', lambda: self.start_room('create')))
+        elif error == 'update_required':
+            detail = '请更新游戏后重连'
         if not state and not self.transport.slot and error in ('room_in_use', 'wrong_room_code'):
             rows.append(('输入房间号', self.join_form))
         if state:
+            if 'extra_modes' in state and not self.caps_sent:
+                self.transport.send({'type':'mode_caps','modes':[m for m in state['extra_modes'] if m=='run_gun']})
+                self.caps_sent = True
             orientation = state['orientation']
             wrong_direction = [f"P{p['slot']}" for p in state['players']
                                if p['connected'] and p['orientation'] != orientation]
@@ -226,13 +262,37 @@ class LAN:
                 if msg['mode'] == 'campaign':
                     msg.setdefault('difficulty', state['difficulty'])
                     msg.setdefault('start_level', state['start_level'])
+                elif msg['mode'] == 'boss_duel':
+                    msg.setdefault('mode_options', state['mode_options'] if state['mode'] == 'boss_duel'
+                                   else {'boss': 'whale'})
+                elif msg['mode'] == 'sub_courier':
+                    msg.setdefault('mode_options', state['mode_options'] if state['mode'] == 'sub_courier'
+                                   else {'order': 'jelly'})
+                elif msg['mode'] == 'tide_race':
+                    msg.setdefault('mode_options', state.get('mode_options') if state['mode'] == 'tide_race' else {'track': 'lighthouse'})
                 self.transport.send(msg)
             if host and not state['orientation'] and not self.settings_sent:
                 settings()
                 self.settings_sent = True
             if host:
-                rows.append((('战役' if state['mode'] == 'campaign' else '无限模式'),
-                             lambda: settings(mode='infinite' if state['mode'] == 'campaign' else 'campaign')))
+                from online.shared.protocol import COOP_MODES
+                names = {'campaign':'战役','infinite':'无限模式', **COOP_MODES}
+                modes = ['campaign','infinite',*state.get('available_modes',[])]
+                requested=getattr(self,'requested_mode',None)
+                if requested in modes and orientation:
+                    self.requested_mode=None
+                    settings(mode=requested)
+                elif requested == 'boss_duel' and len(state['players']) == 2 and not detail:
+                    detail = '请两位玩家使用支持 Boss 对决的版本'
+                if requested == 'sub_courier' and not detail:
+                    detail = ('等待搭档加入后选单' if len(state['players']) < 2 else
+                              '请两位玩家使用支持潜艇快递的版本')
+                if requested == 'tide_race' and not detail:
+                    detail = ('等待对手加入后选赛道' if len(state['players']) < 2 else
+                              '请两位玩家使用支持潮汐竞速的版本')
+                if state['mode'] not in modes:
+                    modes.append(state['mode'])
+                rows.append((names[state['mode']],lambda: settings(mode=modes[(modes.index(state['mode'])+1)%len(modes)] if state['mode'] in modes else 'campaign')))
                 rows.append((('竖屏' if state['orientation'] == 'portrait' else '横屏'),
                              lambda: settings(orientation='portrait' if state['orientation'] != 'portrait' else 'landscape')))
                 if state['mode'] == 'campaign':
@@ -244,6 +304,40 @@ class LAN:
                         (f"第 {state['start_level']} 关",
                          lambda: settings(start_level=state['start_level'] % levels + 1)),
                     ])
+                if state['mode'] == 'boss_duel':
+                    from game_core.modes.boss_duel import BOSSES
+                    boss = state['mode_options']['boss']
+                    if self.duel_picker:
+                        from .duel_art import boss_cards
+                        boss_cards(game, events, boss,
+                                   lambda choice: settings(mode_options={'boss': choice}) if choice else None,
+                                   lambda: setattr(self, 'duel_picker', False))
+                        return
+                    rows.append((BOSSES[boss]['name'], lambda: setattr(self, 'duel_picker', True)))
+            elif state['mode'] == 'boss_duel':
+                from game_core.modes.boss_duel import BOSSES
+                detail = 'Boss 对决 · ' + BOSSES[state['mode_options']['boss']]['name'] + '　' + detail
+            if state['mode'] == 'sub_courier':
+                from game_core.modes.sub_courier import ORDERS
+                order = state['mode_options']['order']
+                cargo = ORDERS[order]
+                order_ids = tuple(ORDERS)
+                if host:
+                    rows.append((cargo['name'], lambda: settings(mode_options={
+                        'order': order_ids[(order_ids.index(order) + 1) % len(order_ids)]})))
+                route = ' → '.join(label for _, label in cargo['landmarks'])
+                role = '舵手 · 驾驶和慢靠' if host else '轮机员 · 压载、修理和签收'
+                briefing = (f"{cargo['name']} · {cargo['route']} · {cargo['estimate']}",
+                            f"{role}｜{route}", cargo['brief'])
+            if state['mode'] == 'tide_race':
+                from game_core.modes.tide_race import TRACK_IDS, content
+                track = state['mode_options']['track']
+                title = content()['tracks'][track]['name']
+                if host:
+                    rows.append((title, lambda: settings(mode_options={
+                        'track': TRACK_IDS[(TRACK_IDS.index(track)+1)%len(TRACK_IDS)]})))
+                else:
+                    detail = '潮汐竞速 · ' + title + '　' + detail
             if me:
                 revision = state['settings_revision']
                 rows.append(('取消准备' if me['ready'] else '准备', lambda: self.transport.send(
@@ -259,11 +353,11 @@ class LAN:
             if not detail and self.transport.slot == 1 and address.startswith('联机证书'):
                 detail = address
             detail = (' · '.join(labels) + '　' + detail).strip()
-        self.draw_room(game, rows, events, detail or '正在连接房间…', str(self.transport.invite))
+        self.draw_room(game, rows, events, detail or '正在连接房间…', str(self.transport.invite), briefing=briefing)
 
-    def draw_room(self, game, rows, events, detail, invite):
+    def draw_room(self, game, rows, events, detail, invite, *, briefing=()):
         rects = menu_ui.room_action_rects(len(rows))
-        menu_ui.draw_room(game, rows, rects, detail, invite)
+        menu_ui.draw_room(game, rows, rects, detail, invite, briefing=briefing)
         shortcuts = dict(zip(menu_ui.room_shortcuts(len(rows)), (action for _, action in rows)))
         for event in events:
             pos = None
@@ -323,8 +417,32 @@ class LAN:
         elif self.page == 'join':
             self.draw_illustrated(window, lambda: self.draw_join_form(game, events))
         elif state and state.get('world'):
-            self.battle(game, state, events, away, touch_active, window)
+            if state['world'].get('mode') == 'sub_courier':
+                from .sub_courier_view import CourierView
+                if self.courier_view is None:
+                    self.courier_view = CourierView()
+                self.courier_view.frame(self, game, state, events, away, window, touch_active)
+            elif state['world'].get('mode') == 'boss_duel':
+                from .duel_view import DuelView
+                if self.duel_view is None:
+                    self.duel_view = DuelView()
+                self.duel_view.frame(self, game, state, events, away, window, touch_active)
+            elif state['world'].get('mode') == 'tide_race':
+                from .tide_race_view import TideRaceView
+                if getattr(self, 'tide_race_view', None) is None:
+                    self.tide_race_view = TideRaceView()
+                self.tide_race_view.frame(self, game, state, events, away, window)
+            elif state['world'].get('kind')=='run_gun':
+                from online.client.side_view import SideView
+                if self.side_view is None:
+                    self.side_view=SideView()
+                self.side_view.frame(self,game,state,events,away,window)
+            else:
+                self.battle(game, state, events, away, touch_active, window)
         else:
+            self.duel_view = None
+            self.tide_race_view = None
+            self.close_courier_view()
             self.draw_illustrated(window, lambda: self.lobby(game, events, state, direction))
         return True
 
@@ -343,7 +461,20 @@ class LAN:
                 self._fps_frames = 0
 
     def draw_home(self, game, events, window):
+        requested = str(getattr(self.transport.bridge, 'requestedMode', '')) if isinstance(self.transport, BrowserTransport) else ''
+        if requested in ('run_gun', 'boss_duel', 'sub_courier', 'tide_race'):
+            self.transport.bridge.requestedMode = ''
+            self.page = 'single'
+            game._activate_home_action('modes')
+            getattr(game.side_game, requested)()
+            return
         rects = menu_ui.entrance_rects()
+        links = [(label, url) for label, url in (
+            ('证书安装', getattr(self.transport, 'setup_url', '')),
+            ('下载游戏', getattr(self.transport, 'game_url', '')),
+        ) if url]
+        if links:
+            rects.update(zip((url for _, url in links), menu_ui.home_link_rects(len(links))))
         action = None
         for event in events:
             pos = None
@@ -369,9 +500,13 @@ class LAN:
             status = str(self.transport.address)
             if status.startswith('联机'):
                 detail = status
-        self.draw_illustrated(window, lambda: menu_ui.draw_home(game, entrances=True, detail=detail))
+        self.draw_illustrated(window, lambda: menu_ui.draw_home(game, entrances=True, detail=detail,
+                                                               links=links))
 
-        if action in ('single', 'keys'):
+        if action == 'modes':
+            self.page = 'single'
+            game._activate_home_action('modes')
+        elif action in ('single', 'keys'):
             self.page = 'single'
             self.home_keys = action == 'keys'
             if self.home_keys:
@@ -380,6 +515,8 @@ class LAN:
             self.start_room('create')
         elif action == 'join':
             self.join_form()
+        elif action:
+            self.transport.open_home_link(action)
 
     def draw_illustrated(self, window, draw):
         from game_core.background import background_art
@@ -428,6 +565,7 @@ class LAN:
                 for name, value in local.items():
                     setattr(config, name, value)
         view.desktop_controls, view.web, view.mobile_web = game.desktop_controls, game.web, game.mobile_web
+        view.desktop_quality = game.desktop_quality
         view.controls = game.controls
         view.clock = game.clock
         view.lan = self
@@ -456,6 +594,7 @@ class LAN:
         config.campaign_time_ms = presentation.time_ms
         try:
             active, current_input = self._battle_input(view, state, me, events, away, touch_active)
+            game.desktop_quality = view.desktop_quality
             view.exit_confirmation = self.exit_confirmation
             now = monotonic()
             self._update_battle_prediction(state, me, now, active, new_state, current_input)

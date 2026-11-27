@@ -530,6 +530,11 @@ class NiuBoss(Boss):
         width = max(30, round(self.w * .75))
         return pygame.Rect(round(self.x - width / 2), top, width, max(1, bottom - top))
 
+    @staticmethod
+    @lru_cache(maxsize=4)
+    def _slam_axe_frame(axe, size):
+        return pygame.transform.flip(scale_surface_cached(axe, size), False, True)
+
     def _draw_axe_slam(self, surf, now):
         hitbox = self.axe_slam_rect(now)
         if hitbox is None:
@@ -547,7 +552,7 @@ class NiuBoss(Boss):
         else:
             x, top = round(self.x), hitbox.top
         height = max(1, round(width * axe.get_height() / axe.get_width()))
-        axe = pygame.transform.flip(scale_surface_cached(axe, (width, height)), False, True)
+        axe = self._slam_axe_frame(axe, (width, height))
         x -= width // 2
         blit = surf.blit_pixels if scaled else surf.blit
         visible_height = max(1, bottom - top)
@@ -912,6 +917,10 @@ class ZongBoss(Boss):
         self.crescent_count = 0
         return []
 
+    def _resisted_damage_mult(self):
+        tier = self.bdef.get('resistance_tier', self.bdef.get('campaign_tier'))
+        return (1, .75, .5)[tier] if tier is not None else int(self.easy_campaign)
+
     def hit_by(self, weapon_name, amount=1.0, source='skill', hit_rect=None):
         if self.y < Enemy.ENTRY_DAMAGE_Y or self.fusion_mode == 'shield':
             return
@@ -926,16 +935,14 @@ class ZongBoss(Boss):
             for i in alive:
                 self.body_hp[i] = max(0, self.body_hp[i] - damage / len(alive))
         else:
-            tier = self.bdef.get('campaign_tier')
             strong_side = 1 if source == 'bullet' else 0
-            allowed = alive if self.easy_campaign or tier is not None else (strong_side,)
-            for i in allowed:
-                if self.body_hp[i] <= 0:
+            for i in alive:
+                effectiveness = 1 if i == strong_side else self._resisted_damage_mult()
+                if not effectiveness:
                     continue
                 box = pygame.Rect(int(self.body_x(i) - self.w // 2), int(self.y), self.w, self.h)
                 if hit_rect is None or hit_rect.colliderect(box):
                     hitbox = box
-                    effectiveness = 0.5 if tier == 2 and i != strong_side else 1
                     self.body_hp[i] = max(0, self.body_hp[i] - damage * effectiveness)
                     break
         self.hp = sum(self.body_hp)
@@ -1030,11 +1037,11 @@ class ZongBoss(Boss):
 
     def draw(self, surf, *, visual_scale=1):
         now = config.game_ticks()
-        labels = ('子弹免疫', '技能免疫')
-        if self.easy_campaign:
-            labels = ('', '')
-        elif self.bdef.get('campaign_tier') == 2:
-            labels = ('技能弱点', '子弹弱点')
+        resisted = self._resisted_damage_mult()
+        labels = ('', '')
+        if resisted < 1 and all(hp > 0 for hp in self.body_hp):
+            labels = ('子弹免疫', '技能免疫') if not resisted else (
+                f'子弹伤害 {resisted:.0%}', f'技能伤害 {resisted:.0%}')
         centers = ((self.x, '融合'),) if self.fusion_mode else tuple(
             (self.body_x(i), labels[i]) for i in range(2) if self.body_hp[i] > 0)
         for x, label in centers:

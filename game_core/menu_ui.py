@@ -18,7 +18,7 @@ MUTED = (176, 208, 217)
 PAPER = (7, 25, 33)
 SURFACE = (11, 37, 47)
 ENTRANCE_SHORTCUTS = {'single': pygame.K_1, 'create': pygame.K_2, 'join': pygame.K_3,
-                      'keys': pygame.K_k}
+                      'keys': pygame.K_k, 'modes': pygame.K_5}
 
 
 def room_shortcuts(count):
@@ -28,6 +28,7 @@ def room_shortcuts(count):
 HOME_ACTIONS = (
     ('easy', '简单', pygame.K_1), ('medium', '中等', pygame.K_2),
     ('hard', '困难', pygame.K_3), ('infinite', '无限', pygame.K_4),
+    ('modes', '玩法大厅', pygame.K_5),
     ('keys', '按键设置', pygame.K_k),
 )
 
@@ -169,17 +170,25 @@ def home_rects(game=None):
 def entrance_rects():
     row = _home_boxes(entrances=True)[2]
     gap = 8
-    width = (row.w - row.h - 3 * gap) // 3
-    left = row.centerx - (3 * width + row.h + 3 * gap) // 2
+    width = (row.w - row.h - 4 * gap) // 4
+    left = row.centerx - (4 * width + row.h + 4 * gap) // 2
     rects = {key: pygame.Rect(left + index * (width + gap), row.y, width, row.h)
-             for index, key in enumerate(('single', 'create', 'join'))}
-    rects['keys'] = pygame.Rect(rects['join'].right + gap, row.y, row.h, row.h)
+             for index, key in enumerate(('single', 'create', 'join', 'modes'))}
+    rects['keys'] = pygame.Rect(rects['modes'].right + gap, row.y, row.h, row.h)
     return rects
 
 
-def _draw_entrances(game, detail):
+def home_link_rects(count):
+    row = _home_boxes(entrances=True)[2]
+    gap = 8
+    width = min(320, (row.w - (count - 1) * gap) // count)
+    left = row.centerx - (count * width + (count - 1) * gap) // 2
+    return [pygame.Rect(left + i * (width + gap), row.bottom + 4, width, 22) for i in range(count)]
+
+
+def _draw_entrances(game, detail, links):
     rects = entrance_rects()
-    for key, label in (('single', '单机游戏'), ('create', '创建房间'), ('join', '加入房间')):
+    for key, label in (('single', '单机游戏'), ('create', '创建房间'), ('join', '加入房间'), ('modes', '玩法大厅')):
         rect = rects[key]
         if key == 'single':
             Draw.rect(config.SCR, ACCENT, rect, border_radius=8)
@@ -199,9 +208,15 @@ def _draw_entrances(game, detail):
             Draw.rect(config.SCR, INK, (x, y, 2, 2), border_radius=1)
     Draw.line(config.SCR, INK, (keyboard.x + 8, keyboard.y + 12),
               (keyboard.right - 8, keyboard.y + 12))
+    if links:
+        for (label, url), rect in zip(links, home_link_rects(len(links))):
+            color = ACCENT if rect.collidepoint(game.cursor_pos) else INK
+            _text(game, f'{label}  {url}', rect.inflate(-4, 0), font=game.font_tiny,
+                  color=color, align='center')
     if detail:
         row = _home_boxes(entrances=True)[2]
-        _text(game, detail, pygame.Rect(row.x, row.bottom + 3, row.w, 21),
+        top = row.bottom + (27 if links else 3)
+        _text(game, detail, pygame.Rect(row.x, top, row.w, 21),
               color=MUTED, align='center')
 
 
@@ -247,11 +262,11 @@ def draw_home_art(game, *, entrances=False):
         _art(animation.frame(f'{key}_run', step) or animation.frame(f'{key}_back', 0), rect)
 
 
-def draw_home(game, *, entrances=False, detail=''):
+def draw_home(game, *, entrances=False, detail='', links=()):
     aligned = game.on_return_home is not None
     draw_home_art(game, entrances=entrances or aligned)
     if entrances:
-        _draw_entrances(game, detail)
+        _draw_entrances(game, detail, links)
         return
     rects = home_rects(game)
     if game.web and not aligned:
@@ -293,7 +308,7 @@ def room_action_rects(count):
             for index in range(count)]
 
 
-def draw_room(game, rows, rects, status, invite):
+def draw_room(game, rows, rects, status, invite, *, briefing=()):
     draw_home_art(game, entrances=True)
     for (label, action), rect, key in zip(rows, rects, room_shortcuts(len(rows))):
         primary = label == '开始对局' and action is not None
@@ -310,6 +325,12 @@ def draw_room(game, rows, rects, status, invite):
     _text(game, status, footer, color=INK, align='center')
     if invite:
         _text(game, invite, footer.move(0, 19), color=MUTED, align='center')
+    if briefing:
+        box = pygame.Rect(16, rects[0].top - 90, config.SCREEN_WIDTH - 32, 78)
+        _panel(game, box, radius=8)
+        for i, line in enumerate(briefing):
+            row = pygame.Rect(box.x + 8, box.y + 5 + 22 * i, box.w - 16, 20)
+            _text(game, line, row, font=game.font_tiny, color=INK, align='center')
 
 def campaign_rects(game):
     w, h = config.SCREEN_WIDTH, config.SCREEN_HEIGHT

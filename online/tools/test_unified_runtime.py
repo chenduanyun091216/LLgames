@@ -117,8 +117,8 @@ async def run(args, report):
                 # Chromium emulation reports zero iOS safe-area insets.
                 await p2.bring_to_front()
                 inset = await p2.add_style_tag(content='''
-                    :root { --game-left: 55px; --game-right: calc(100vw - 34px);
-                            --game-bottom: calc(100dvh - 21px); }
+                    :root { --safe-left: 55px; --safe-right: calc(100vw - 34px);
+                            --safe-bottom: calc(100dvh - 21px); }
                 ''')
                 await p2.keyboard.press('Tab')
                 canvas = p2.locator('#canvas')
@@ -126,20 +126,15 @@ async def run(args, report):
                 assert await canvas.evaluate(
                     "canvas => canvas === document.activeElement && getComputedStyle(canvas).outlineStyle === 'none'"
                 ), 'Focused game canvas must not draw a line across the safe area'
-                await p2.wait_for_function(
-                    """() => {
-                        const fill = document.getElementById('ttgames-safe-area-fill');
-                        if (!fill) return false;
-                        const {width, height} = fill;
-                        const ctx = fill.getContext('2d');
-                        return [[5, height / 2], [width - 5, height / 2],
-                                [width / 2, height - 5], [5, height - 5], [width - 5, height - 5]]
-                            .every(([x, y]) => {
-                                const [r, g, b, a] = ctx.getImageData(x, y, 1, 1).data;
-                                return a === 255 && (r || g || b);
-                            });
-                    }""")
-                await p2.screenshot(path=output / 'p2-battle-bottom-safe-area.png')
+                await p2.wait_for_function("() => window.ttgamesSafeArea === '55,0,34,21'")
+                assert await canvas.bounding_box() == {'x': 0, 'y': 0, 'width': width, 'height': height}
+                screenshot = output / 'p2-battle-bottom-safe-area.png'
+                await p2.screenshot(path=screenshot)
+                with Image.open(screenshot) as image:
+                    # The former fill copied one source row into every row of the bottom strip.
+                    band = image.convert('RGB').crop((0, height - 18, width, height - 2))
+                    rows = {band.crop((0, y, width, y + 1)).tobytes() for y in range(band.height)}
+                    assert len(rows) > 2
                 await inset.evaluate('style => style.remove()')
                 room = app[HOST_KEY].room
                 match = room.match_id

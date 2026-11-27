@@ -7,7 +7,6 @@ from .asset_loader import image_asset
 from .config import CHARACTER_DEFS
 from .boss_skills import BITE_REPEAT_MS, CHASE_MS, CLAW_DELAY_MS, LASH_MS, TRIDENT_INTERVAL_MS
 
-_FRAMES = {}
 DOWNWARD_LASER_POSES = {
     'boss_crab': (0, .50, .57),
     'boss_octopus': (1, .50, .64),
@@ -93,10 +92,12 @@ def frame(name, index):
     count = sheet.get_width() // size
     if not count:
         return None
-    key = (sheet, index % count)
-    if key not in _FRAMES:
-        _FRAMES[key] = sheet.subsurface(((index % count) * size, 0, size, size))
-    return _FRAMES[key]
+    return square_frame(sheet, index % count, size)
+
+
+@lru_cache(maxsize=192)
+def square_frame(sheet, index, size, *, row=0):
+    return sheet.subsurface((index * size, row * size, size, size))
 
 
 @lru_cache(maxsize=128)

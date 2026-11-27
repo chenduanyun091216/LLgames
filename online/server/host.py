@@ -7,8 +7,10 @@ import time
 
 from aiohttp import web
 
-from online.shared.protocol import MAX_MESSAGE, UNIFIED_VERSION, ProtocolError, valid_id
+from online.shared.protocol import COOP_MODES, EXTRA_MODES, MAX_MESSAGE, UNIFIED_VERSION, ProtocolError, valid_id
 from .app import HOST_KEY, Peer, Room, guard, static_file, websocket
+
+RESULT_MODES = ('boss_duel', 'sub_courier', 'tide_race')
 
 
 class MatchRoom(Room):
@@ -20,33 +22,96 @@ class MatchRoom(Room):
         self.created = now
         self.mode = 'campaign'
         self.start_level = 1
+        self.mode_options = {}
+        self.result_seen = set()
+        self.rematch = set()
+        self.back_lobby = False
         self.revision = 0
         self.notices = {}
 
     def snapshot(self):
         state = super().snapshot()
+        state['extra_modes'] = list(COOP_MODES)
+        state['available_modes'] = [m for m in COOP_MODES if len(self.players)==2
+                                    and all(self.supports(p, m) for p in self.players)]
         state.update(version=UNIFIED_VERSION, mode=self.mode, start_level=self.start_level,
-                     settings_revision=self.revision, notices=list(self.notices.values()))
+                     mode_options=self.mode_options, settings_revision=self.revision,
+                     notices=list(self.notices.values()))
+        if self.mode in RESULT_MODES and state['world'].get('result'):
+            state['world'] = dict(state['world'], result_id=self.match_id,
+                                  result_pending=sorted(p.slot for p in self.players
+                                                        if p.slot not in self.result_seen),
+                                  rematch=sorted(self.rematch), back_lobby=self.back_lobby)
         return state
 
-    def start(self, difficulty):
-        super().start(difficulty, mode=self.mode, start_level=self.start_level)
+    @staticmethod
+    def supports(peer, mode):
+        if mode in EXTRA_MODES:
+            return getattr(peer, 'extra_modes', {}).get(mode) == EXTRA_MODES[mode]
+        return mode in getattr(peer, 'mode_caps', ())
+
+    def start(self, difficulty, *, swapped=False):
+        options = {'mode_options': self.mode_options} if self.mode in RESULT_MODES else {}
+        if self.mode == 'sub_courier':
+            options['swapped'] = swapped
+        super().start(difficulty, mode=self.mode, start_level=self.start_level, **options)
+        self.result_seen.clear()
+        self.rematch.clear()
+        self.back_lobby = False
         self.notices.clear()
+
+    def duel_result_action(self, peer, action):
+        if not self.game.result:
+            return 'result_pending'
+        if action == 'result_seen':
+            self.result_seen.add(peer.slot)
+        elif action == 'back_lobby':
+            self.back_lobby = True
+            self.rematch.clear()
+        elif not self.back_lobby:
+            self.rematch.add(peer.slot)
+        slots = {p.slot for p in self.players}
+        if self.back_lobby and slots <= self.result_seen:
+            self.game = self.last_state = None
+            self.revision += 1
+            self.notices.clear()
+            for p in self.players:
+                p.ready = p.manual_pause = False
+        elif slots == {1, 2} and slots <= self.rematch and not self.pause_reason():
+            self.start_rematch()
+        return None
+
+    def start_rematch(self):
+        swapped = self.mode == 'sub_courier' and self.game.role_by_slot[1] == 'helm'
+        self.start(self.difficulty, swapped=swapped)
+
+    def advance(self):
+        if self.mode in RESULT_MODES and self.game.result and self.rematch == {1, 2}:
+            self.start_rematch()
+        else:
+            super().advance()
 
     def handle(self, peer, message):
         kind = message['type']
+        if kind == 'mode_caps':
+            peer.mode_caps = frozenset(message['modes'])
+            return None
         if kind == 'room_settings':
             if peer.slot != 1:
                 return 'host_only'
             if self.game is not None:
                 return 'match_in_progress'
+            if message['mode'] not in ('campaign','infinite') and (len(self.players)!=2 or
+                    any(not self.supports(p, message['mode']) for p in self.players)):
+                return 'unsupported_mode'
             settings = (message['mode'], message['orientation'],
-                        message.get('difficulty', 'hard'), message.get('start_level', 1))
+                        message.get('difficulty', 'hard'), message.get('start_level', 1),
+                        message.get('mode_options', {}))
             from game_core.config import LEVEL_CONFIGS
             if not 1 <= settings[3] <= len(LEVEL_CONFIGS):
                 return 'invalid_start_level'
-            if settings != (self.mode, self.orientation, self.difficulty, self.start_level):
-                self.mode, self.orientation, self.difficulty, self.start_level = settings
+            if settings != (self.mode, self.orientation, self.difficulty, self.start_level, self.mode_options):
+                self.mode, self.orientation, self.difficulty, self.start_level, self.mode_options = settings
                 self.revision += 1
                 for player in self.players:
                     player.ready = False
@@ -54,6 +119,9 @@ class MatchRoom(Room):
         if kind in ('ready', 'start') and message['settings_revision'] != self.revision:
             return 'settings_changed'
         if kind == 'start':
+            if self.mode in RESULT_MODES and (self.game or any(
+                    not self.supports(p, self.mode) for p in self.players)):
+                return 'match_in_progress' if self.game else 'unsupported_mode'
             message = dict(message, difficulty=self.difficulty)
         if (kind == 'action' and message['action'] == 'continue'
                 and self.mode == 'infinite' and self.game is not None):
@@ -69,6 +137,8 @@ class MatchRoom(Room):
         return super().handle(peer, message)
 
     def remove(self, peer):
+        self.result_seen.discard(peer.slot)
+        self.rematch.discard(peer.slot)
         if self.game:
             self.game.set_input(peer.slot, 0, 0, False)
             self.game.remove_player(peer.slot)
@@ -91,6 +161,7 @@ class Host:
         self.reconnect = reconnect
         self.room = None
         self.public_url = ''
+        self.setup_url = ''
         self.lan_warning = lan_warning
         self.attempts = {}
         self.receipts = {}
@@ -124,9 +195,18 @@ class Host:
                 room.players.append(peer)
         if peer.ws is not None:
             raise ProtocolError('already_connected')
+        if token and room.mode == 'boss_duel' and peer.dropped_at is not None and (
+                self.clock() - peer.dropped_at >= self.reconnect):
+            raise ProtocolError('invalid_reconnect_token')
+        if token and room.game and room.mode in EXTRA_MODES and (
+                hello.get('extra_modes', {}).get(room.mode) != EXTRA_MODES[room.mode]):
+            raise ProtocolError('update_required')
+        peer.extra_modes = hello.get('extra_modes', {})
         return room, peer
 
     async def dispose(self, room):
+        if room.game and room.mode == 'boss_duel' and not room.game.result:
+            room.game.finish(None, 'aborted')
         if self.room is room:
             self.room = None
         room.task.cancel()
@@ -137,6 +217,13 @@ class Host:
                 await peer.ws.close(code=1001, message=b'Room closed')
 
     async def remove(self, room, peer):
+        if room.game and room.mode in COOP_MODES:
+            room.remove(peer)
+            if room.players:
+                room.broadcast()
+            else:
+                await self.dispose(room)
+            return
         if (room.game and (room.mode == 'infinite' or
                            not room.game.all_players[peer.slot - 1].alive)
                 or not room.game and peer.slot == 2):
@@ -156,6 +243,11 @@ class Host:
                 continue
             if room.host_token is not None and now - room.created >= self.reservation:
                 await self.dispose(room)
+                continue
+            if room.game and room.mode == 'boss_duel' and len(room.players) == 2 and all(
+                    p.dropped_at is not None for p in room.players):
+                if all(now - p.dropped_at >= self.reconnect for p in room.players):
+                    await self.dispose(room)
                 continue
             for peer in tuple(room.players):
                 if peer.dropped_at is not None and now - peer.dropped_at >= self.reconnect:
@@ -181,8 +273,10 @@ def create_host(static_root, **options):
     async def health(_):
         index = host.static_root / 'index.html'
         return web.json_response({'version': UNIFIED_VERSION, 'ready': index.is_file(),
+                                  'extra_modes': EXTRA_MODES,
                                   'build': hashlib.sha256(index.read_bytes()).hexdigest()[:16] if index.is_file() else None,
-                                  'url': host.public_url, 'lan_warning': host.lan_warning})
+                                  'url': host.public_url, 'setup_url': host.setup_url,
+                                  'lan_warning': host.lan_warning})
 
     async def create(request):
         if host.limited(request.remote):

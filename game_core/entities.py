@@ -193,6 +193,8 @@ class Player:
         delay = math.ceil(rate / .70) * interval_multiplier
         if self.current_weapon == 'rifle':
             delay /= 1 + config.RIFLE_SPEED_PER_LEVEL * self.weapon_upgrades.get('rifle', 0)
+        elif self.current_weapon == 'sniper':
+            delay /= 1 + config.SNIPER_SPEED_PER_LEVEL * self.weapon_upgrades.get('sniper', 0)
         for timer, speed in (
             ('water_boost_until', 1.30 if self.campaign else 2),
             ('water_haste_until', 1.5),
@@ -253,22 +255,20 @@ class Player:
         sw, sh = self.breath_base.get_size()
         # 呼吸缩放始终从高清基准缩小采样，避免放大模糊
         scale = _breathing_scale(now - self.breath_start_time, 0.24, 2000) / 1.24
-        breathing_surface = scale_surface_cached(
-            self.breath_base, (round(sw * scale * size_scale), round(sh * scale * size_scale))
-        )
+        bsw, bsh = (max(1, round(value * scale * size_scale)) for value in (sw, sh))
         sprite = animation.player_frame(self, self._sprite_name(), now, downed_age)
-        if sprite is not None:
-            breathing_surface = scale_surface_cached(sprite, breathing_surface.get_size())
-        bsw, bsh = breathing_surface.get_size()
+        asset = _CHAR_ASSETS.get(self.character, self.sprite_asset)
+        source = (sprite or image_asset(asset)) if isinstance(surf, RenderSurface) and surf.desktop_ui else None
+        image = source or scale_surface_cached(sprite or self.breath_base, (bsw, bsh))
         accent = CHARACTER_DEFS[self.character].color if self.character in CHARACTER_DEFS else (117, 221, 255)
         boosted = now < max(self.water_boost_until, self.water_haste_until)
         if boosted:
             draw_glow(surf, (round(self.x), round(y)), max(bsw, bsh) // 2 + 18,
                       (82, 249, 255), round(205 + 40 * math.sin(now * 0.012)))
             accent = (112, 255, 249)
-        blit_lit_sprite(surf, breathing_surface, (self.x - bsw // 2, y - bsh // 2),
+        blit_lit_sprite(surf, image, (self.x - bsw // 2, y - bsh // 2),
                         accent, 245 if boosted else 140,
-                        source=sprite or _CHAR_ASSETS.get(self.character, self.sprite_asset))
+                        source=source or sprite or asset, logical_size=(bsw, bsh))
 
 
 @lru_cache(maxsize=4)
@@ -604,7 +604,7 @@ class Enemy:
                     Draw.lines(surf, (77, 142, 224), True, points, 4)
                     Draw.lines(surf, (153, 240, 255), True, points, 2)
                 if isinstance(surf, RenderSurface):
-                    surf.blit(sprite, rect.topleft, logical_size=size)
+                    surf.blit(sprite, rect.topleft, logical_size=size, static=opening == 1)
                 else:
                     surf.blit(sprite, rect.topleft)
             else:
@@ -670,11 +670,9 @@ class Enemy:
             sw, sh = self.breath_base.get_size()
             age = max(0, now - self.breath_start_time)
             scale = _breathing_scale(age, 0.30, 2000) / 1.3 * visual_scale
-            breathing_surface = scale_surface_cached(
-                self.breath_base, (round(sw * scale), round(sh * scale))
-            )
-            bsw, bsh = breathing_surface.get_size()
-            sprite_asset = self.sprite_asset
+            bsw, bsh = (max(1, round(value * scale)) for value in (sw, sh))
+            action = None
+            asset = self.sprite_asset
             if trench:
                 delay = config.TRENCH_ATTACKS[self.edef['key']][0]
                 casting = 0 <= now - self.last_attack_time < delay and self.y >= self.ENTRY_END_Y
@@ -682,20 +680,20 @@ class Enemy:
                 index = 0 if self.frozen else age // (68 if casting else 115) % 6
                 action = animation.frame(key, index)
                 if action is not None:
-                    sprite_asset = action
-                    if not isinstance(surf, RenderSurface):
-                        breathing_surface = scale_surface_cached(action, (bsw, bsh))
+                    asset = action
                 if casting and not self.frozen:
                     draw_glow(surf, (self.x, self.y + self.h * .72), max(5, self.w // 3), (246, 192, 96), 86)
             elif self.edef['key'] in config.ENEMY_ACTION_KEYS and not self.frozen and age % 3600 >= 3100:
                 action_asset = f'animations/enemies/enemy_{self.edef["key"]}_action.png'
-                action = image_asset(action_asset, (bsw, bsh))
+                action = image_asset(action_asset)
                 if action is not None:
-                    breathing_surface = action
-                    sprite_asset = action_asset
+                    asset = action_asset
+            source = (action or image_asset(self.sprite_asset)) if isinstance(surf, RenderSurface) and surf.desktop_ui else None
+            image = source or scale_surface_cached(action or self.breath_base, (bsw, bsh))
             accent = (255, 163, 108) if self.is_large else (144, 217, 235)
-            blit_lit_sprite(surf, breathing_surface, (self.x - bsw // 2, self.y + self.h // 2 - bsh // 2),
-                            accent, 48 if trench else 105, source=sprite_asset)
+            blit_lit_sprite(surf, image, (self.x - bsw // 2, self.y + self.h // 2 - bsh // 2),
+                            accent, 48 if trench else 105,
+                            source=source or asset, logical_size=(bsw, bsh))
         # 燃烧效果
         if self.burning:
             x, y = self.x, self.y - 7
@@ -1007,7 +1005,7 @@ class GiftBoat:
         y = self.y + math.sin(self.frame * math.pi / 2) * 2
         size = (self.WIDTH, self.HEIGHT)
         position = (round(self.x - self.WIDTH / 2), round(y - self.HEIGHT / 2))
-        art = image_asset(f'effects/gift_boat_{self.frame}.png')
+        art = image_asset(f'effects/gift_boat_front_{self.frame}.png')
         if art is None:
             Draw.ellipse(surf, (142, 83, 43), (position[0] + 20, round(y), 96, 27))
             return
@@ -1655,23 +1653,20 @@ class RadiationLaser:
         c = colors[(now // 55) % len(colors)]
         beam = effect_layer(surf, (r.w + 72, r.h))
         cx = beam.get_size()[0] // 2
-        last_outer = None
-        last_inner = None
-        last_core = None
         base_width = self.beam_width()
+        edges = [(color, [], []) for color in ((*c, 125), (20, 8, 28, 218), (*c, 235), (255, 245, 230, 220))]
         for y in range(0, r.h, 8):
-            t = y / max(1, r.h)
+            t = y / r.h
             offset = math.sin(now * speed + t * 8.5) * swing * (0.2 + 0.9 * (1 - t))
             width = base_width + int(10 * (1 - t))
-            outer = (cx + int(offset), y)
-            inner = (cx + int(offset * 0.72), y)
-            core = (cx + int(offset * 0.52), y)
-            if last_outer:
-                _line(beam, (*c, 125), last_outer, outer, width + 26)
-                _line(beam, (20, 8, 28, 218), last_inner, inner, max(6, width + 6))
-                _line(beam, (*c, 235), last_inner, inner, max(6, width // 2))
-                _line(beam, (255, 245, 230, 220), last_core, core, max(4, width // 5))
-            last_outer, last_inner, last_core = outer, inner, core
+            centers = (cx + int(offset), cx + int(offset * .72), cx + int(offset * .72), cx + int(offset * .52))
+            widths = (width + 26, width + 6, max(6, width // 2), max(4, width // 5))
+            for (_, left, right), center, span in zip(edges, centers, widths):
+                left.append((center - span // 2, y))
+                right.append((center + (span - 1) // 2, y))
+        if r.h > 8:
+            for color, left, right in edges:
+                Draw.polygon(beam, color, left + right[::-1])
         for y in range(0, r.h, 15):
             whip_offset = int(math.sin(now * speed + y * 0.11) * swing * 0.75)
             phase = math.sin(now * 0.055 + y * 0.14)
@@ -1841,6 +1836,23 @@ class SpinningDarts:
         # 外发光
         _circle(surf, (*light, 42), (dx, dy), int(26 * glow_pulse))
         _circle(surf, (*light, 24), (dx, dy), int(32 * glow_pulse))
+        if isinstance(surf, RenderSurface):
+            phase = round(spin * 48 / math.tau) % 48
+            art = self._disc_frame(surf.length(50), phase, dark, light)
+            surf.blit_pixels(art, surf.point((dx - 25, dy - 25)))
+        else:
+            self._draw_disc_core(surf, dx, dy, spin, dark, light)
+
+    @staticmethod
+    @lru_cache(maxsize=128)
+    def _disc_frame(size, phase, dark, light):
+        pixels = pygame.Surface((size, size), pygame.SRCALPHA)
+        target = RenderSurface(pixels, (50, 50), (size, size), (0, 0))
+        SpinningDarts._draw_disc_core(target, 25, 25, phase * math.tau / 48, dark, light)
+        return pixels
+
+    @staticmethod
+    def _draw_disc_core(surf, dx, dy, spin, dark, light):
         # 齿纹：12 个锐利旋转锯齿
         teeth = 12
         for i in range(teeth):
@@ -2450,13 +2462,11 @@ class Boss:
                 self.surface, (int(sw * 1.3), int(sh * 1.3)))
             self._breath_src = self.surface
         sw, sh = self.breath_base.get_size()
-        # 呼吸缩放从 1.3x 基准缩小采样，视觉尺寸不变但更清晰
-        breathing_surface = scale_surface_cached(
-            self.breath_base, (round(sw * scale / 1.3), round(sh * scale / 1.3))
-        )
+        # Keep the pose artwork separate from its logical breathing size.
+        body_size = (round(sw * scale / 1.3), round(sh * scale / 1.3))
+        render_surface = isinstance(surf, RenderSurface)
         sprite = self._body_frame(now)
         sprite_x, sprite_y = self.x, center_y
-        body_size = breathing_surface.get_size()
         if self.bdef['key'] == 'boss' and not (mouth_laser or self.laser_warning_start):
             body_size = tuple(round(value * .85) for value in body_size)
         if sprite is not None:
@@ -2468,40 +2478,25 @@ class Boss:
                 mouth_x, mouth_y = animation.LASER_ART_MOUTHS.get(self.bdef['key'], mouth_laser[1:])
                 sprite_x += size[0] * (mouth_laser[1] - .5) - action_size[0] * (mouth_x - .5)
                 sprite_y += size[1] * (mouth_laser[2] - .5) - action_size[1] * (mouth_y - .5)
-            breathing_surface = scale_surface_cached(sprite, action_size)
+            body_size = action_size
         else:
             body_size = tuple(round(value * visual_scale) for value in body_size)
-            idle_base = self.breath_base
-            if isinstance(surf, RenderSurface) and self.bdef['key'] in animation.IDLE_BODY_TRAVEL:
-                source = image_asset(self.sprite_asset)
-                if source is not None:
-                    idle_size = tuple(surf.length(value) for value in self.breath_base.get_size())
-                    idle_base = scale_surface_cached(source, idle_size)
-            idle = animation.boss_idle_frame(self.bdef['key'], idle_base, now - self.breath_start_time)
-            if idle is not self.breath_base or body_size != breathing_surface.get_size():
-                breathing_surface = scale_surface_cached(idle, body_size)
-                sprite = idle
+            idle_art = image_asset(self.sprite_asset) if render_surface else None
+            sprite = animation.boss_idle_frame(self.bdef['key'], idle_art or self.breath_base,
+                                               now - self.breath_start_time)
         slam_start = getattr(self, 'axe_slam_start', None)
         slam_active = slam_start is not None and 0 <= now - slam_start < self.axe_slam_duration
         flashing = self.laser_warning_start and (now - self.laser_warning_start) // 150 % 2 == 0
-        source = sprite or self.sprite_asset
         if slam_active:
-            breathing_surface = scale_surface_cached(
-                breathing_surface, tuple(round(value * 1.35) for value in breathing_surface.get_size()))
-        if slam_active or flashing:
-            tinted = breathing_surface
-            if isinstance(surf, RenderSurface):
-                tinted = sprite or image_asset(self.sprite_asset) or breathing_surface
-            if slam_active:
-                tinted = _niu_slam_sprite(tinted)
-            if flashing:
-                tinted = _laser_flash_sprite(tinted)
-            if isinstance(surf, RenderSurface):
-                source = tinted
-            else:
-                breathing_surface = tinted
-        bsw, bsh = breathing_surface.get_size()
-        blit_lit_sprite(surf, breathing_surface, (sprite_x - bsw // 2, sprite_y - bsh // 2), glow_c, 92, source=source)
+            body_size = tuple(round(value * 1.35) for value in body_size)
+        image = sprite if render_surface else scale_surface_cached(sprite, body_size)
+        if slam_active:
+            image = _niu_slam_sprite(image)
+        if flashing:
+            image = _laser_flash_sprite(image)
+        bsw, bsh = body_size
+        blit_lit_sprite(surf, image, (sprite_x - bsw // 2, sprite_y - bsh // 2), glow_c, 92,
+                        source=image if render_surface else None, logical_size=body_size)
         if self.laser_warning_start:
             elapsed = now - self.laser_warning_start
             if (elapsed // 220) % 2 == 0:

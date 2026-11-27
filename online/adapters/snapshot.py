@@ -75,6 +75,7 @@ GAME_FIELDS += ['enemy_freeze_until', 'ice_field_slot', 'radiation_wave']
 DATA_KEYS = set('x y vx vy life max_life color size start text until at kind key name is_large zongzong gold base_speed health_mult sprite_asset sprite_key enemy_key base_hp fixed_hp speed attack_interval projectile_count homing_chance laser_chance campaign_tier campaign_level warning duration h w radius released burst_at target_x target_y'.split()) | set(config.WEAPON_DEFS) | set(config.CHARACTER_DEFS) | set('fisher_grenade ice_balls water_heal lightning skill1 skill2 radiation_laser dart_shield fireball fire_wall ice_ball ice_floor magnetic_storm lightning_chain water_boost water_haste'.split())
 DEFINITION_KEYS = 'campaign_hp key name is_large zongzong gold base_speed health_mult sprite_asset sprite_key enemy_key base_hp fixed_hp speed attack_interval projectile_count homing_chance laser_chance campaign_tier campaign_level size damage_cap final_boss easy_campaign laser_offsets shield_thresholds laser_interval_mult'.split()
 
+DEFINITION_KEYS.append('resistance_tier')
 DATA_KEYS.update(DEFINITION_KEYS)
 
 def encode_world(game):
